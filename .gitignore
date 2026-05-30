@@ -1,0 +1,8 @@
+/target
+native/build/
+build/
+.worktrees/
+.superpowers/
+native/docs_doxygen
+*.log
+temp/

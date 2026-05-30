@@ -1,0 +1,18 @@
+edition = "2024"
+tab_spaces = 4
+match_block_trailing_comma = true
+use_field_init_shorthand = true
+use_try_shorthand = true
+chain_width = 50
+fn_params_layout = "Vertical"
+single_line_if_else_max_width = 25
+
+# Nightly features
+# unstable_features = true 
+# imports_indent = "Block" 
+# match_arm_leading_pipes = "Preserve"
+# group_imports = "StdExternalCrate" 
+# imports_granularity = "Crate" 
+# imports_layout = "HorizontalVertical"
+# struct_field_align_threshold = 999
+# enum_discrim_align_threshold = 999
