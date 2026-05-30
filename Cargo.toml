@@ -34,6 +34,8 @@ opt-level = 3
 candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.10.2", rev = "d3510d5" }
 candle-nn = { git = "https://github.com/huggingface/candle.git", version = "0.10.2", rev = "d3510d5" }
 
+objc2 = "0.6.4"
+objc2-metal = "0.3.2"
 opentelemetry = { version = "0.32.0", features = ["default"] }
 anyhow = "1.0.100"
 schemars = "1.2.0"

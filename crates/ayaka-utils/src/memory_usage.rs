@@ -1,10 +1,16 @@
+#![allow(unexpected_cfgs)]
+
 //! Reference: https://github.com/EricLBuehler/mistral.rs/blob/master/mistralrs-core/src/utils/memory_usage.rs
-use crate::constants::BYTES_PER_MIB;
 use ayaka_core::error::EngineError;
 use candle_core::Device;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use sysinfo::System;
+
+#[cfg(feature = "metal")]
+use tracing::warn;
+#[cfg(feature = "metal")]
+use crate::constants::BYTES_PER_MIB;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MemorySnapshot {
@@ -103,17 +109,17 @@ impl MemoryUsage {
             .context()
             .bind_to_thread()
             .w()
-            .map_err(|e| crate::errors::EngineError::Internal {
+            .map_err(|e| EngineError::Internal {
                 msg: e.to_string(),
-                location: concat!(file!(), ":", line!()),
+                location: concat!(file!(), ":", line!()).to_string(),
             })?;
 
         let (free, total) =
             result::mem_get_info()
                 .w()
-                .map_err(|e| crate::errors::EngineError::Internal {
+                .map_err(|e| EngineError::Internal {
                     msg: e.to_string(),
-                    location: concat!(file!(), ":", line!()),
+                    location: concat!(file!(), ":", line!()).to_string(),
                 })?;
 
         Ok(MemorySnapshot {
@@ -156,6 +162,7 @@ impl MemoryUsage {
                 };
             }
         }
+        false
     }
 
     #[cfg(feature = "metal")]
@@ -166,7 +173,6 @@ impl MemoryUsage {
         let sysctl_floor = self.metal_sysctl_floor()?;
         let device_max = dev.device().recommended_max_working_set_size() as usize;
         let budget = sysctl_floor.max(device_max);
-        let allocated = dev.current_allocated_size() as usize;
 
         // Metal warning: recommendedMaxWorkingSetSize underreports pada when
         // system memory pressure tinggi. Threshold configurable (default /2).
@@ -174,7 +180,6 @@ impl MemoryUsage {
             warn!(
                 device_max_mb = device_max / BYTES_PER_MIB,
                 sysctl_floor_mb = sysctl_floor / BYTES_PER_MIB,
-                allocated_mb = allocated / BYTES_PER_MIB,
                 "Metal recommendedMaxWorkingSetSize severely underreporting — using sysctl floor"
             );
         }
@@ -207,7 +212,7 @@ impl MemoryUsage {
 
         let floor_mb = match sysctl_mb {
             Some(0) | None => default_cap_mb,
-            Some(x) => x,
+            Some(x) => x as u64,
         };
 
         Ok(floor_mb * BYTES_PER_MIB)
@@ -299,8 +304,7 @@ impl MemoryPlanner {
 
     /// Estimate the memory needed to load the model BEFORE actually loading.
     /// Used to fail fast if there isn't enough VRAM.
-    ///
-
+    /// 
     /// `param_count`: Total number of model parameters
     /// `dtype_bytes`: Bytes per element (examples: 2 for BF16/F16, 4 for F32)
     pub fn estimate_model_bytes(
@@ -463,11 +467,10 @@ pub struct PressureThresholds {
     pub critical_utilization: f64,
 }
 
-
 impl Default for PressureThresholds {
     fn default() -> Self {
         Self {
-            warn_utilization:     0.85,
+            warn_utilization: 0.85,
             critical_utilization: 0.92,
         }
     }
@@ -484,50 +487,64 @@ impl MemoryPressureGauge {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
- 
+
     #[inline]
     pub fn level(&self) -> u8 {
         self.level.load(Ordering::Relaxed) as u8
     }
- 
+
     #[inline]
     pub fn is_critical(&self) -> bool {
         self.level() >= 2
     }
- 
+
     #[inline]
-    pub fn set_level(&self, level: u8) {
-        self.level.store(level as usize, Ordering::Relaxed);
+    pub fn set_level(
+        &self,
+        level: u8,
+    ) {
+        self.level
+            .store(level as usize, Ordering::Relaxed);
     }
 }
 
 /// Background thread polls memory and updates gauge.
 /// Use std::thread because async — pure polling loop is not needed.
 pub struct MemoryMonitor {
-    gauge:      Arc<MemoryPressureGauge>,
+    gauge: Arc<MemoryPressureGauge>,
     thresholds: PressureThresholds,
-    interval:   std::time::Duration,
+    interval: std::time::Duration,
 }
 
 impl MemoryMonitor {
     pub fn new(
-        gauge:      Arc<MemoryPressureGauge>,
+        gauge: Arc<MemoryPressureGauge>,
         thresholds: PressureThresholds,
-        interval:   std::time::Duration,
+        interval: std::time::Duration,
     ) -> Self {
-        Self { gauge, thresholds, interval }
+        Self {
+            gauge,
+            thresholds,
+            interval,
+        }
     }
- 
+
     /// Spawn background monitor thread.
     /// Return JoinHandle — caller hold to shut down gracefully.
-    pub fn spawn(self, device: Device) -> std::thread::JoinHandle<()> {
+    pub fn spawn(
+        self,
+        device: Device,
+    ) -> std::thread::JoinHandle<()> {
         std::thread::Builder::new()
             .name("engine-mem-monitor".into())
             .spawn(move || self.run(device))
             .expect("failed to spawn memory monitor thread")
     }
- 
-    fn run(self, device: Device) {
+
+    fn run(
+        self,
+        device: Device,
+    ) {
         loop {
             std::thread::sleep(self.interval);
             match MemoryUsage.query(&device) {
@@ -549,10 +566,10 @@ impl MemoryMonitor {
                         0
                     };
                     self.gauge.set_level(level);
-                }
+                },
                 Err(e) => {
                     tracing::error!(error = %e, "Memory monitor query failed");
-                }
+                },
             }
         }
     }
@@ -561,29 +578,29 @@ impl MemoryMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
- 
+
     #[test]
     fn test_snapshot_utilization() {
         let snap = MemorySnapshot {
-            total_bytes:     16 * (1 << 30),
-            available_bytes: 4  * (1 << 30),
-            is_unified:      false,
+            total_bytes: 16 * (1 << 30),
+            available_bytes: 4 * (1 << 30),
+            is_unified: false,
         };
         let util = snap.utilization();
         assert!((util - 0.75).abs() < 1e-6);
         assert!((snap.total_gb() - 16.0).abs() < 0.01);
     }
- 
+
     #[test]
     fn test_memory_plan_kv_blocks() {
         let plan = MemoryPlan {
-            device_label:            "cuda:0".into(),
-            kind:                    MemoryKind::Discrete,
-            total_bytes:             80 * (1 << 30),
-            model_weights_bytes:     14 * (1 << 30),
-            activation_buffer_bytes: 2  * (1 << 30),
-            reserved_bytes:          4  * (1 << 30),
-            kv_cache_bytes:          60 * (1 << 30),
+            device_label: "cuda:0".into(),
+            kind: MemoryKind::Discrete,
+            total_bytes: 80 * (1 << 30),
+            model_weights_bytes: 14 * (1 << 30),
+            activation_buffer_bytes: 2 * (1 << 30),
+            reserved_bytes: 4 * (1 << 30),
+            kv_cache_bytes: 60 * (1 << 30),
         };
         // block_bytes = 32 layers × 2 × 32 heads × 128 dim × 2 bytes × 16 tokens
         let block_bytes = 32 * 2 * 32 * 128 * 2 * 16; // = 8,388,608 = 8MB
@@ -592,13 +609,13 @@ mod tests {
         // 60GB / 8MB = 7680 blocks
         assert_eq!(blocks, 60 * 1024 * 1024 * 1024 / block_bytes);
     }
- 
+
     #[test]
     fn test_pressure_gauge() {
         let gauge = MemoryPressureGauge::new();
         assert_eq!(gauge.level(), 0);
         assert!(!gauge.is_critical());
- 
+
         gauge.set_level(2);
         assert!(gauge.is_critical());
     }

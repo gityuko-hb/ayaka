@@ -146,8 +146,18 @@ impl EnvConfig {
             log_overrides: parse_log_overrides(),
             log_json: env_bool(ENV_LOG_JSON, false),
             debug: env_bool(ENV_DEBUG, false),
-            gpu_memory_fraction: env_f64_range(ENV_GPU_MEMORY_FRACTION, DEFAULT_GPU_MEMORY_FRACTION, GPU_MEMORY_FRACTION_MIN, GPU_MEMORY_FRACTION_MAX),
-            igpu_memory_fraction: env_f64_range(ENV_IGPU_MEMORY_FRACTION, DEFAULT_IGPU_MEMORY_FRACTION, IGPU_MEMORY_FRACTION_MIN, IGPU_MEMORY_FRACTION_MAX),
+            gpu_memory_fraction: env_f64_range(
+                ENV_GPU_MEMORY_FRACTION,
+                DEFAULT_GPU_MEMORY_FRACTION,
+                GPU_MEMORY_FRACTION_MIN,
+                GPU_MEMORY_FRACTION_MAX,
+            ),
+            igpu_memory_fraction: env_f64_range(
+                ENV_IGPU_MEMORY_FRACTION,
+                DEFAULT_IGPU_MEMORY_FRACTION,
+                IGPU_MEMORY_FRACTION_MIN,
+                IGPU_MEMORY_FRACTION_MAX,
+            ),
             cpu_swap_gb: env_usize(ENV_CPU_SWAP_GB, 0),
             no_mmap: env_bool(ENV_NO_MMAP, false),
             load_threads,
@@ -163,7 +173,8 @@ impl EnvConfig {
     fn validate(&self) {
         // kv_block_size must be a power of 2 for correct alignment.
         assert!(
-            self.kv_block_size.is_power_of_two() && self.kv_block_size >= crate::constants::KV_BLOCK_SIZE_MIN,
+            self.kv_block_size.is_power_of_two()
+                && self.kv_block_size >= crate::constants::KV_BLOCK_SIZE_MIN,
             "ENGINE_KV_BLOCK_SIZE={} must be a power of 2 >= {}",
             self.kv_block_size,
             crate::constants::KV_BLOCK_SIZE_MIN,

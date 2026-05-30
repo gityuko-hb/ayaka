@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+cuda = ["candle-core/cuda"]
+metal = ["candle-core/metal"]
+
 [dependencies]
 ayaka-core = { version = "0.1.0", path = "../ayaka-core" }
 candle-core.workspace = true
