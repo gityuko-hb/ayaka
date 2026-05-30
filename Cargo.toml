@@ -18,6 +18,7 @@ edition      = "2024"
 rust-version = "1.92"
 authors      = ["Yumeio"]
 license      = "Apache-2.0"
+keywords     = ["llm", "inference"]
 repository   = "https://github.com/gityuko-hb/ayaka"
 homepage     = "https://github.com/gityuko-hb/ayaka"
 
@@ -28,16 +29,21 @@ strip = true
 opt-level = 3
 
 [workspace.dependencies]
+# candle-core = { version = "0.10.2" }
+# candle-nn = { version = "0.10.2" }
+candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.10.2", rev = "d3510d5" }
+candle-nn = { git = "https://github.com/huggingface/candle.git", version = "0.10.2", rev = "d3510d5" }
+
+opentelemetry = { version = "0.32.0", features = ["default"] }
 anyhow = "1.0.100"
 schemars = "1.2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2.0.10"
+tqdm = "0.8.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filt`er"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 base64 = "0.22.1"
-candle_core = "0.3"
-candle_nn = "0.3"
 chrono = "0.4.44"
 futures = "0.3.32"
 half = "2.7.1"
@@ -50,6 +56,31 @@ regex = "1.12.3"
 tempfile = "3.27.0"
 tokio = "1.52.3"
 tokenizers = "0.23.1"
+sysinfo = "0.38.4"
+crossbeam ={ version = "0.8.4", features = ["crossbeam-channel"] }
+minijinja = { version = "2.20.0", features = ["builtins", "json"] }
+minijinja-contrib = { version = "2.20.0", features = ["pycompat"] }
+bytemuck = "1.25.0"
+dirs = "6.0.0"
+itertools = "0.14.0"
+num_cpus = "1.17.0"
+num-traits = "0.2.19"
+hashbrown = "0.17.1"
+toml = "1.0.0+spec-1.1.0"
+pyo3 = { version = "0.28.3", features = ["full", "extension-module", "either", "abi3-py310"] }
+url = "2.3.1"   
+data-url = "0.3.2"
+safetensors = "0.7.0"
+hf-hub = { version = "0.5.0", default-features = false, features = [
+    "ureq",
+    "tokio",
+    "rustls-tls",
+]}
+cuda = "0.3.0"
+cudaforge = "0.1.5"
+cudarc = "0.19.0"
+metal  = "0.33.0"
+async-trait = "0.1.89"
 
 [profile.release-fast]
 inherits = "release"

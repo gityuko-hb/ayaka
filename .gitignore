@@ -6,3 +6,7 @@ build/
 native/docs_doxygen
 *.log
 temp/
+.agent
+.opencode
+.cursor
+docs/

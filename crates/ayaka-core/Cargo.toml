@@ -9,9 +9,10 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-bitflags = { version = "2.11.1", features = ["serde"] }
+anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tokenizers.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

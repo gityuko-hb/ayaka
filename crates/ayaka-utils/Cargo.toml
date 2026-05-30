@@ -9,5 +9,13 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+ayaka-core = { version = "0.1.0", path = "../ayaka-core" }
+candle-core.workspace = true
+crossbeam.workspace = true
 indicatif.workspace = true
+opentelemetry.workspace = true
 rayon.workspace = true
+sysinfo.workspace = true
+tqdm.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
