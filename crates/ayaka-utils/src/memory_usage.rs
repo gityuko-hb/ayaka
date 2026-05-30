@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use sysinfo::System;
 
 #[cfg(feature = "metal")]
-use tracing::warn;
-#[cfg(feature = "metal")]
 use crate::constants::BYTES_PER_MIB;
+#[cfg(feature = "metal")]
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MemorySnapshot {
@@ -114,13 +114,12 @@ impl MemoryUsage {
                 location: concat!(file!(), ":", line!()).to_string(),
             })?;
 
-        let (free, total) =
-            result::mem_get_info()
-                .w()
-                .map_err(|e| EngineError::Internal {
-                    msg: e.to_string(),
-                    location: concat!(file!(), ":", line!()).to_string(),
-                })?;
+        let (free, total) = result::mem_get_info()
+            .w()
+            .map_err(|e| EngineError::Internal {
+                msg: e.to_string(),
+                location: concat!(file!(), ":", line!()).to_string(),
+            })?;
 
         Ok(MemorySnapshot {
             total_bytes: total,
@@ -304,7 +303,7 @@ impl MemoryPlanner {
 
     /// Estimate the memory needed to load the model BEFORE actually loading.
     /// Used to fail fast if there isn't enough VRAM.
-    /// 
+    ///
     /// `param_count`: Total number of model parameters
     /// `dtype_bytes`: Bytes per element (examples: 2 for BF16/F16, 4 for F32)
     pub fn estimate_model_bytes(
