@@ -9,3 +9,4 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+tokenizers.workspace = true
