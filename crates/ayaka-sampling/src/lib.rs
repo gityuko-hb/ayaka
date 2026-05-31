@@ -288,7 +288,7 @@ impl Sampler {
 
     fn filter_probs(
         &self,
-        probs: &mut Vec<f32>,
+        probs: &mut [f32],
     ) -> Vec<(u32, f32)> {
         let idx_probs = apply_top_k(probs, self.top_k);
         apply_top_p(probs, &idx_probs, self.top_p);
