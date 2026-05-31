@@ -1,5 +1,9 @@
 pub mod logits;
 pub mod min_p;
+pub mod processor;
+pub mod random;
+pub mod repetition_penalty;
+pub mod temperature;
 pub mod top_k;
 pub mod top_p;
 pub mod types;
