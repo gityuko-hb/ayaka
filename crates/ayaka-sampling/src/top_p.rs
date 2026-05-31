@@ -1,5 +1,8 @@
-
-pub fn apply_top_p(probs: &mut [f32], idx_probs: &[(u32, f32)], p: f32) {
+pub fn apply_top_p(
+    probs: &mut [f32],
+    idx_probs: &[(u32, f32)],
+    p: f32,
+) {
     if p <= 0.0 || p >= 1.0 {
         return;
     }
@@ -18,8 +21,13 @@ mod tests {
     use super::*;
 
     fn make_sorted(v: &[f32]) -> Vec<(u32, f32)> {
-        let mut idx: Vec<(u32, f32)> = v.iter().copied().enumerate().map(|(i,p)|(i as u32,p)).collect();
-        idx.sort_by(|a,b| b.1.partial_cmp(&a.1).unwrap());
+        let mut idx: Vec<(u32, f32)> = v
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, p)| (i as u32, p))
+            .collect();
+        idx.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         idx
     }
 
