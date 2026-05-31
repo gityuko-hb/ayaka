@@ -4,7 +4,6 @@ use candle_nn::ops::softmax_last_dim;
 use crate::logits::argmax_f32;
 
 /// Results after applying temperature.
-
 pub enum TemperatureOutput {
     /// temperature = None or < 1e-7 → sharp distribution, use argmax.
     Argmax(Vec<f32>),

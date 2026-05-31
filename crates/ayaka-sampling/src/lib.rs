@@ -1,3 +1,4 @@
+pub mod grammar;
 pub mod logits;
 pub mod min_p;
 pub mod processor;
