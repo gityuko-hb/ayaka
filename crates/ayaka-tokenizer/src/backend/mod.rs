@@ -59,21 +59,21 @@ impl TokenizerBackend {
         }
 
         let config_path = root.join("tokenizer_config.json");
-        if let Ok(config) = read_json(&config_path) 
+        if let Ok(config) = read_json(&config_path)
             && let Some(class) = config
                 .get("tokenizer_class")
                 .and_then(Value::as_str)
-            {
-                if class.contains("Mistral") {
-                    return load_tekken(&root);
-                }
-                if class.contains("Llama") || class.contains("Gemma") {
-                    return load_sentencepiece(&root);
-                }
-                if class.contains("PreTrainedTokenizerFast") {
-                    return load_huggingface(&root);
-                }
+        {
+            if class.contains("Mistral") {
+                return load_tekken(&root);
             }
+            if class.contains("Llama") || class.contains("Gemma") {
+                return load_sentencepiece(&root);
+            }
+            if class.contains("PreTrainedTokenizerFast") {
+                return load_huggingface(&root);
+            }
+        }
 
         let model_path = root.join("tokenizer.model");
         if model_path.exists() {

@@ -183,9 +183,10 @@ fn special_tokens(root: &Path) -> TokenizerResult<HashMap<String, u32>> {
     ) {
         for (token, id) in tokens.iter().zip(ids) {
             if let (Some(token), Some(id)) = (token.as_str(), id.as_u64())
-                && let Ok(id) = u32::try_from(id) {
-                    out.insert(token.to_owned(), id);
-               }
+                && let Ok(id) = u32::try_from(id)
+            {
+                out.insert(token.to_owned(), id);
+            }
         }
     }
 

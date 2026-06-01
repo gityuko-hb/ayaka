@@ -1235,6 +1235,7 @@ mod tests {
 
     #[test]
     fn test_health_check_critical_ram() {
+        SystemInfo::detect();
         let mut snap = RuntimeSnapshot::capture();
         // Fake critical RAM usage
         snap.ram_used_bytes = snap.ram_total_bytes * 95 / 100;
