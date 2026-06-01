@@ -1067,8 +1067,6 @@ impl ShutdownSignal {
     /// The signal handler only sets a flag — non-blocking, no allocation.
     #[cfg(unix)]
     pub fn install_handlers(&self) {
-        use std::sync::atomic::AtomicBool;
-
         // SAFETY: signal handler only stores to an AtomicBool — signal-safe
         let flag = Arc::clone(&self.requested);
 
