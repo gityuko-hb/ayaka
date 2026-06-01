@@ -186,10 +186,10 @@ impl SystemInfo {
             let content = std::fs::read_to_string("/proc/cpuinfo").ok()?;
             let mut core_ids = std::collections::HashSet::new();
             for line in content.lines() {
-                if line.starts_with("core id") {
-                    if let Some(id) = line.split(':').nth(1) {
-                        core_ids.insert(id.trim().to_string());
-                    }
+                if line.starts_with("core id")
+                    && let Some(id) = line.split(':').nth(1)
+                {
+                    core_ids.insert(id.trim().to_string());
                 }
             }
             if !core_ids.is_empty() {
