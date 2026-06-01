@@ -567,7 +567,7 @@ impl SystemMonitor {
 
             // Health check
             iteration += 1;
-            if iteration % self.config.health_check_every_n == 0 {
+            if iteration.is_multiple_of(self.config.health_check_every_n) {
                 let report = HealthChecker::check(&snap, &self.thresholds);
 
                 // Fire alerts for degraded/critical health
@@ -1213,6 +1213,7 @@ mod tests {
 
     #[test]
     fn test_runtime_snapshot_capture() {
+        SystemInfo::detect();
         let snap = RuntimeSnapshot::capture();
         assert!(snap.ram_total_bytes > 0);
         assert!(snap.cpu_utilization_global >= 0.0);
@@ -1221,6 +1222,7 @@ mod tests {
 
     #[test]
     fn test_health_check_healthy() {
+        SystemInfo::detect();
         let snap = RuntimeSnapshot::capture();
         let thresholds = HealthThresholds::default();
         let report = HealthChecker::check(&snap, &thresholds);

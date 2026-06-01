@@ -105,10 +105,8 @@ fn collect_added_token_ids(
             .get("special")
             .and_then(Value::as_bool)
             .unwrap_or(false)
-        {
-            if let Ok(id) = key.parse::<u32>() {
+        && let Ok(id) = key.parse::<u32>() {
                 out.insert(id);
-            }
-        }
+             }
     }
 }

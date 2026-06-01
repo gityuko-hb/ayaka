@@ -15,7 +15,7 @@ pub mod tiktoken;
 #[derive(Debug)]
 pub enum TokenizerBackend {
     #[cfg(feature = "backend-hf")]
-    HuggingFace(huggingface::HuggingFaceBackend),
+    HuggingFace(Box<huggingface::HuggingFaceBackend>),
     #[cfg(feature = "backend-spm")]
     SentencePiece(sentencepiece::SentencePieceBackend),
     #[cfg(feature = "backend-tiktoken")]
@@ -59,8 +59,8 @@ impl TokenizerBackend {
         }
 
         let config_path = root.join("tokenizer_config.json");
-        if let Ok(config) = read_json(&config_path) {
-            if let Some(class) = config
+        if let Ok(config) = read_json(&config_path) 
+            && let Some(class) = config
                 .get("tokenizer_class")
                 .and_then(Value::as_str)
             {
@@ -74,7 +74,6 @@ impl TokenizerBackend {
                     return load_huggingface(&root);
                 }
             }
-        }
 
         let model_path = root.join("tokenizer.model");
         if model_path.exists() {
@@ -260,7 +259,8 @@ fn disabled_backend(name: &str) -> TokenizerError {
 fn load_huggingface(root: &Path) -> TokenizerResult<TokenizerBackend> {
     #[cfg(feature = "backend-hf")]
     {
-        return huggingface::HuggingFaceBackend::from_path(root).map(TokenizerBackend::HuggingFace);
+        huggingface::HuggingFaceBackend::from_path(root)
+            .map(|b| TokenizerBackend::HuggingFace(Box::new(b)))
     }
     #[cfg(not(feature = "backend-hf"))]
     {
@@ -272,8 +272,7 @@ fn load_huggingface(root: &Path) -> TokenizerResult<TokenizerBackend> {
 fn load_sentencepiece(root: &Path) -> TokenizerResult<TokenizerBackend> {
     #[cfg(feature = "backend-spm")]
     {
-        return sentencepiece::SentencePieceBackend::from_path(root)
-            .map(TokenizerBackend::SentencePiece);
+        sentencepiece::SentencePieceBackend::from_path(root).map(TokenizerBackend::SentencePiece)
     }
     #[cfg(not(feature = "backend-spm"))]
     {
@@ -285,7 +284,7 @@ fn load_sentencepiece(root: &Path) -> TokenizerResult<TokenizerBackend> {
 fn load_tiktoken(root: &Path) -> TokenizerResult<TokenizerBackend> {
     #[cfg(feature = "backend-tiktoken")]
     {
-        return tiktoken::TiktokenBackend::from_path(root).map(TokenizerBackend::Tiktoken);
+        tiktoken::TiktokenBackend::from_path(root).map(TokenizerBackend::Tiktoken)
     }
     #[cfg(not(feature = "backend-tiktoken"))]
     {
@@ -297,7 +296,7 @@ fn load_tiktoken(root: &Path) -> TokenizerResult<TokenizerBackend> {
 fn load_tekken(root: &Path) -> TokenizerResult<TokenizerBackend> {
     #[cfg(feature = "backend-tekken")]
     {
-        return tekken::TekkenBackend::from_path(root).map(TokenizerBackend::Tekken);
+        tekken::TekkenBackend::from_path(root).map(TokenizerBackend::Tekken)
     }
     #[cfg(not(feature = "backend-tekken"))]
     {

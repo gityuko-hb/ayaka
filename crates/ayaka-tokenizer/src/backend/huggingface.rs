@@ -62,10 +62,10 @@ impl HuggingFaceBackend {
         &self,
         id: u32,
     ) -> TokenizerResult<Vec<u8>> {
-        if let Some(token) = self.id_to_token(id) {
-            if let Some(byte) = parse_byte_fallback_token(&token) {
-                return Ok(vec![byte]);
-            }
+        if let Some(token) = self.id_to_token(id)
+            && let Some(byte) = parse_byte_fallback_token(&token)
+        {
+            return Ok(vec![byte]);
         }
 
         self.decode(&[id], false).map(String::into_bytes)
