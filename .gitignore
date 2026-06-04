@@ -10,5 +10,7 @@ temp/
 .opencode
 .cursor
 docs/
-native/
-log/
+compile_commands.json
+.cache/
+.vscode/ipch/
+CMakeUserPresets.json

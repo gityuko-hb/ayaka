@@ -72,10 +72,6 @@ name = "ayaka-bench"
 version = "0.1.0"
 
 [[package]]
-name = "ayaka-cli"
-version = "0.1.0"
-
-[[package]]
 name = "ayaka-core"
 version = "0.1.0"
 dependencies = [
