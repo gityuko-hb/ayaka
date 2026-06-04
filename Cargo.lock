@@ -116,6 +116,15 @@ name = "ayaka-registry"
 version = "0.1.0"
 
 [[package]]
+name = "ayaka-request"
+version = "0.1.0"
+dependencies = [
+ "ayaka-core",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ayaka-sampling"
 version = "0.1.0"
 dependencies = [
@@ -139,6 +148,10 @@ version = "0.1.0"
 [[package]]
 name = "ayaka-server"
 version = "0.1.0"
+dependencies = [
+ "ayaka-core",
+ "ayaka-request",
+]
 
 [[package]]
 name = "ayaka-telemetry"

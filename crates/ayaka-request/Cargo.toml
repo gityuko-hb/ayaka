@@ -1,5 +1,5 @@
 [package]
-name = "ayaka-server"
+name = "ayaka-request"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,4 +10,5 @@ homepage.workspace = true
 
 [dependencies]
 ayaka-core = { path = "../ayaka-core" }
-ayaka-request = { path = "../ayaka-request" }
+serde.workspace = true
+thiserror.workspace = true
