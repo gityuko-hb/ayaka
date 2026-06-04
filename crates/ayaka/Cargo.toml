@@ -9,3 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+ayaka-core = { path = "../ayaka-core" }
+ayaka-executor = { path = "../ayaka-executor" }
+ayaka-request = { path = "../ayaka-request" }
+ayaka-scheduler = { path = "../ayaka-scheduler" }
+ayaka-server = { path = "../ayaka-server" }
+ayaka-telemetry = { path = "../ayaka-telemetry" }
