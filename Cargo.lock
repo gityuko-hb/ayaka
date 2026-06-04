@@ -82,6 +82,10 @@ dependencies = [
 [[package]]
 name = "ayaka-executor"
 version = "0.1.0"
+dependencies = [
+ "ayaka-core",
+ "ayaka-request",
+]
 
 [[package]]
 name = "ayaka-kernel-api"
