@@ -144,6 +144,11 @@ dependencies = [
 [[package]]
 name = "ayaka-scheduler"
 version = "0.1.0"
+dependencies = [
+ "ayaka-core",
+ "ayaka-request",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "ayaka-server"
