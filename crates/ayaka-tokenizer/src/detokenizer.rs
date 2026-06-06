@@ -65,13 +65,11 @@ impl StreamingDetokenizer {
 
         let mut bytes = self.tokenizer.token_bytes(token_id)?;
 
-        // P0 fix: strip the ▁-derived leading space from the first non-special
+        // strip the ▁-derived leading space from the first non-special
         // token in SentencePiece models. For tiktoken / tekken / HF models
         // `strip_leading_space` is false, so this branch is never taken.
-        if self.is_first_token && self.strip_leading_space {
-            if bytes.first() == Some(&b' ') {
-                bytes.remove(0);
-            }
+        if self.is_first_token && self.strip_leading_space && bytes.first() == Some(&b' ') {
+            bytes.remove(0);
         }
 
         self.is_first_token = false;

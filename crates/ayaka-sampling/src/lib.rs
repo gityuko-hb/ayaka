@@ -49,6 +49,9 @@ pub struct SamplerBuilder {
     max_context_len: usize,
     tokenizer: Option<Arc<Tokenizer>>,
     processors: Vec<Arc<dyn LogitsProcessor>>,
+    /// Token-level additive bias applied after processor chain, before temperature.
+    /// Positive values boost a token; negative values suppress it; NEG_INFINITY bans it.
+    logits_bias: Option<std::collections::HashMap<u32, f32>>,
 }
 
 impl SamplerBuilder {
@@ -79,7 +82,7 @@ impl SamplerBuilder {
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             (0.0..=1.0).contains(&p),
-            "top_p phải trong [0,1], accepted {p}"
+            "top_p must be in [0,1], accepted {p}"
         );
         self.top_p = p;
         Ok(self)
@@ -91,7 +94,7 @@ impl SamplerBuilder {
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             (0.0..=1.0).contains(&p),
-            "min_p phải trong [0,1], accepted {p}"
+            "min_p must be in [0,1], accepted {p}"
         );
         self.min_p = p;
         Ok(self)
@@ -150,6 +153,21 @@ impl SamplerBuilder {
         self
     }
 
+    /// Set per-token logits bias applied after the processor chain, before temperature scaling.
+    /// Positive values boost a token; negative values suppress it; NEG_INFINITY bans it.
+    /// Replaces any previously set bias map entirely.
+    pub fn logits_bias(
+        mut self,
+        bias: std::collections::HashMap<u32, f32>,
+    ) -> Self {
+        self.logits_bias = if bias.is_empty() {
+            None
+        } else {
+            Some(bias)
+        };
+        self
+    }
+
     pub fn build(
         self,
         initial_context: &[u32],
@@ -157,7 +175,7 @@ impl SamplerBuilder {
         let suffix_repeat_inner = match (self.suffix_repeat, &self.tokenizer) {
             (Some(p), Some(tok)) => Some(SuffixRepeatInner::from_config(&p, tok)?),
             (Some(_), None) => {
-                anyhow::bail!("SuffixRepeatPenaltyConfig yêu cầu tokenizer");
+                anyhow::bail!("SuffixRepeatPenaltyConfig requires a tokenizer");
             },
             (None, _) => None,
         };
@@ -180,6 +198,7 @@ impl SamplerBuilder {
             suffix_repeat_index: RefCell::new(index),
             tokenizer: self.tokenizer,
             chain: ProcessorChain::new(self.processors),
+            logits_bias: self.logits_bias,
         })
     }
 }
@@ -188,19 +207,24 @@ impl SamplerBuilder {
 /// # Pipeline
 ///
 /// ```text
-/// logits
-/// → apply_suffix_repeat_penalty + apply_freq_pres_rep (repetition_penalty)
-/// → ProcessorChain (processor)
-/// → apply_logits_bias (processor)
-/// → apply_temperature (temperature)
-/// → apply_top_k (top_k)
-/// → apply_top_p (top_p)
-/// → apply_min_p (min_p)
-/// → normalize
-/// → sample_from_filtered / argmax (random)
-/// → grammar check / resample (grammar)
-/// → build_logprobs (random)
+/// logits (raw, Tensor)
+/// → apply_suffix_repeat_penalty (repetition_penalty)   [O(1) incremental index]
+/// → apply_freq_pres_rep         (repetition_penalty)
+/// → ProcessorChain              (processor)            [custom transforms]
+/// → apply_logits_bias           (processor)            [wired from SamplingParams]
+/// → apply_temperature + softmax (temperature)
+/// → apply_top_k                 (top_k)                [partial sort O(n)+O(k log k)]
+/// → apply_top_p                 (top_p)                [nucleus, uses post-top-k order]
+/// → rebuild idx_probs                                  [max_p for min-p is post-top-p]
+/// → apply_min_p                 (min_p)                [threshold relative to post-top-p max]
+/// → sample_from_filtered / argmax (random)             [WeightedIndex on k tokens only]
+/// → grammar check / resample    (grammar)              [GrammarMask trait, decoupled]
+/// → build_logprobs              (random)               [ln, OpenAI-compatible]
 /// ```
+///
+/// # Thread safety
+/// `Sampler` is `!Sync` because `suffix_repeat_index` uses `RefCell`.
+/// Use one `Sampler` per sequence; clone for each new sequence.
 #[derive(Clone)]
 pub struct Sampler {
     temperature: Option<f64>,
@@ -210,9 +234,14 @@ pub struct Sampler {
     top_n_logprobs: usize,
     rep_config: RepetitionPenaltyConfig,
     suffix_repeat_inner: Option<SuffixRepeatInner>,
+    /// Interior-mutable index — Sampler is intentionally !Sync.
+    /// Use one Sampler per sequence; do not share across threads.
     suffix_repeat_index: RefCell<RepeatPenaltyIndex>,
     tokenizer: Option<Arc<Tokenizer>>,
     chain: ProcessorChain,
+    /// Per-token additive logits bias, wired from SamplingParams::logits_bias.
+    /// Applied after the processor chain, before temperature scaling.
+    logits_bias: Option<std::collections::HashMap<u32, f32>>,
 }
 
 impl Sampler {
@@ -249,6 +278,11 @@ impl Sampler {
         }
         if let Some(tok) = tokenizer {
             b = b.tokenizer(tok);
+        }
+        if let Some(ref bias) = params.logits_bias
+            && !bias.is_empty()
+        {
+            b = b.logits_bias(bias.clone());
         }
         b.build(initial_context)
     }
@@ -290,11 +324,27 @@ impl Sampler {
         &self,
         probs: &mut [f32],
     ) -> Vec<(u32, f32)> {
-        let idx_probs = apply_top_k(probs, self.top_k);
-        apply_top_p(probs, &idx_probs, self.top_p);
-        apply_min_p(probs, &idx_probs, self.min_p);
-        // Rebuild idx_probs after top_p / min_p may add zero.
-        idx_probs
+        // Step 1: top-k — zero out tokens outside top-k, return sorted idx_probs.
+        let idx_probs_after_topk = apply_top_k(probs, self.top_k);
+
+        // Step 2: top-p — zero out tail tokens in probs[] using top-k order.
+        apply_top_p(probs, &idx_probs_after_topk, self.top_p);
+
+        // Step 3: rebuild idx_probs to reflect what top-p actually kept,
+        // so min_p computes max_p from the *post-top-p* distribution, not pre-top-p.
+        // Without this, if top-p zeroed out the highest-prob token (edge case),
+        // min_p threshold would be anchored to a token that's no longer in the nucleus.
+        let idx_probs_after_topp: Vec<(u32, f32)> = idx_probs_after_topk
+            .iter()
+            .filter(|(idx, _)| probs[*idx as usize] > 0.0)
+            .map(|&(idx, _)| (idx, probs[idx as usize]))
+            .collect();
+
+        // Step 4: min-p — uses post-top-p idx_probs, so max_p is accurate.
+        apply_min_p(probs, &idx_probs_after_topp, self.min_p);
+
+        // Step 5: collect final survivors.
+        idx_probs_after_topp
             .into_iter()
             .filter(|(idx, _)| probs[*idx as usize] > 0.0)
             .map(|(idx, _)| (idx, probs[idx as usize]))
@@ -323,8 +373,12 @@ impl Sampler {
         // 2. Custom processors
         let logits = self.chain.apply(logits, context)?;
 
-        // 3. Logits bias (from params — pass it separately if needed)
-        // See apply_logits_bias in processor module
+        // 3. Logits bias — applied after processor chain, before temperature.
+        let logits = if let Some(ref bias) = self.logits_bias {
+            processor::apply_logits_bias(&logits, bias, &device)?
+        } else {
+            logits
+        };
 
         // 4. Temperature + softmax → probs
         let (mut probs, is_argmax) = self.probs_from_logits(logits.clone())?;
@@ -359,12 +413,28 @@ impl Sampler {
         {
             GrammarCheck::Allowed => (token, prob),
             GrammarCheck::Disallowed(bias) => {
-                // Resample with grammar bias
+                // Resample with grammar bias.
+                // `logits` here is the tensor after penalties + processor chain + logits_bias,
+                // but *before* temperature — exactly the right point to add the grammar mask.
+                // filter_probs runs fresh on the biased distribution, which may admit tokens
+                // outside the original top-k; this is intentional — the grammar overrides
+                // sampling constraints to ensure a valid token is always returned.
                 let biased = grammar::apply_grammar_bias(&logits, &bias)?;
-                let (mut biased_probs, _) = self.probs_from_logits(biased)?;
-                let biased_filtered = self.filter_probs(&mut biased_probs);
+                let (mut biased_probs, biased_is_argmax) = self.probs_from_logits(biased)?;
+                let biased_filtered = if biased_is_argmax {
+                    biased_probs
+                        .iter()
+                        .enumerate()
+                        .find(|&(_, p)| *p > 0.0)
+                        .map(|(i, &p)| vec![(i as u32, p)])
+                        .unwrap_or_default()
+                } else {
+                    self.filter_probs(&mut biased_probs)
+                };
                 if biased_filtered.is_empty() {
-                    (token, prob) // Grammar fails to satisfy — fallback
+                    (token, prob) // Grammar cannot be satisfied — fall back to original token
+                } else if biased_is_argmax {
+                    biased_filtered[0]
                 } else {
                     sample_from_filtered(&biased_filtered, rng)?
                 }
@@ -404,10 +474,24 @@ impl Sampler {
         let logits = Tensor::from_vec(logits_vec, logits.shape().dims1()?, &device)?;
         let logits = self.chain.apply(logits, context)?;
 
+        // Apply logits bias before temperature (same order as sample()).
+        let logits = if let Some(ref bias) = self.logits_bias {
+            processor::apply_logits_bias(&logits, bias, &device)?
+        } else {
+            logits
+        };
+
         let (mut probs, _) = self.probs_from_logits(logits)?;
-        let idx_probs = apply_top_k(&mut probs, self.top_k);
-        apply_top_p(&mut probs, &idx_probs, self.top_p);
-        apply_min_p(&mut probs, &idx_probs, self.min_p);
+        // Use the same corrected filter order as filter_probs():
+        // top-k → top-p → rebuild idx_probs → min-p.
+        let idx_probs_k = apply_top_k(&mut probs, self.top_k);
+        apply_top_p(&mut probs, &idx_probs_k, self.top_p);
+        let idx_probs_p: Vec<(u32, f32)> = idx_probs_k
+            .iter()
+            .filter(|(idx, _)| probs[*idx as usize] > 0.0)
+            .map(|&(idx, _)| (idx, probs[idx as usize]))
+            .collect();
+        apply_min_p(&mut probs, &idx_probs_p, self.min_p);
         normalize(&mut probs)?;
         Ok(probs)
     }
@@ -417,6 +501,7 @@ impl Sampler {
 mod tests {
     use super::*;
     use candle_core::{Device, Tensor};
+    use std::collections::HashMap;
 
     fn make_sampler_argmax() -> Sampler {
         Sampler::builder().build(&[0u32]).unwrap()
@@ -503,5 +588,105 @@ mod tests {
             ..SamplingParams::neutral()
         };
         assert!(params.suffix_repeat.is_some());
+    }
+
+    // Setup: 4 tokens with probs [0.6, 0.25, 0.1, 0.05], top_p=0.85.
+    // After top-p: cumsum reaches 0.6+0.25=0.85 → token 2 (0.1) is zeroed out.
+    // min_p=0.15 with max_p=0.6 → threshold=0.09.
+    //   Old code: max_p from pre-top-p idx_probs = 0.6, threshold=0.09 → keeps token 2 (0.1 > 0.09)
+    //   New code: max_p from post-top-p = 0.6 (same here, but idx_probs[2] is already zero)
+    //             → token 2 correctly absent from filtered list.
+    // This test verifies token 2 is NOT in the final filtered set.
+    #[test]
+    fn test_filter_probs_min_p_uses_post_topp_distribution() {
+        let s = Sampler::builder()
+            .temperature(1.0)
+            .unwrap()
+            .top_k(0)   // no top-k limit
+            .top_p(0.85)
+            .unwrap()
+            .min_p(0.15)
+            .unwrap()
+            .build(&[0u32])
+            .unwrap();
+
+        // Provide logits that produce probs ≈ [0.6, 0.25, 0.1, 0.05] after softmax.
+        // Use a high-temperature trick: logits proportional to desired probs (unnormalized).
+        // ln(0.6)≈-0.51, ln(0.25)≈-1.39, ln(0.1)≈-2.30, ln(0.05)≈-2.996 — but easier
+        // to just use logits=[2.77, 1.61, 0.41, -0.30] which softmax to ≈above.
+        let logits = Tensor::from_vec(vec![2.77f32, 1.61, 0.41, -0.30], 4, &Device::Cpu).unwrap();
+        let rng = RngStrategy::ThreadLocal;
+        // Run 100 times — token 2 and token 3 must never be selected.
+        for _ in 0..100 {
+            let lp = s
+                .sample(logits.clone(), &[0u32], false, &rng, &mut NoGrammar)
+                .unwrap();
+            assert!(
+                lp.token == 0 || lp.token == 1,
+                "token {} should have been filtered out",
+                lp.token
+            );
+        }
+    }
+
+    // Token 0 has the highest logit (argmax), but we apply bias=-100 to it.
+    // Result: token 1 should win.
+    #[test]
+    fn test_logits_bias_suppresses_token() {
+        let mut bias = HashMap::new();
+        bias.insert(0u32, -100.0f32);
+
+        let s = Sampler::builder()
+            .logits_bias(bias)
+            .build(&[0u32])
+            .unwrap();
+
+        let logits = Tensor::from_vec(vec![10.0f32, 1.0, 0.5], 3, &Device::Cpu).unwrap();
+        let rng = RngStrategy::ThreadLocal;
+        let lp = s
+            .sample(logits, &[0u32], false, &rng, &mut NoGrammar)
+            .unwrap();
+        assert_eq!(
+            lp.token, 1,
+            "token 0 should be suppressed by logits_bias=-100"
+        );
+    }
+
+    // logits_bias from SamplingParams roundtrip
+    #[test]
+    fn test_logits_bias_from_params() {
+        let mut bias = HashMap::new();
+        bias.insert(2u32, -100.0f32);
+        let params = SamplingParams {
+            logits_bias: Some(bias),
+            ..SamplingParams::neutral()
+        };
+        let sampler = Sampler::from_params(&params, None, &[0u32]).unwrap();
+        // Bias is wired: logits_bias field should be Some
+        assert!(sampler.logits_bias.is_some());
+        assert_eq!(
+            sampler.logits_bias.as_ref().unwrap().get(&2u32),
+            Some(&-100.0f32)
+        );
+    }
+
+    // grammar resample respects argmax path
+    #[test]
+    fn test_grammar_resample_argmax_path() {
+        let s = make_sampler_argmax();
+        // Highest logit = token 2, but only token 0 allowed.
+        let logits = Tensor::from_vec(vec![1.0f32, 0.5, 10.0], 3, &Device::Cpu).unwrap();
+        let rng = RngStrategy::ThreadLocal;
+        let mut grammar = AllowListGrammar {
+            allowed: [0u32].into_iter().collect(),
+            stopped: false,
+        };
+        // Run multiple times to confirm determinism.
+        for _ in 0..5 {
+            let lp = s
+                .sample(logits.clone(), &[0u32], false, &rng, &mut grammar)
+                .unwrap();
+            assert_eq!(lp.token, 0);
+        }
     }
 }

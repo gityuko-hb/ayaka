@@ -162,6 +162,11 @@ pub fn apply_suffix_repeat_penalty(
         let excess = (info.len - params.min_match_len) as f32;
         let base_penalty = params.strength * params.growth_rate.powf(excess);
 
+        // position_aware recency weighting:
+        // nearest_pos is the index of the most recent occurrence of this pattern.
+        // Higher index = closer to current position = more recent = heavier penalty.
+        // recency ∈ [0, 1): 0 = appeared only at context start, →1 = appeared just before now.
+        // multiplier ∈ [1, 2): penalty scales linearly with recency.
         let penalty = if params.position_aware {
             let recency = info.nearest_pos as f32 / n as f32;
             base_penalty * (1.0 + recency)
@@ -417,10 +422,9 @@ mod suffix_repeat_tests {
     #[test]
     fn test_position_aware_recency() {
         // ctx: [0,1,2,0,1,2,0,1,2] n=9, last=2, matches at i=2,5
-        // i=5: next=0, limit=50.min(5)=5, match_len extends to 5
-        // max match_len=5, nearest_pos=5
-        // Without position_aware: excess=3, penalty=1.0*1.75^3=5.359
-        // With position_aware: recency=5/9=0.556, penalty=5.359*1.556=8.337
+        // i=5: next_token=0, match extends back → match_len=5, nearest_pos=5
+        // Without position_aware: excess=max_match_len-min_match_len=5-2=3, penalty=1.75^3≈5.359
+        // With position_aware: recency=5/9≈0.556, penalty≈5.359*(1.556)≈8.337
         let ctx = vec![0u32, 1, 2, 0, 1, 2, 0, 1, 2];
         let mut logits_no = vec![10.0f32; 3];
         let mut logits_yes = vec![10.0f32; 3];
@@ -443,7 +447,45 @@ mod suffix_repeat_tests {
         let penalty_yes = 10.0 - logits_yes[0];
         assert!(
             penalty_yes > penalty_no,
-            "position_aware penalty ({penalty_yes}) should exceed non-aware ({penalty_no})"
+            "position_aware penalty ({penalty_yes:.4}) should exceed non-aware ({penalty_no:.4})"
+        );
+        // Approximate magnitude checks
+        assert!(
+            (penalty_no - 5.359).abs() < 0.01,
+            "expected ≈5.359, got {penalty_no:.4}"
+        );
+        // recency=5/9=0.5556 → multiplier=1.5556 → 5.359*1.5556≈8.338
+        assert!(
+            (penalty_yes - 8.338).abs() < 0.05,
+            "expected ≈8.338, got {penalty_yes:.4}"
+        );
+    }
+
+    // Verify direction: token appearing late (near current pos) gets heavier penalty
+    // than an identical pattern appearing only at the start of context.
+    #[test]
+    fn test_position_aware_late_heavier_than_early() {
+        // ctx_early: A,B,A,B,A,C,C,C,C — A-B at positions 0,2; nearest_pos=2; n=9
+        // ctx_late:  C,C,C,C,A,B,A,B,A — A-B at positions 4,6; nearest_pos=6; n=9
+        // Both end with A (token 0). Next candidate is B (token 1).
+        // position_aware penalty on B should be larger for ctx_late.
+        fn penalty_on_b(ctx: &[u32]) -> f32 {
+            let mut logits = vec![10.0f32; 3]; // 0=A, 1=B, 2=C
+            let params = SuffixRepeatInner {
+                position_aware: true,
+                ..make_params()
+            };
+            let mut idx = RepeatPenaltyIndex::new(ctx, 100);
+            apply_suffix_repeat_penalty(&mut logits, ctx, &params, &mut idx).unwrap();
+            10.0 - logits[1]
+        }
+        let ctx_early = [0u32, 1, 0, 1, 0, 2, 2, 2, 2];
+        let ctx_late = [2u32, 2, 2, 2, 0, 1, 0, 1, 0];
+        let p_early = penalty_on_b(&ctx_early);
+        let p_late = penalty_on_b(&ctx_late);
+        assert!(
+            p_late > p_early,
+            "late occurrence ({p_late:.4}) should be penalised more than early ({p_early:.4})"
         );
     }
 }

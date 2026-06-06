@@ -15,6 +15,8 @@ use tiktoken_rs::CoreBPE;
 /// precedence over this constant.
 const TEKKEN_DEFAULT_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+type TekkenVocab = (HashMap<Vec<u8>, u32>, HashMap<u32, Vec<u8>>);
+
 pub struct TekkenBackend {
     /// CoreBPE for correct rank-based BPE encoding.
     ///
@@ -133,13 +135,11 @@ impl TekkenBackend {
             self.bpe
                 .encode_with_special_tokens(text)
                 .into_iter()
-                .map(|id| id as u32)
                 .collect()
         } else {
             self.bpe
                 .encode_ordinary(text)
                 .into_iter()
-                .map(|id| id as u32)
                 .collect()
         };
         Ok(ids)
@@ -212,7 +212,7 @@ impl TekkenBackend {
     /// `decoder` maps rank → bytes.
     fn collect_vocab(
         json: &Value
-    ) -> TokenizerResult<(HashMap<Vec<u8>, u32>, HashMap<u32, Vec<u8>>)> {
+    ) -> TokenizerResult<TekkenVocab> {
         let mut encoder = HashMap::new();
         let mut decoder = HashMap::new();
 
