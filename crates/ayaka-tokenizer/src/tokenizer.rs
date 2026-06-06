@@ -108,8 +108,7 @@ impl AyakaTokenizer {
         &self,
         text: &str,
     ) -> TokenizerResult<usize> {
-        self.encode(text, false)
-            .map(|encoding| encoding.ids.len())
+        self.encode(text, false).map(|enc| enc.ids.len())
     }
 
     pub fn decode(
@@ -139,6 +138,12 @@ impl AyakaTokenizer {
         self.encode(&prompt, false)
     }
 
+    /// Create a per-request streaming detokenizer.
+    ///
+    /// The `strip_leading_space` flag is forwarded from the backend so that
+    /// SentencePiece models correctly strip the `▁`-derived leading space from
+    /// the first generated token (P0 fix). Callers do not need to specify this —
+    /// it is determined automatically from the loaded tokenizer format.
     pub fn create_detokenizer(
         &self,
         skip_special_tokens: bool,
@@ -147,6 +152,7 @@ impl AyakaTokenizer {
             Arc::clone(&self.backend),
             skip_special_tokens,
             self.metadata.special_token_ids.clone(),
+            self.backend.is_space_prefix_tokenizer(),
         )
     }
 

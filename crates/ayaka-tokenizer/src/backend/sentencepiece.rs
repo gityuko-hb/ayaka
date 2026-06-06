@@ -1,16 +1,39 @@
 use crate::error::{TokenizerError, TokenizerResult};
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Debug)]
 pub struct SentencePieceBackend {
     processor: sentencepiece::SentencePieceProcessor,
+    /// Pre-built set of special token IDs (BOS, EOS, PAD, UNK) for O(1)
+    /// lookup in the per-token generation hot path.
+    ///
+    /// The original implementation called `special_token_ids()` — which
+    /// `collect()`s a new `Vec<u32>` — on every single token. This pre-builds
+    /// the set once at load time.
+    special_ids: HashSet<u32>,
 }
 
 impl SentencePieceBackend {
     pub fn from_path(root: &Path) -> TokenizerResult<Self> {
         let processor = sentencepiece::SentencePieceProcessor::open(root.join("tokenizer.model"))
             .map_err(|err| TokenizerError::BackendError(err.to_string()))?;
-        Ok(Self { processor })
+
+        // P1 fix: build HashSet once at load time.
+        let special_ids = [
+            processor.bos_id(),
+            processor.eos_id(),
+            processor.pad_id(),
+            Some(processor.unk_id()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        Ok(Self {
+            processor,
+            special_ids,
+        })
     }
 
     pub fn encode(
@@ -64,6 +87,14 @@ impl SentencePieceBackend {
         self.processor.piece_to_id(token).ok().flatten()
     }
 
+    /// Returns the decoded text for a single token ID.
+    ///
+    /// NOTE: calls `decode_piece_ids` which runs the full SentencePiece
+    /// decoding pipeline. The return value is the decoded text (e.g. `" Hello"`
+    /// for the `▁Hello` piece), not the raw piece string (`"▁Hello"`). This
+    /// diverges from the HuggingFace convention where `id_to_token` returns the
+    /// raw vocabulary token. The `sentencepiece` crate does not expose an
+    /// `id_to_piece` method, so this is the closest available approximation.
     pub fn id_to_token(
         &self,
         id: u32,
@@ -82,22 +113,17 @@ impl SentencePieceBackend {
         self.decode(&[id], false).map(String::into_bytes)
     }
 
+    /// O(1) check against the pre-built special-ID set.
+    ///
+    /// Safe to call in the per-token generation hot path.
     pub fn is_special_token_id(
         &self,
         id: u32,
     ) -> bool {
-        self.special_token_ids().contains(&id)
+        self.special_ids.contains(&id)
     }
 
     pub fn special_token_ids(&self) -> Vec<u32> {
-        [
-            self.processor.bos_id(),
-            self.processor.eos_id(),
-            self.processor.pad_id(),
-            Some(self.processor.unk_id()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
+        self.special_ids.iter().copied().collect()
     }
 }

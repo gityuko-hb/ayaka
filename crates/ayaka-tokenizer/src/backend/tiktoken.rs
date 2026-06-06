@@ -3,19 +3,32 @@ use crate::error::{TokenizerError, TokenizerResult};
 use base64::Engine;
 use rustc_hash::FxHashMap;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use tiktoken_rs::{CoreBPE, Rank};
 
+/// GPT-2 pre-tokenization regex.
 const GPT2_PATTERN: &str =
     r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
+
+/// Llama 3 / cl100k_base pre-tokenization regex.
+///
+/// Used by Llama 3.x, GPT-4, and other models that ship tiktoken-format
+/// vocabularies. Differs from GPT-2 in numeric splitting and case-insensitive
+/// contraction handling — using GPT2_PATTERN for these models produces
+/// tokenizations that diverge from the reference implementation.
+const LLAMA3_PATTERN: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 pub struct TiktokenBackend {
     bpe: CoreBPE,
     decoder: HashMap<u32, Vec<u8>>,
     encoder: HashMap<Vec<u8>, u32>,
     special_tokens: HashMap<String, u32>,
+    /// Pre-built set for O(1) `is_special_token_id` checks in the hot path.
+    special_ids: HashSet<u32>,
+    /// Pre-built reverse map for O(1) `token_bytes` on special tokens.
+    special_decoder: HashMap<u32, Vec<u8>>,
 }
 
 impl fmt::Debug for TiktokenBackend {
@@ -65,14 +78,30 @@ impl TiktokenBackend {
             .map(|(token, id)| (token.clone(), *id))
             .collect();
 
-        let bpe = CoreBPE::new(encoder.clone(), special_encoder, GPT2_PATTERN)
+        // Load pattern from tokenizer_config.json instead of hardcoding
+        // GPT-2 pattern. Different tiktoken models use different regex patterns,
+        // and using the wrong one produces tokenizations that diverge from the
+        // HuggingFace reference implementation.
+        let pattern = load_pattern(root);
+
+        let bpe = CoreBPE::new(encoder.clone(), special_encoder, &pattern)
             .map_err(|err| TokenizerError::BackendError(err.to_string()))?;
+
+        // Pre-build O(1) lookup structures so the generation hot path
+        // never does an O(n) linear scan over special_tokens.
+        let special_ids: HashSet<u32> = special_tokens.values().copied().collect();
+        let special_decoder: HashMap<u32, Vec<u8>> = special_tokens
+            .iter()
+            .map(|(s, &id)| (id, s.as_bytes().to_vec()))
+            .collect();
 
         Ok(Self {
             bpe,
             decoder,
             encoder: encoder.into_iter().collect(),
             special_tokens,
+            special_ids,
+            special_decoder,
         })
     }
 
@@ -96,7 +125,7 @@ impl TiktokenBackend {
         let filtered: Vec<u32> = if skip_special_tokens {
             ids.iter()
                 .copied()
-                .filter(|id| !self.is_special_token_id(*id))
+                .filter(|id| !self.special_ids.contains(id)) // P1: O(1)
                 .collect()
         } else {
             ids.to_vec()
@@ -136,13 +165,7 @@ impl TiktokenBackend {
         self.decoder
             .get(&id)
             .cloned()
-            .or_else(|| {
-                self.special_tokens
-                    .iter()
-                    .find_map(|(token, token_id)| {
-                        (*token_id == id).then(|| token.as_bytes().to_vec())
-                    })
-            })
+            .or_else(|| self.special_decoder.get(&id).cloned()) // P1: O(1)
             .ok_or(TokenizerError::OutOfVocab(id))
     }
 
@@ -150,13 +173,38 @@ impl TiktokenBackend {
         &self,
         id: u32,
     ) -> bool {
-        self.special_tokens
-            .values()
-            .any(|token_id| *token_id == id)
+        self.special_ids.contains(&id) // P1: O(1)
     }
 
     pub fn special_token_ids(&self) -> Vec<u32> {
-        self.special_tokens.values().copied().collect()
+        self.special_ids.iter().copied().collect()
+    }
+}
+
+/// Load the BPE pre-tokenization regex from `tokenizer_config.json`.
+///
+/// Priority:
+/// 1. Explicit `"pattern"` field in the config.
+/// 2. Inferred from `"tokenizer_class"`:
+///    - any class containing `"Llama"` → Llama 3 / cl100k_base pattern.
+/// 3. GPT-2 pattern as a safe default.
+fn load_pattern(root: &Path) -> String {
+    let Ok(config) = read_json(&root.join("tokenizer_config.json")) else {
+        return GPT2_PATTERN.to_owned();
+    };
+
+    // Explicit pattern takes precedence.
+    if let Some(pattern) = config.get("pattern").and_then(Value::as_str) {
+        return pattern.to_owned();
+    }
+
+    // Fall back to inference from tokenizer class name.
+    match config
+        .get("tokenizer_class")
+        .and_then(Value::as_str)
+    {
+        Some(class) if class.contains("Llama") => LLAMA3_PATTERN.to_owned(),
+        _ => GPT2_PATTERN.to_owned(),
     }
 }
 
