@@ -20,6 +20,7 @@ indicatif.workspace = true
 libc.workspace = true
 opentelemetry.workspace = true
 rayon.workspace = true
+serde.workspace = true
 sysinfo.workspace = true
 tqdm.workspace = true
 tracing.workspace = true

@@ -37,4 +37,7 @@ pub enum EngineError {
 
     #[error("Unsupported Device: {0}")]
     UnsupportedDevice(String),
+
+    #[error("ABI version mismatch: core={core:#010x} native={native:#010x}")]
+    AbiMismatch { core: u32, native: u32 },
 }

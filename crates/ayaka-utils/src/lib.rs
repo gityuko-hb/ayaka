@@ -6,3 +6,4 @@ pub mod memory_usage;
 pub mod progress_bar;
 pub mod sync;
 pub mod system;
+pub mod time;

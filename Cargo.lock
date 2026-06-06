@@ -201,6 +201,7 @@ dependencies = [
  "libc",
  "opentelemetry",
  "rayon",
+ "serde",
  "sysinfo",
  "tqdm",
  "tracing",

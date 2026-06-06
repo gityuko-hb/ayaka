@@ -1,3 +1,9 @@
+pub mod device;
+pub mod dtype;
+pub mod enums;
 pub mod error;
 pub mod flags;
 pub mod id;
+pub mod layout;
+pub mod shape;
+pub mod tensor_meta;
