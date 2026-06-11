@@ -8,4 +8,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = []
+cuda = ["dep:ayaka-kernel-api", "ayaka-kernel-api/cuda"]
+
 [dependencies]
+ayaka-core = { path = "../ayaka-core" }
+ayaka-kernel-api = { path = "../ayaka-kernel-api", optional = true }
+thiserror.workspace = true
+tracing.workspace = true
