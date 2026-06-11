@@ -133,6 +133,12 @@ version = "0.1.0"
 [[package]]
 name = "ayaka-memory"
 version = "0.1.0"
+dependencies = [
+ "ayaka-core",
+ "ayaka-kernel-api",
+ "thiserror 2.0.18",
+ "tracing",
+]
 
 [[package]]
 name = "ayaka-pipeline"
