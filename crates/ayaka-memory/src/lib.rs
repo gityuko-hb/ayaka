@@ -12,3 +12,10 @@ pub use stats::{
     global_ledger,
 };
 pub use stream::StreamHandle;
+
+#[cfg(feature = "cuda")]
+pub mod copy;
+#[cfg(feature = "cuda")]
+pub mod device_buffer;
+#[cfg(feature = "cuda")]
+pub use device_buffer::{DeviceAllocSource, DeviceBuffer};
