@@ -46,13 +46,24 @@ impl MemoryLedger {
         }
     }
 
-    pub fn register(&self, purpose: MemoryPurpose, bytes: usize) {
-        self.counter(purpose).fetch_add(bytes, Ordering::Relaxed);
+    pub fn register(
+        &self,
+        purpose: MemoryPurpose,
+        bytes: usize,
+    ) {
+        self.counter(purpose)
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
-    pub fn deregister(&self, purpose: MemoryPurpose, bytes: usize) -> Result<()> {
+    pub fn deregister(
+        &self,
+        purpose: MemoryPurpose,
+        bytes: usize,
+    ) -> Result<()> {
         self.counter(purpose)
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| old.checked_sub(bytes))
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                old.checked_sub(bytes)
+            })
             .map(|_| ())
             .map_err(|_| {
                 MemoryError::invalid(format!(
@@ -71,7 +82,10 @@ impl MemoryLedger {
         }
     }
 
-    fn counter(&self, purpose: MemoryPurpose) -> &AtomicUsize {
+    fn counter(
+        &self,
+        purpose: MemoryPurpose,
+    ) -> &AtomicUsize {
         match purpose {
             MemoryPurpose::Weights => &self.weights,
             MemoryPurpose::KvSlab => &self.kv_slab,
@@ -109,9 +123,12 @@ pub struct MemoryStats {
 impl MemoryStats {
     pub fn untracked_used_bytes(self) -> Option<usize> {
         let driver = self.driver?;
-        Some(driver.total_bytes.saturating_sub(driver.free_bytes).saturating_sub(
-            self.ledger.total_tracked(),
-        ))
+        Some(
+            driver
+                .total_bytes
+                .saturating_sub(driver.free_bytes)
+                .saturating_sub(self.ledger.total_tracked()),
+        )
     }
 }
 
@@ -156,7 +173,9 @@ mod tests {
         let ledger = MemoryLedger::new();
         ledger.register(MemoryPurpose::KvSlab, 1024);
         ledger.register(MemoryPurpose::Workspace, 256);
-        ledger.deregister(MemoryPurpose::KvSlab, 24).unwrap();
+        ledger
+            .deregister(MemoryPurpose::KvSlab, 24)
+            .unwrap();
         let snapshot = ledger.snapshot();
         assert_eq!(snapshot.kv_slab, 1000);
         assert_eq!(snapshot.workspace, 256);

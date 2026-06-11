@@ -70,12 +70,19 @@ pub struct PinnedRing {
 }
 
 impl PinnedRing {
-    pub fn new(slot_count: usize, slot_bytes: usize) -> Result<Self> {
+    pub fn new(
+        slot_count: usize,
+        slot_bytes: usize,
+    ) -> Result<Self> {
         if slot_count == 0 {
-            return Err(MemoryError::invalid("pinned ring slot_count must be non-zero"));
+            return Err(MemoryError::invalid(
+                "pinned ring slot_count must be non-zero",
+            ));
         }
         if slot_bytes == 0 {
-            return Err(MemoryError::invalid("pinned ring slot_bytes must be non-zero"));
+            return Err(MemoryError::invalid(
+                "pinned ring slot_bytes must be non-zero",
+            ));
         }
         let total = slot_count
             .checked_mul(slot_bytes)
@@ -87,7 +94,10 @@ impl PinnedRing {
         })
     }
 
-    pub fn acquire(&mut self, step: usize) -> PinnedSlot<'_> {
+    pub fn acquire(
+        &mut self,
+        step: usize,
+    ) -> PinnedSlot<'_> {
         let index = step % self.slot_count;
         let start = index * self.slot_bytes;
         let end = start + self.slot_bytes;
@@ -114,7 +124,11 @@ impl<'a> PinnedSlot<'a> {
         self.bytes.len().saturating_sub(self.cursor)
     }
 
-    pub fn bump_write(&mut self, data: &[u8], align: usize) -> Result<&mut [u8]> {
+    pub fn bump_write(
+        &mut self,
+        data: &[u8],
+        align: usize,
+    ) -> Result<&mut [u8]> {
         let start = align_up(self.cursor, align)?;
         let end = start
             .checked_add(data.len())
@@ -132,7 +146,10 @@ impl<'a> PinnedSlot<'a> {
     }
 }
 
-fn align_up(value: usize, align: usize) -> Result<usize> {
+fn align_up(
+    value: usize,
+    align: usize,
+) -> Result<usize> {
     if align == 0 || !align.is_power_of_two() {
         return Err(MemoryError::invalid(format!(
             "alignment must be a non-zero power of two, got {align}"
@@ -151,7 +168,9 @@ mod tests {
     #[test]
     fn pinned_buffer_is_host_accessible() {
         let mut buffer = PinnedBuffer::new(4).unwrap();
-        buffer.as_mut_slice().copy_from_slice(&[1, 2, 3, 4]);
+        buffer
+            .as_mut_slice()
+            .copy_from_slice(&[1, 2, 3, 4]);
         assert_eq!(buffer.as_slice(), &[1, 2, 3, 4]);
     }
 

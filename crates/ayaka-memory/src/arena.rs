@@ -26,7 +26,11 @@ impl DeviceArena {
         self.cursor = 0;
     }
 
-    pub fn alloc(&mut self, bytes: usize, align: usize) -> Result<DeviceSpan> {
+    pub fn alloc(
+        &mut self,
+        bytes: usize,
+        align: usize,
+    ) -> Result<DeviceSpan> {
         if bytes == 0 {
             return Ok(DeviceSpan::new(self.base.ptr + self.cursor as u64, 0));
         }
@@ -46,7 +50,10 @@ impl DeviceArena {
     }
 }
 
-fn align_up(value: usize, align: usize) -> Result<usize> {
+fn align_up(
+    value: usize,
+    align: usize,
+) -> Result<usize> {
     if align == 0 || !align.is_power_of_two() {
         return Err(MemoryError::invalid(format!(
             "arena alignment must be a non-zero power of two, got {align}"

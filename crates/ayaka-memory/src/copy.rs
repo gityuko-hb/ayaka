@@ -7,7 +7,11 @@ use ayaka_kernel_api::mem;
 
 use crate::{DeviceSpan, MemoryError, Result, StreamHandle};
 
-pub fn h2d_async(dst: DeviceSpan, src: &[u8], stream: StreamHandle) -> Result<()> {
+pub fn h2d_async(
+    dst: DeviceSpan,
+    src: &[u8],
+    stream: StreamHandle,
+) -> Result<()> {
     if src.len() > dst.len {
         return Err(MemoryError::invalid(format!(
             "h2d copy source length {} exceeds destination length {}",
@@ -27,7 +31,11 @@ pub fn h2d_async(dst: DeviceSpan, src: &[u8], stream: StreamHandle) -> Result<()
     Ok(())
 }
 
-pub fn d2h_async(dst: &mut [u8], src: DeviceSpan, stream: StreamHandle) -> Result<()> {
+pub fn d2h_async(
+    dst: &mut [u8],
+    src: DeviceSpan,
+    stream: StreamHandle,
+) -> Result<()> {
     if dst.len() > src.len {
         return Err(MemoryError::invalid(format!(
             "d2h copy destination length {} exceeds source length {}",
@@ -47,7 +55,12 @@ pub fn d2h_async(dst: &mut [u8], src: DeviceSpan, stream: StreamHandle) -> Resul
     Ok(())
 }
 
-pub fn d2d_async(dst: DeviceSpan, src: DeviceSpan, bytes: usize, stream: StreamHandle) -> Result<()> {
+pub fn d2d_async(
+    dst: DeviceSpan,
+    src: DeviceSpan,
+    bytes: usize,
+    stream: StreamHandle,
+) -> Result<()> {
     if bytes > dst.len || bytes > src.len {
         return Err(MemoryError::invalid(format!(
             "d2d copy length {bytes} exceeds dst {} or src {}",
@@ -66,7 +79,11 @@ pub fn d2d_async(dst: DeviceSpan, src: DeviceSpan, bytes: usize, stream: StreamH
     Ok(())
 }
 
-pub fn memset_async(dst: DeviceSpan, value: u8, stream: StreamHandle) -> Result<()> {
+pub fn memset_async(
+    dst: DeviceSpan,
+    value: u8,
+    stream: StreamHandle,
+) -> Result<()> {
     unsafe {
         mem::memset_async(
             dst.ptr as usize as *mut c_void,

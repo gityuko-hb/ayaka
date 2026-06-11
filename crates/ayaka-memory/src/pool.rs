@@ -23,7 +23,11 @@ struct PoolClass {
 }
 
 impl SizeClassPool {
-    pub fn new(base: DeviceSpan, min_class: usize, max_class: usize) -> Result<Self> {
+    pub fn new(
+        base: DeviceSpan,
+        min_class: usize,
+        max_class: usize,
+    ) -> Result<Self> {
         if min_class == 0 || !min_class.is_power_of_two() {
             return Err(MemoryError::invalid(format!(
                 "min_class must be a non-zero power of two, got {min_class}"
@@ -57,9 +61,14 @@ impl SizeClassPool {
         })
     }
 
-    pub fn alloc(&self, bytes: usize) -> Result<PoolBlock> {
+    pub fn alloc(
+        &self,
+        bytes: usize,
+    ) -> Result<PoolBlock> {
         if bytes == 0 {
-            return Err(MemoryError::invalid("pool allocation bytes must be non-zero"));
+            return Err(MemoryError::invalid(
+                "pool allocation bytes must be non-zero",
+            ));
         }
         let class_index = self.class_index(bytes)?;
         let class = &self.classes[class_index];
@@ -104,11 +113,16 @@ impl SizeClassPool {
         })
     }
 
-    pub fn free(&self, block: PoolBlock) -> Result<()> {
+    pub fn free(
+        &self,
+        block: PoolBlock,
+    ) -> Result<()> {
         let class = self
             .classes
             .get(block.class_index)
-            .ok_or_else(|| MemoryError::invalid(format!("pool class {} is invalid", block.class_index)))?;
+            .ok_or_else(|| {
+                MemoryError::invalid(format!("pool class {} is invalid", block.class_index))
+            })?;
         if class.bytes != block.class_bytes {
             return Err(MemoryError::invalid(format!(
                 "pool block class size {} does not match pool class {}",
@@ -123,7 +137,10 @@ impl SizeClassPool {
         Ok(())
     }
 
-    fn class_index(&self, bytes: usize) -> Result<usize> {
+    fn class_index(
+        &self,
+        bytes: usize,
+    ) -> Result<usize> {
         self.classes
             .iter()
             .position(|class| bytes <= class.bytes)
@@ -136,7 +153,10 @@ impl SizeClassPool {
     }
 }
 
-fn align_up(value: usize, align: usize) -> Result<usize> {
+fn align_up(
+    value: usize,
+    align: usize,
+) -> Result<usize> {
     value
         .checked_add(align - 1)
         .map(|v| v & !(align - 1))
@@ -170,7 +190,10 @@ mod tests {
         let _a = pool.alloc(400).unwrap();
         assert!(matches!(
             pool.alloc(400).unwrap_err(),
-            MemoryError::PoolExhausted { class_bytes: 512, .. }
+            MemoryError::PoolExhausted {
+                class_bytes: 512,
+                ..
+            }
         ));
     }
 }

@@ -26,7 +26,11 @@ pub struct SlabAllocator {
 }
 
 impl SlabAllocator {
-    pub fn new(base: DeviceSpan, slot_bytes: usize, num_slots: usize) -> Result<Self> {
+    pub fn new(
+        base: DeviceSpan,
+        slot_bytes: usize,
+        num_slots: usize,
+    ) -> Result<Self> {
         if slot_bytes == 0 {
             return Err(MemoryError::invalid("slab slot_bytes must be non-zero"));
         }
@@ -43,7 +47,7 @@ impl SlabAllocator {
             )));
         }
 
-        let word_count = (num_slots + 63) / 64;
+        let word_count = num_slots.div_ceil(64);
         let mut words = Vec::with_capacity(word_count);
         for word_index in 0..word_count {
             let first_slot = word_index * 64;
@@ -90,18 +94,15 @@ impl SlabAllocator {
                 let bit = free_bits.trailing_zeros();
                 let mask = 1u64 << bit;
                 let next = current | mask;
-                match word.compare_exchange_weak(
-                    current,
-                    next,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
+                match word.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                {
                     Ok(_) => {
                         let slot = word_index * 64 + bit as usize;
-                        self.cursor_word.store(word_index, Ordering::Relaxed);
+                        self.cursor_word
+                            .store(word_index, Ordering::Relaxed);
                         self.free_count.fetch_sub(1, Ordering::AcqRel);
                         return Ok(SlabSlot(slot as u32));
-                    }
+                    },
                     Err(_) => continue,
                 }
             }
@@ -111,7 +112,10 @@ impl SlabAllocator {
         })
     }
 
-    pub fn free(&self, slot: SlabSlot) -> Result<()> {
+    pub fn free(
+        &self,
+        slot: SlabSlot,
+    ) -> Result<()> {
         let raw = slot.raw() as usize;
         if raw >= self.num_slots {
             return Err(MemoryError::InvalidSlot {
@@ -126,12 +130,16 @@ impl SlabAllocator {
         if previous & mask == 0 {
             return Err(MemoryError::SlotAlreadyFree { slot: slot.raw() });
         }
-        self.cursor_word.store(word_index, Ordering::Release);
+        self.cursor_word
+            .store(word_index, Ordering::Release);
         self.free_count.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
-    pub fn slot_span(&self, slot: SlabSlot) -> Result<DeviceSpan> {
+    pub fn slot_span(
+        &self,
+        slot: SlabSlot,
+    ) -> Result<DeviceSpan> {
         let raw = slot.raw() as usize;
         if raw >= self.num_slots {
             return Err(MemoryError::InvalidSlot {
@@ -184,7 +192,8 @@ mod tests {
 
     #[test]
     fn multithread_alloc_never_hands_out_same_slot_twice() {
-        let slab = Arc::new(SlabAllocator::new(DeviceSpan::new(0x1000, 64 * 128), 64, 128).unwrap());
+        let slab =
+            Arc::new(SlabAllocator::new(DeviceSpan::new(0x1000, 64 * 128), 64, 128).unwrap());
         let seen = Arc::new(Mutex::new(HashSet::new()));
         let mut handles = Vec::new();
         for _ in 0..8 {

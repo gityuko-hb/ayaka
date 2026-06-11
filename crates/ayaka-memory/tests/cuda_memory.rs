@@ -69,8 +69,8 @@ fn driver_info_and_pool_support_smoke() {
 fn budget_sequence_arithmetic_smoke() {
     let info = mem::get_info(0).unwrap();
     let block_bytes = 16 * 1024;
-    let budget = KvBudget::from_free_memory(info.free_bytes, info.total_bytes, block_bytes, 0.05)
-        .unwrap();
+    let budget =
+        KvBudget::from_free_memory(info.free_bytes, info.total_bytes, block_bytes, 0.05).unwrap();
     assert_eq!(budget.block_bytes, block_bytes);
     assert_eq!(budget.num_blocks, budget.kv_budget_bytes / block_bytes);
 }

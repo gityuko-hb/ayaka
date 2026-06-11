@@ -86,7 +86,9 @@ mod tests {
     #[test]
     fn mutable_slice_writes_through() {
         let mut buffer = HostBuffer::new(4).unwrap();
-        buffer.as_mut_slice().copy_from_slice(&[1, 2, 3, 4]);
+        buffer
+            .as_mut_slice()
+            .copy_from_slice(&[1, 2, 3, 4]);
         assert_eq!(buffer.as_slice(), &[1, 2, 3, 4]);
     }
 

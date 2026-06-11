@@ -27,11 +27,18 @@ pub struct DeviceBuffer {
 }
 
 impl DeviceBuffer {
-    pub fn reserve(device: Device, bytes: usize) -> Result<Self> {
+    pub fn reserve(
+        device: Device,
+        bytes: usize,
+    ) -> Result<Self> {
         Self::reserve_for(device, bytes, MemoryPurpose::Transient)
     }
 
-    pub fn reserve_for(device: Device, bytes: usize, purpose: MemoryPurpose) -> Result<Self> {
+    pub fn reserve_for(
+        device: Device,
+        bytes: usize,
+        purpose: MemoryPurpose,
+    ) -> Result<Self> {
         let ordinal = cuda_ordinal(device)?;
         let ptr = if bytes == 0 {
             0
@@ -48,7 +55,11 @@ impl DeviceBuffer {
         })
     }
 
-    pub fn alloc_async(device: Device, bytes: usize, stream: StreamHandle) -> Result<Self> {
+    pub fn alloc_async(
+        device: Device,
+        bytes: usize,
+        stream: StreamHandle,
+    ) -> Result<Self> {
         Self::alloc_async_for(device, bytes, stream, MemoryPurpose::Transient)
     }
 
@@ -82,7 +93,10 @@ impl DeviceBuffer {
         DeviceSpan::new(self.ptr, self.len)
     }
 
-    pub fn free_on(mut self, stream: StreamHandle) -> Result<()> {
+    pub fn free_on(
+        mut self,
+        stream: StreamHandle,
+    ) -> Result<()> {
         self.release(Some(stream))
     }
 
@@ -124,7 +138,10 @@ impl DeviceBuffer {
         })
     }
 
-    fn release(&mut self, free_stream: Option<StreamHandle>) -> Result<()> {
+    fn release(
+        &mut self,
+        free_stream: Option<StreamHandle>,
+    ) -> Result<()> {
         if self.ptr == 0 {
             return Ok(());
         }
@@ -139,7 +156,7 @@ impl DeviceBuffer {
                 unsafe {
                     mem::device_free_async(ptr, ordinal, stream.as_ffi())?;
                 }
-            }
+            },
         }
         self.ptr = 0;
         let len = self.len;
@@ -194,8 +211,8 @@ mod tests {
 
     #[test]
     fn sync_reserve_records_span_and_source() {
-        let buffer = DeviceBuffer::reserve_for(Device::cuda(0), 1024, MemoryPurpose::Transient)
-            .unwrap();
+        let buffer =
+            DeviceBuffer::reserve_for(Device::cuda(0), 1024, MemoryPurpose::Transient).unwrap();
         assert_eq!(buffer.len(), 1024);
         assert!(!buffer.span().is_empty());
         assert_eq!(buffer.source(), DeviceAllocSource::Sync);

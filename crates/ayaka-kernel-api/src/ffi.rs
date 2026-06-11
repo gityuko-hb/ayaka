@@ -109,7 +109,10 @@ unsafe extern "C" {
         device_ordinal: i32,
     ) -> AyakaStatus;
 
-    pub fn ayaka_mem_device_free(ptr: *mut c_void, device_ordinal: i32) -> AyakaStatus;
+    pub fn ayaka_mem_device_free(
+        ptr: *mut c_void,
+        device_ordinal: i32,
+    ) -> AyakaStatus;
 
     pub fn ayaka_mem_device_alloc_async(
         out: *mut *mut c_void,
@@ -124,7 +127,10 @@ unsafe extern "C" {
         stream: AyakaStream,
     ) -> AyakaStatus;
 
-    pub fn ayaka_mem_host_pinned_alloc(out: *mut *mut c_void, bytes: usize) -> AyakaStatus;
+    pub fn ayaka_mem_host_pinned_alloc(
+        out: *mut *mut c_void,
+        bytes: usize,
+    ) -> AyakaStatus;
 
     pub fn ayaka_mem_host_pinned_free(ptr: *mut c_void) -> AyakaStatus;
 
@@ -143,13 +149,22 @@ unsafe extern "C" {
         stream: AyakaStream,
     ) -> AyakaStatus;
 
-    pub fn ayaka_mem_get_info(out: *mut AyakaMemInfo, device_ordinal: i32) -> AyakaStatus;
+    pub fn ayaka_mem_get_info(
+        out: *mut AyakaMemInfo,
+        device_ordinal: i32,
+    ) -> AyakaStatus;
 
     pub fn ayaka_mem_stream_synchronize(stream: AyakaStream) -> AyakaStatus;
 
-    pub fn ayaka_mem_pool_supported(out_supported: *mut i32, device_ordinal: i32) -> AyakaStatus;
+    pub fn ayaka_mem_pool_supported(
+        out_supported: *mut i32,
+        device_ordinal: i32,
+    ) -> AyakaStatus;
 
-    pub fn ayaka_mem_pool_trim(min_bytes_to_keep: usize, device_ordinal: i32) -> AyakaStatus;
+    pub fn ayaka_mem_pool_trim(
+        min_bytes_to_keep: usize,
+        device_ordinal: i32,
+    ) -> AyakaStatus;
 }
 
 #[cfg(test)]
@@ -202,7 +217,13 @@ mod tests {
 
     #[test]
     fn test_mem_info_layout() {
-        assert_eq!(core::mem::size_of::<AyakaMemInfo>(), core::mem::size_of::<usize>() * 2);
-        assert_eq!(core::mem::align_of::<AyakaMemInfo>(), core::mem::align_of::<usize>());
+        assert_eq!(
+            core::mem::size_of::<AyakaMemInfo>(),
+            core::mem::size_of::<usize>() * 2
+        );
+        assert_eq!(
+            core::mem::align_of::<AyakaMemInfo>(),
+            core::mem::align_of::<usize>()
+        );
     }
 }

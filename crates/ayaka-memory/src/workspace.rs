@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use crate::{DeviceSpan, MemoryError, Result};
 
 #[cfg(feature = "cuda")]
-use ayaka_core::device::Device;
-#[cfg(feature = "cuda")]
 use crate::{DeviceBuffer, MemoryPurpose};
+#[cfg(feature = "cuda")]
+use ayaka_core::device::Device;
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -42,7 +42,12 @@ impl WorkspacePlan {
         Self::default()
     }
 
-    pub fn require(&mut self, name: impl Into<String>, max_bytes: usize, align: usize) -> Result<SectionId> {
+    pub fn require(
+        &mut self,
+        name: impl Into<String>,
+        max_bytes: usize,
+        align: usize,
+    ) -> Result<SectionId> {
         let name = name.into();
         if max_bytes == 0 {
             return Err(MemoryError::invalid(format!(
@@ -78,7 +83,10 @@ impl WorkspacePlan {
         Ok(cursor)
     }
 
-    pub fn freeze_with_span(self, base: DeviceSpan) -> Result<Workspace> {
+    pub fn freeze_with_span(
+        self,
+        base: DeviceSpan,
+    ) -> Result<Workspace> {
         let required = self.required_bytes()?;
         if required > base.len {
             return Err(MemoryError::invalid(format!(
@@ -103,7 +111,10 @@ impl WorkspacePlan {
     }
 
     #[cfg(feature = "cuda")]
-    pub fn freeze(self, device: Device) -> Result<OwnedWorkspace> {
+    pub fn freeze(
+        self,
+        device: Device,
+    ) -> Result<OwnedWorkspace> {
         let required = self.required_bytes()?;
         let buffer = DeviceBuffer::reserve_for(device, required, MemoryPurpose::Workspace)?;
         let workspace = self.freeze_with_span(buffer.span())?;
@@ -117,14 +128,20 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn section(&self, id: SectionId) -> Result<DeviceSpan> {
+    pub fn section(
+        &self,
+        id: SectionId,
+    ) -> Result<DeviceSpan> {
         self.sections
             .get(id.raw() as usize)
             .map(|info| info.span)
             .ok_or(MemoryError::WorkspaceUnknownSection { id: id.raw() })
     }
 
-    pub fn info(&self, id: SectionId) -> Result<&SectionInfo> {
+    pub fn info(
+        &self,
+        id: SectionId,
+    ) -> Result<&SectionInfo> {
         self.sections
             .get(id.raw() as usize)
             .ok_or(MemoryError::WorkspaceUnknownSection { id: id.raw() })
@@ -151,7 +168,10 @@ impl OwnedWorkspace {
         &self.workspace
     }
 
-    pub fn section(&self, id: SectionId) -> Result<DeviceSpan> {
+    pub fn section(
+        &self,
+        id: SectionId,
+    ) -> Result<DeviceSpan> {
         self.workspace.section(id)
     }
 }
@@ -159,7 +179,10 @@ impl OwnedWorkspace {
 #[cfg(not(feature = "cuda"))]
 pub struct OwnedWorkspace;
 
-fn align_up(value: usize, align: usize) -> Result<usize> {
+fn align_up(
+    value: usize,
+    align: usize,
+) -> Result<usize> {
     value
         .checked_add(align - 1)
         .map(|v| v & !(align - 1))
@@ -175,7 +198,9 @@ mod tests {
         let mut plan = WorkspacePlan::new();
         let a = plan.require("attn_plan", 100, 64).unwrap();
         let b = plan.require("decode_tmp", 32, 256).unwrap();
-        let workspace = plan.freeze_with_span(DeviceSpan::new(0x1000, 1024)).unwrap();
+        let workspace = plan
+            .freeze_with_span(DeviceSpan::new(0x1000, 1024))
+            .unwrap();
         assert_eq!(workspace.section(a).unwrap(), DeviceSpan::new(0x1000, 100));
         assert_eq!(workspace.section(b).unwrap().ptr, 0x1100);
     }

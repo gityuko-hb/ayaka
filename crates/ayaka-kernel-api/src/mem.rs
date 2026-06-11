@@ -9,14 +9,20 @@ use crate::error::KernelError;
 use crate::ffi::{self, AyakaMemInfo, AyakaMemcpyKind, AyakaStream};
 
 #[cfg(feature = "cuda")]
-pub unsafe fn device_alloc(bytes: usize, device_ordinal: i32) -> Result<*mut c_void, KernelError> {
+pub unsafe fn device_alloc(
+    bytes: usize,
+    device_ordinal: i32,
+) -> Result<*mut c_void, KernelError> {
     let mut out = core::ptr::null_mut();
     unsafe { ffi::ayaka_mem_device_alloc(&mut out, bytes, device_ordinal) }.into_result()?;
     Ok(out)
 }
 
 #[cfg(feature = "cuda")]
-pub unsafe fn device_free(ptr: *mut c_void, device_ordinal: i32) -> Result<(), KernelError> {
+pub unsafe fn device_free(
+    ptr: *mut c_void,
+    device_ordinal: i32,
+) -> Result<(), KernelError> {
     unsafe { ffi::ayaka_mem_device_free(ptr, device_ordinal) }.into_result()
 }
 
@@ -97,6 +103,9 @@ pub fn pool_supported(device_ordinal: i32) -> Result<bool, KernelError> {
 }
 
 #[cfg(feature = "cuda")]
-pub fn pool_trim(min_bytes_to_keep: usize, device_ordinal: i32) -> Result<(), KernelError> {
+pub fn pool_trim(
+    min_bytes_to_keep: usize,
+    device_ordinal: i32,
+) -> Result<(), KernelError> {
     unsafe { ffi::ayaka_mem_pool_trim(min_bytes_to_keep, device_ordinal) }.into_result()
 }

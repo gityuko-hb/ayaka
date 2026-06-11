@@ -8,7 +8,10 @@ pub struct DeviceSpan {
 }
 
 impl DeviceSpan {
-    pub const fn new(ptr: u64, len: usize) -> Self {
+    pub const fn new(
+        ptr: u64,
+        len: usize,
+    ) -> Self {
         Self { ptr, len }
     }
 
@@ -26,7 +29,11 @@ impl DeviceSpan {
             .ok_or_else(|| MemoryError::overflow("device span end pointer overflow"))
     }
 
-    pub fn checked_subspan(self, offset: usize, len: usize) -> Result<Self> {
+    pub fn checked_subspan(
+        self,
+        offset: usize,
+        len: usize,
+    ) -> Result<Self> {
         let end = offset
             .checked_add(len)
             .ok_or_else(|| MemoryError::overflow("device subspan offset overflow"))?;
@@ -43,8 +50,11 @@ impl DeviceSpan {
         Ok(Self { ptr, len })
     }
 
-    pub fn is_aligned_to(self, align: usize) -> bool {
-        align != 0 && align.is_power_of_two() && self.ptr % align as u64 == 0
+    pub fn is_aligned_to(
+        self,
+        align: usize,
+    ) -> bool {
+        align != 0 && align.is_power_of_two() && (self.ptr).is_multiple_of(align as u64)
     }
 }
 
@@ -56,7 +66,10 @@ mod tests {
     fn subspan_uses_byte_offsets() {
         let span = DeviceSpan::new(0x1000, 1024);
         assert_eq!(span.end_ptr().unwrap(), 0x1400);
-        assert_eq!(span.checked_subspan(256, 128).unwrap(), DeviceSpan::new(0x1100, 128));
+        assert_eq!(
+            span.checked_subspan(256, 128).unwrap(),
+            DeviceSpan::new(0x1100, 128)
+        );
     }
 
     #[test]

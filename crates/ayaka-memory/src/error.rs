@@ -31,7 +31,9 @@ pub enum MemoryError {
     #[error("slab slot {slot} is already free")]
     SlotAlreadyFree { slot: u32 },
 
-    #[error("pool exhausted for class {class_bytes} bytes while requesting {requested} bytes; remaining region bytes {remaining}")]
+    #[error(
+        "pool exhausted for class {class_bytes} bytes while requesting {requested} bytes; remaining region bytes {remaining}"
+    )]
     PoolExhausted {
         class_bytes: usize,
         requested: usize,
