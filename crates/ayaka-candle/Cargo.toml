@@ -24,3 +24,18 @@ criterion.workspace = true
 name = "rmsnorm_bench"
 harness = false
 required-features = ["cuda"]
+
+[[bench]]
+name = "fused_add_rmsnorm_bench"
+harness = false
+required-features = ["cuda"]
+
+[[bench]]
+name = "rope_bench"
+harness = false
+required-features = ["cuda"]
+
+[[bench]]
+name = "swiglu_bench"
+harness = false
+required-features = ["cuda"]

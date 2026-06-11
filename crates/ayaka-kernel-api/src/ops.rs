@@ -8,7 +8,7 @@
 #[cfg(feature = "cuda")]
 use crate::error::KernelError;
 #[cfg(feature = "cuda")]
-use crate::ffi::{self, AyakaStream, AyakaTensorView};
+use crate::ffi::{self, AyakaStream, AyakaTensorView, RopeLayout};
 
 /// RMSNorm over the last dimension: `out = input * rsqrt(mean(input^2) + eps) * weight`.
 ///
@@ -28,4 +28,68 @@ pub unsafe fn rmsnorm(
     stream: AyakaStream,
 ) -> Result<(), KernelError> {
     unsafe { ffi::ayaka_rmsnorm(out, input, weight, eps, stream) }.into_result()
+}
+
+/// Fused residual-add + RMSNorm: `residual_out = input + residual`,
+/// `out = rmsnorm(residual_out) * weight`.
+///
+/// # Safety
+///
+/// - All views must describe live CUDA allocations matching their metadata
+///   for the duration of the kernel execution.
+/// - `stream` must be a valid CUDA stream on the views' device.
+/// - `out` may alias `input`; `residual_out` may alias `residual`. No other
+///   aliasing is allowed (the native side rejects `out == residual_out`).
+#[cfg(feature = "cuda")]
+pub unsafe fn fused_add_rmsnorm(
+    out: &AyakaTensorView,
+    residual_out: &AyakaTensorView,
+    input: &AyakaTensorView,
+    residual: &AyakaTensorView,
+    weight: &AyakaTensorView,
+    eps: f32,
+    stream: AyakaStream,
+) -> Result<(), KernelError> {
+    unsafe { ffi::ayaka_fused_add_rmsnorm(out, residual_out, input, residual, weight, eps, stream) }
+        .into_result()
+}
+
+/// In-place rotary position embedding on `query` and `key`.
+///
+/// # Safety
+///
+/// - All views must describe live CUDA allocations matching their metadata
+///   for the duration of the kernel execution; `query` and `key` are written.
+/// - `stream` must be a valid CUDA stream on the views' device.
+/// - Every value in `positions` must be a valid row index into
+///   `cos_sin_cache`; this is not validated on the host.
+#[cfg(feature = "cuda")]
+pub unsafe fn rope(
+    query: &AyakaTensorView,
+    key: &AyakaTensorView,
+    positions: &AyakaTensorView,
+    cos_sin_cache: &AyakaTensorView,
+    layout: RopeLayout,
+    stream: AyakaStream,
+) -> Result<(), KernelError> {
+    unsafe { ffi::ayaka_rope(query, key, positions, cos_sin_cache, layout as i32, stream) }
+        .into_result()
+}
+
+/// SwiGLU: `out[.., d] = silu(input[.., d]) * input[.., hidden + d]` with
+/// `input.last_dim == 2 * out.last_dim`.
+///
+/// # Safety
+///
+/// - `out` and `input` must describe live CUDA allocations matching their
+///   metadata for the duration of the kernel execution.
+/// - `stream` must be a valid CUDA stream on the views' device.
+/// - `out` must not alias `input`.
+#[cfg(feature = "cuda")]
+pub unsafe fn silu_and_mul(
+    out: &AyakaTensorView,
+    input: &AyakaTensorView,
+    stream: AyakaStream,
+) -> Result<(), KernelError> {
+    unsafe { ffi::ayaka_silu_and_mul(out, input, stream) }.into_result()
 }

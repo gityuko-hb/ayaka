@@ -1,73 +1,13 @@
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <stdint.h>
 
+#include "common/reduction.cuh"
+#include "common/type_convert.cuh"
 #include "norm/rmsnorm.h"
 
 namespace ayaka {
 namespace {
-
-__device__ __forceinline__ float to_float(float v) {
-    return v;
-}
-__device__ __forceinline__ float to_float(__half v) {
-    return __half2float(v);
-}
-__device__ __forceinline__ float to_float(__nv_bfloat16 v) {
-    return __bfloat162float(v);
-}
-
-template <typename T>
-__device__ __forceinline__ T from_float(float v);
-
-template <>
-__device__ __forceinline__ float from_float<float>(float v) {
-    return v;
-}
-template <>
-__device__ __forceinline__ __half from_float<__half>(float v) {
-    return __float2half_rn(v);
-}
-template <>
-__device__ __forceinline__ __nv_bfloat16 from_float<__nv_bfloat16>(float v) {
-    return __float2bfloat16_rn(v);
-}
-
-// Sum `v` across the block; every thread returns the total.
-template <int BLOCK>
-__device__ float block_reduce_sum(float v) {
-    static_assert(BLOCK % 32 == 0 && BLOCK <= 1024, "BLOCK must be whole warps");
-    constexpr int NUM_WARPS = BLOCK / 32;
-    __shared__ float warp_sums[NUM_WARPS];
-    __shared__ float total;
-
-    const int lane = threadIdx.x & 31;
-    const int warp = threadIdx.x >> 5;
-
-#pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        v += __shfl_down_sync(0xffffffffu, v, offset);
-    }
-    if (lane == 0) {
-        warp_sums[warp] = v;
-    }
-    __syncthreads();
-
-    if (warp == 0) {
-        v = (lane < NUM_WARPS) ? warp_sums[lane] : 0.0f;
-#pragma unroll
-        for (int offset = 16; offset > 0; offset >>= 1) {
-            v += __shfl_down_sync(0xffffffffu, v, offset);
-        }
-        if (lane == 0) {
-            total = v;
-        }
-    }
-    __syncthreads();
-    return total;
-}
 
 // One block per row; f32 accumulation independent of storage dtype.
 template <typename T, int BLOCK>

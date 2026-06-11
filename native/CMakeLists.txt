@@ -18,11 +18,17 @@ set(AYAKA_NATIVE_SOURCES
 )
 
 set(AYAKA_CUDA_HOST_SOURCES
+    src/ops/fused_add_rmsnorm.cc
     src/ops/rmsnorm.cc
+    src/ops/rope.cc
+    src/ops/silu_and_mul.cc
 )
 
 set(AYAKA_CUDA_SOURCES
+    csrc/activation/swiglu.cu
+    csrc/norm/fused_add_rmsnorm.cu
     csrc/norm/rmsnorm.cu
+    csrc/pos/rope.cu
 )
 
 if(AYAKA_ENABLE_CUDA)
@@ -49,7 +55,10 @@ set(AYAKA_NATIVE_HEADERS
 )
 
 set(AYAKA_OPS_HEADERS
+    include/ayaka/ops/fused_add_rmsnorm.h
     include/ayaka/ops/rmsnorm.h
+    include/ayaka/ops/rope.h
+    include/ayaka/ops/silu_and_mul.h
 )
 
 add_library(ayaka-native STATIC ${AYAKA_NATIVE_SOURCES})
@@ -63,6 +72,7 @@ target_include_directories(ayaka-native
 target_include_directories(ayaka-native
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/csrc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_compile_definitions(ayaka-native PRIVATE AYAKA_BUILDING_NATIVE)
