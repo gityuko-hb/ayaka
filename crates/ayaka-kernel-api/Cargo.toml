@@ -8,5 +8,11 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+cuda = []
+
 [dependencies]
 ayaka-core = { path = "../ayaka-core" }
+
+[build-dependencies]
+cmake.workspace = true

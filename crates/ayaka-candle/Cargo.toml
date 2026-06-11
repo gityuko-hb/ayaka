@@ -1,0 +1,26 @@
+[package]
+name = "ayaka-candle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+cuda = ["candle-core/cuda", "ayaka-kernel-api/cuda"]
+
+[dependencies]
+ayaka-core = { path = "../ayaka-core" }
+ayaka-kernel-api = { path = "../ayaka-kernel-api" }
+candle-core.workspace = true
+half.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "rmsnorm_bench"
+harness = false
+required-features = ["cuda"]

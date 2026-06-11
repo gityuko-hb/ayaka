@@ -35,6 +35,18 @@ pub struct AyakaStatus {
 
 pub type AyakaStream = *mut core::ffi::c_void;
 
+#[cfg(feature = "cuda")]
+unsafe extern "C" {
+    /// `ayaka_rmsnorm` in `native/include/ayaka/ops/rmsnorm.h`.
+    pub fn ayaka_rmsnorm(
+        out: *const AyakaTensorView,
+        input: *const AyakaTensorView,
+        weight: *const AyakaTensorView,
+        eps: f32,
+        stream: AyakaStream,
+    ) -> AyakaStatus;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
