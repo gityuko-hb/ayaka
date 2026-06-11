@@ -18,4 +18,8 @@ pub mod copy;
 #[cfg(feature = "cuda")]
 pub mod device_buffer;
 #[cfg(feature = "cuda")]
+pub mod pinned_buffer;
+#[cfg(feature = "cuda")]
 pub use device_buffer::{DeviceAllocSource, DeviceBuffer};
+#[cfg(feature = "cuda")]
+pub use pinned_buffer::{PinnedBuffer, PinnedRing, PinnedSlot};
