@@ -1,9 +1,7 @@
 [workspace]
 resolver = "2"
 
-members = [
-    "crates/*"
-]
+members = ["crates/*"]
 
 exclude = [
     "crates/*/target",
@@ -13,14 +11,14 @@ exclude = [
 ]
 
 [workspace.package]
-version      = "0.1.0"
-edition      = "2024"
+version = "0.1.0"
+edition = "2024"
 rust-version = "1.92"
-authors      = ["Yumeio"]
-license      = "Apache-2.0"
-keywords     = ["llm", "inference"]
-repository   = "https://github.com/gityuko-hb/ayaka"
-homepage     = "https://github.com/gityuko-hb/ayaka"
+authors = ["Yumeio"]
+license = "Apache-2.0"
+keywords = ["llm", "inference"]
+repository = "https://github.com/gityuko-hb/ayaka"
+homepage = "https://github.com/gityuko-hb/ayaka"
 
 [profile.release]
 lto = true
@@ -44,13 +42,17 @@ serde_json = "1"
 thiserror = "2.0.10"
 tqdm = "0.8.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
 base64 = "0.22.1"
 chrono = "0.4.44"
 futures = "0.3.32"
 half = "2.7.1"
 bitflags = { version = "2.11.1", features = ["serde"] }
-indicatif ={ version = "0.18.4", features = ["rayon"] }
+indicatif = { version = "0.18.4", features = ["rayon"] }
 libc = "0.2.186"
 memmap2 = "0.9.10"
 rand = "0.10.1"
@@ -60,9 +62,11 @@ rayon = "1.12.0"
 regex = "1.12.3"
 tempfile = "3.27.0"
 tokio = "1.52.3"
-tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23.1", default-features = false, features = [
+    "onig",
+] }
 sysinfo = "0.38.4"
-crossbeam ={ version = "0.8.4", features = ["crossbeam-channel"] }
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 minijinja = { version = "2.20.0", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.20.0", features = ["pycompat"] }
 bytemuck = "1.25.0"
@@ -72,20 +76,30 @@ num_cpus = "1.17.0"
 num-traits = "0.2.19"
 hashbrown = "0.17.1"
 toml = "1.0.0+spec-1.1.0"
-pyo3 = { version = "0.28.3", features = ["full", "extension-module", "either", "abi3-py310"] }
-url = "2.3.1"   
+pyo3 = { version = "0.28.3", features = [
+    "full",
+    "extension-module",
+    "either",
+    "abi3-py310",
+] }
+url = "2.3.1"
 data-url = "0.3.2"
-safetensors = "0.7.0"
+safetensors = "0.8.0"
 hf-hub = { version = "0.5.0", default-features = false, features = [
     "ureq",
     "tokio",
     "rustls-tls",
-]}
+] }
 cuda = "0.3.0"
 cudaforge = "0.1.5"
-cudarc = "0.19.0"
-metal  = "0.33.0"
+cudarc = "0.19.7"
+metal = "0.33.0"
 async-trait = "0.1.89"
+clap = "4.6.1"
+
+[workspace.dev-dependencies]
+ayaka-utils = { path = "../crates/ayaka-utils" }
+ayaka-core = { path = "../crates/ayaka-core" }
 
 [profile.release-fast]
 inherits = "release"
@@ -95,6 +109,6 @@ opt-level = 2
 strip = false
 
 [profile.bench]
-inherits        = "release"
-strip           = "none"
-debug           = 1
+inherits = "release"
+strip = "none"
+debug = 1

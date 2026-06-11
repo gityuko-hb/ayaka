@@ -4,7 +4,11 @@
 //! ownership). [`TensorView`] is the `#[repr(C)]` POD that actually crosses the
 //! FFI boundary — it is the single source of truth for `ayaka_tensor_view_t` in
 //! `include/ayaka/tensor_view.h`. The C struct must match field order and sizes
-//! exactly; a `static_assert(sizeof(ayaka_tensor_view_t) == 160)` guards it.
+//! exactly; a `static_assert(sizeof(ayaka_tensor_view_t) == 176)` guards it.
+//!
+//! Every FFI-crossing descriptor opens with `AYAKA_DESC_HEADER` (struct_size +
+//! abi_version) for sized-struct versioning. Future fields go into `_reserved[]`
+//! at the end with a MINOR version bump.
 
 use core::ffi::c_void;
 
@@ -62,6 +66,8 @@ impl TensorMeta {
         shape[..self.shape.rank()].copy_from_slice(self.shape.dims());
         stride[..self.shape.rank()].copy_from_slice(self.strides.as_slice());
         TensorView {
+            struct_size: core::mem::size_of::<TensorView>() as u32,
+            abi_version: ABI_VERSION,
             data,
             shape,
             stride,
@@ -70,19 +76,22 @@ impl TensorMeta {
             device_kind: self.device.kind as i32,
             device_ordinal: self.device.ordinal as i32,
             flags: self.flags.bits(),
-            reserved: 0,
+            _reserved: [0; 3],
         }
     }
 }
 
 /// `#[repr(C)]` POD mirror of `ayaka_tensor_view_t`.
 ///
-/// Layout is chosen to be padding-free: an 8-byte pointer, two 8-byte-aligned
-/// i64 arrays, then a block of i32 fields, then a reserved word to keep the
-/// reserved word to keep the total an 8-byte multiple (160 bytes).
+/// Opens with [`AYAKA_DESC_HEADER`] for sized-struct ABI versioning.
+/// Layout: 4(struct_size) + 4(abi_version) + 8(data) + 64(shape) + 64(stride)
+/// + 4(rank) + 4(dtype) + 4(device_kind) + 4(device_ordinal) + 4(flags)
+/// + 12(_reserved[3]) = 176 bytes, aligned to 8.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct TensorView {
+    pub struct_size: u32,
+    pub abi_version: u32,
     /// Raw device (or host) pointer to element 0.
     pub data: *mut c_void,
     /// Dimension extents; only `rank` entries are valid.
@@ -97,13 +106,17 @@ pub struct TensorView {
     pub device_ordinal: i32,
     /// [`TensorFlags`] bits.
     pub flags: u32,
-    /// Reserved for future ABI growth; must be 0.
-    pub reserved: u32,
+    /// Reserved for future ABI growth via MINOR version bumps.
+    pub _reserved: [u32; 3],
 }
+
+pub const ABI_VERSION: u32 = 1;
 
 impl TensorView {
     /// A null/empty view (e.g. for optional tensors like KV scales).
     pub const NULL: Self = Self {
+        struct_size: core::mem::size_of::<Self>() as u32,
+        abi_version: ABI_VERSION,
         data: core::ptr::null_mut(),
         shape: [0; MAX_RANK],
         stride: [0; MAX_RANK],
@@ -112,7 +125,7 @@ impl TensorView {
         device_kind: DeviceKind::Cpu as i32,
         device_ordinal: 0,
         flags: 0,
-        reserved: 0,
+        _reserved: [0; 3],
     };
 
     #[inline]
@@ -127,7 +140,7 @@ impl TensorView {
 }
 
 // Compile-time guarantee that the layout matches the C header's static_assert.
-// 8 (ptr) + 64 (shape) + 64 (stride) + 6*4 (i32/u32 fields) = 160 bytes.
+// 4+4 + 8 + 64 + 64 + 4+4+4+4+4 + 12 = 176 bytes.
 const _: () = {
-    assert!(core::mem::size_of::<TensorView>() == 160);
+    assert!(core::mem::size_of::<TensorView>() == 176);
 };

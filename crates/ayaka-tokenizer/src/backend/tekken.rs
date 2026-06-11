@@ -210,9 +210,7 @@ impl TekkenBackend {
     ///
     /// Returns `(encoder, decoder)` where `encoder` maps bytes → rank and
     /// `decoder` maps rank → bytes.
-    fn collect_vocab(
-        json: &Value
-    ) -> TokenizerResult<TekkenVocab> {
+    fn collect_vocab(json: &Value) -> TokenizerResult<TekkenVocab> {
         let mut encoder = HashMap::new();
         let mut decoder = HashMap::new();
 

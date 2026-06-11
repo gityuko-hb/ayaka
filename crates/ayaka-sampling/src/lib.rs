@@ -598,7 +598,7 @@ mod tests {
     //             → token 2 correctly absent from filtered list.
     // This test verifies token 2 is NOT in the final filtered set.
     #[test]
-    fn test_filter_probs_min_p_uses_post_topp_distribution() {
+    fn test_filter_probs_min_p_uses_post_top_p_distribution() {
         let s = Sampler::builder()
             .temperature(1.0)
             .unwrap()

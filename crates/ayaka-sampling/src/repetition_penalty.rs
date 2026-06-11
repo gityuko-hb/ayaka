@@ -180,7 +180,7 @@ pub fn apply_suffix_repeat_penalty(
     Ok(())
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RepetitionPenaltyConfig {
     /// Subtract `count × freq_penalty` — penalize proportionally to the number of occurrences.
     pub frequency: f32,
@@ -191,6 +191,16 @@ pub struct RepetitionPenaltyConfig {
     /// Divide (if logit > 0) or multiply (if logit < 0) when the token has appeared.
     /// Neutral = 1.0.
     pub repetition: f32,
+}
+
+impl Default for RepetitionPenaltyConfig {
+    fn default() -> Self {
+        Self {
+            frequency: 0.0,
+            presence: 0.0,
+            repetition: 1.0,
+        }
+    }
 }
 
 impl RepetitionPenaltyConfig {
@@ -238,8 +248,10 @@ pub fn apply_freq_pres_rep(
             *logit -= cfg.presence;
             if cfg.repetition != 1.0 {
                 if *logit > 0.0 {
-                    *logit /= cfg.repetition;
-                } else {
+                    if cfg.repetition > 0.0 {
+                        *logit /= cfg.repetition;
+                    }
+                } else if cfg.repetition > 0.0 {
                     *logit *= cfg.repetition;
                 }
             }
@@ -287,10 +299,7 @@ mod tests {
     fn test_neutral_config_is_noop() {
         let mut logits = vec![1.0f32, 2.0, 3.0];
         let orig = logits.clone();
-        let _cfg = RepetitionPenaltyConfig::default(); // repetition=0.0 by default 
-        // default repetition is 0.0, need to set to 1.0 for neutral
-        let neutral = RepetitionPenaltyConfig::new(0.0, 0.0, 1.0);
-        apply_freq_pres_rep(&mut logits, &[0u32], &neutral).unwrap();
+        apply_freq_pres_rep(&mut logits, &[0u32], &RepetitionPenaltyConfig::default()).unwrap();
         assert_eq!(logits, orig);
     }
 }
@@ -422,9 +431,9 @@ mod suffix_repeat_tests {
     #[test]
     fn test_position_aware_recency() {
         // ctx: [0,1,2,0,1,2,0,1,2] n=9, last=2, matches at i=2,5
-        // i=5: next_token=0, match extends back → match_len=5, nearest_pos=5
-        // Without position_aware: excess=max_match_len-min_match_len=5-2=3, penalty=1.75^3≈5.359
-        // With position_aware: recency=5/9≈0.556, penalty≈5.359*(1.556)≈8.337
+        // limit = max_match_len.min(i+1) = 50.min(6) = 6, so match_len = 6
+        // Without position_aware: excess=6-2=4, penalty=1.75^4≈9.379
+        // With position_aware: recency=5/9≈0.556, multiplier≈1.556, penalty≈14.589
         let ctx = vec![0u32, 1, 2, 0, 1, 2, 0, 1, 2];
         let mut logits_no = vec![10.0f32; 3];
         let mut logits_yes = vec![10.0f32; 3];
@@ -451,13 +460,13 @@ mod suffix_repeat_tests {
         );
         // Approximate magnitude checks
         assert!(
-            (penalty_no - 5.359).abs() < 0.01,
-            "expected ≈5.359, got {penalty_no:.4}"
+            (penalty_no - 9.379).abs() < 0.01,
+            "expected ≈9.379, got {penalty_no:.4}"
         );
-        // recency=5/9=0.5556 → multiplier=1.5556 → 5.359*1.5556≈8.338
+        // recency=5/9=0.5556 → multiplier=1.5556 → 9.379*1.5556≈14.589
         assert!(
-            (penalty_yes - 8.338).abs() < 0.05,
-            "expected ≈8.338, got {penalty_yes:.4}"
+            (penalty_yes - 14.589).abs() < 0.05,
+            "expected ≈14.589, got {penalty_yes:.4}"
         );
     }
 
