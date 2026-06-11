@@ -1,6 +1,7 @@
 pub mod arena;
 pub mod error;
 pub mod host_buffer;
+pub mod pool;
 pub mod slab;
 pub mod span;
 pub mod stats;
@@ -9,6 +10,7 @@ pub mod stream;
 pub use arena::DeviceArena;
 pub use error::{MemoryError, Result};
 pub use host_buffer::HostBuffer;
+pub use pool::{PoolBlock, SizeClassPool};
 pub use slab::{SlabAllocator, SlabSlot};
 pub use span::DeviceSpan;
 pub use stats::{
