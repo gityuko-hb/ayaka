@@ -39,10 +39,9 @@ mod cuda {
     use ayaka_kernel_api::AyakaStream;
     use candle_core::cuda_backend::CudaDType;
     use candle_core::cuda_backend::cudarc::driver::DevicePtr;
-    use candle_core::{D, DType, Result, Tensor};
-    use half::{bf16, f16};
+    use candle_core::{D, Result, Tensor};
 
-    use crate::extract;
+    use crate::extract::{self, dispatch_float_dtype, extract_views};
 
     /// Run the native RMSNorm kernel: `out = input * rsqrt(mean(input², -1) + eps) * weight`.
     ///
@@ -86,12 +85,7 @@ mod cuda {
             );
         }
 
-        match dtype {
-            DType::F32 => launch::<f32>(out, input, weight, eps),
-            DType::F16 => launch::<f16>(out, input, weight, eps),
-            DType::BF16 => launch::<bf16>(out, input, weight, eps),
-            dt => candle_core::bail!("rmsnorm: unsupported dtype {dt:?}"),
-        }
+        dispatch_float_dtype!(dtype, "rmsnorm", T => launch::<T>(out, input, weight, eps))
     }
 
     fn launch<T: CudaDType>(
@@ -105,32 +99,11 @@ mod cuda {
         let ordinal = extract::cuda_ordinal(device)?;
         let dtype = extract::ayaka_dtype(input.dtype())?;
 
-        let (out_storage, out_layout) = out.storage_and_layout();
-        let (in_storage, in_layout) = input.storage_and_layout();
-        let (w_storage, w_layout) = weight.storage_and_layout();
-        extract::require_contiguous(out_layout, "rmsnorm out")?;
-        extract::require_contiguous(in_layout, "rmsnorm input")?;
-        extract::require_contiguous(w_layout, "rmsnorm weight")?;
-
-        let out_slice = extract::cuda_storage(&out_storage, "rmsnorm out")?
-            .as_cuda_slice::<T>()?
-            .slice(out_layout.start_offset()..);
-        let in_slice = extract::cuda_storage(&in_storage, "rmsnorm input")?
-            .as_cuda_slice::<T>()?
-            .slice(in_layout.start_offset()..);
-        let w_slice = extract::cuda_storage(&w_storage, "rmsnorm weight")?
-            .as_cuda_slice::<T>()?
-            .slice(w_layout.start_offset()..);
-
-        // The guards order this launch after candle's pending work on these
-        // buffers; hold them until the kernel is enqueued.
-        let (out_ptr, _out_guard) = out_slice.device_ptr(&stream);
-        let (in_ptr, _in_guard) = in_slice.device_ptr(&stream);
-        let (w_ptr, _w_guard) = w_slice.device_ptr(&stream);
-
-        let out_view = extract::contiguous_view(out_layout, dtype, ordinal, out_ptr);
-        let in_view = extract::contiguous_view(in_layout, dtype, ordinal, in_ptr);
-        let w_view = extract::contiguous_view(w_layout, dtype, ordinal, w_ptr);
+        extract_views!(&stream, ordinal;
+            out_view <- (out, T, dtype, "rmsnorm out"),
+            in_view <- (input, T, dtype, "rmsnorm input"),
+            w_view <- (weight, T, dtype, "rmsnorm weight"),
+        );
         let raw_stream: AyakaStream = stream.cu_stream().cast();
 
         // SAFETY: the views describe live, contiguous CUDA allocations whose

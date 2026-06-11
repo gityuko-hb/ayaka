@@ -84,13 +84,13 @@ pub use cuda::rope;
 
 #[cfg(feature = "cuda")]
 mod cuda {
+    use ayaka_core::dtype::DType as AyakaDType;
     use ayaka_kernel_api::{AyakaStream, RopeLayout};
     use candle_core::cuda_backend::CudaDType;
     use candle_core::cuda_backend::cudarc::driver::DevicePtr;
     use candle_core::{DType, Result, Tensor};
-    use half::{bf16, f16};
 
-    use crate::extract;
+    use crate::extract::{self, dispatch_float_dtype, extract_views};
 
     /// Apply rotary embeddings to `query` and `key` **in place**.
     ///
@@ -155,12 +155,8 @@ mod cuda {
             candle_core::bail!("rope: rot_dim {rot_dim} must be even and <= head_dim {head_dim}");
         }
 
-        match dtype {
-            DType::F32 => launch::<f32>(query, key, positions, cos_sin_cache, layout),
-            DType::F16 => launch::<f16>(query, key, positions, cos_sin_cache, layout),
-            DType::BF16 => launch::<bf16>(query, key, positions, cos_sin_cache, layout),
-            dt => candle_core::bail!("rope: unsupported dtype {dt:?}"),
-        }
+        dispatch_float_dtype!(dtype, "rope",
+            T => launch::<T>(query, key, positions, cos_sin_cache, layout))
     }
 
     fn launch<T: CudaDType>(
@@ -175,39 +171,12 @@ mod cuda {
         let ordinal = extract::cuda_ordinal(device)?;
         let dtype = extract::ayaka_dtype(query.dtype())?;
 
-        let (q_storage, q_layout) = query.storage_and_layout();
-        let (k_storage, k_layout) = key.storage_and_layout();
-        let (p_storage, p_layout) = positions.storage_and_layout();
-        let (c_storage, c_layout) = cos_sin_cache.storage_and_layout();
-        extract::require_contiguous(q_layout, "rope query")?;
-        extract::require_contiguous(k_layout, "rope key")?;
-        extract::require_contiguous(p_layout, "rope positions")?;
-        extract::require_contiguous(c_layout, "rope cos_sin_cache")?;
-
-        let q_slice = extract::cuda_storage(&q_storage, "rope query")?
-            .as_cuda_slice::<T>()?
-            .slice(q_layout.start_offset()..);
-        let k_slice = extract::cuda_storage(&k_storage, "rope key")?
-            .as_cuda_slice::<T>()?
-            .slice(k_layout.start_offset()..);
-        let p_slice = extract::cuda_storage(&p_storage, "rope positions")?
-            .as_cuda_slice::<i64>()?
-            .slice(p_layout.start_offset()..);
-        let c_slice = extract::cuda_storage(&c_storage, "rope cos_sin_cache")?
-            .as_cuda_slice::<f32>()?
-            .slice(c_layout.start_offset()..);
-
-        let (q_ptr, _g0) = q_slice.device_ptr(&stream);
-        let (k_ptr, _g1) = k_slice.device_ptr(&stream);
-        let (p_ptr, _g2) = p_slice.device_ptr(&stream);
-        let (c_ptr, _g3) = c_slice.device_ptr(&stream);
-
-        let q_view = extract::contiguous_view(q_layout, dtype, ordinal, q_ptr);
-        let k_view = extract::contiguous_view(k_layout, dtype, ordinal, k_ptr);
-        let p_view =
-            extract::contiguous_view(p_layout, ayaka_core::dtype::DType::I64, ordinal, p_ptr);
-        let c_view =
-            extract::contiguous_view(c_layout, ayaka_core::dtype::DType::F32, ordinal, c_ptr);
+        extract_views!(&stream, ordinal;
+            q_view <- (query, T, dtype, "rope query"),
+            k_view <- (key, T, dtype, "rope key"),
+            p_view <- (positions, i64, AyakaDType::I64, "rope positions"),
+            c_view <- (cos_sin_cache, f32, AyakaDType::F32, "rope cos_sin_cache"),
+        );
         let raw_stream: AyakaStream = stream.cu_stream().cast();
 
         // SAFETY: views describe live, contiguous CUDA allocations whose

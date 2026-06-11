@@ -73,3 +73,61 @@ pub fn contiguous_view(
     TensorMeta::contiguous(AyakaDevice::cuda(ordinal), dtype, AyakaShape::new(&dims))
         .view(ptr as usize as *mut core::ffi::c_void)
 }
+
+/// Bind one `TensorView` per tensor inside a launch function:
+/// lock storage, require contiguity, type the CUDA slice, take the device
+/// pointer, and build the FFI view — keeping every storage/sync guard alive
+/// until the end of the enclosing scope so the views stay valid across the
+/// kernel call.
+///
+/// ```ignore
+/// extract_views!(&stream, ordinal;
+///     out_view <- (out, T, dtype, "op out"),
+///     in_view  <- (input, T, dtype, "op input"),
+/// );
+/// ```
+///
+/// `$stream` must be a cheap re-evaluatable expression (e.g. `&stream`).
+macro_rules! extract_views {
+    ($stream:expr, $ordinal:expr;
+     $( $view:ident <- ($tensor:expr, $ty:ty, $dtype:expr, $what:literal) ),+ $(,)?) => {
+        $(
+            let (storage, layout) = $tensor.storage_and_layout();
+            $crate::extract::require_contiguous(layout, $what)?;
+            let slice = $crate::extract::cuda_storage(&storage, $what)?
+                .as_cuda_slice::<$ty>()?
+                .slice(layout.start_offset()..);
+            let (ptr, _guard) = slice.device_ptr($stream);
+            let $view = $crate::extract::contiguous_view(layout, $dtype, $ordinal, ptr);
+        )+
+    };
+}
+pub(crate) use extract_views;
+
+/// Dispatch a generic launch function over the float storage dtypes,
+/// binding `$ty` as a local type alias (mirrors `AYAKA_DISPATCH_FLOAT_DTYPES`
+/// on the C++ side).
+///
+/// ```ignore
+/// dispatch_float_dtype!(dtype, "rmsnorm", T => launch::<T>(out, input, weight, eps))
+/// ```
+macro_rules! dispatch_float_dtype {
+    ($dtype:expr, $op:literal, $ty:ident => $body:expr) => {
+        match $dtype {
+            candle_core::DType::F32 => {
+                type $ty = f32;
+                $body
+            },
+            candle_core::DType::F16 => {
+                type $ty = ::half::f16;
+                $body
+            },
+            candle_core::DType::BF16 => {
+                type $ty = ::half::bf16;
+                $body
+            },
+            dt => candle_core::bail!(concat!($op, ": unsupported dtype {:?}"), dt),
+        }
+    };
+}
+pub(crate) use dispatch_float_dtype;

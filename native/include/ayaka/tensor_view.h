@@ -33,7 +33,7 @@ _Static_assert(sizeof(ayaka_tensor_view_t) == 176,
                "ayaka_tensor_view_t must be 176 bytes");
 #endif
 
-AYAKA_EXTERN_C AYAKA_API ayaka_status_t
+AYAKA_EXTERN_C AYAKA_API AYAKA_NODISCARD ayaka_status_t
 ayaka_tensor_view_validate(const ayaka_tensor_view_t* view);
 
 #ifdef __cplusplus

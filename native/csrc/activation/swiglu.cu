@@ -3,7 +3,10 @@
 #include <stdint.h>
 
 #include "activation/swiglu.h"
+#include "common/dispatch.cuh"
+#include "common/launch_utils.cuh"
 #include "common/type_convert.cuh"
+#include "ops/common.h"
 
 namespace ayaka {
 namespace {
@@ -29,28 +32,20 @@ __global__ void silu_and_mul_kernel(T* __restrict__ out,
 }
 
 template <typename T>
-ayaka_status_t launch_silu_and_mul(const ayaka_tensor_view_t& out,
-                                   const ayaka_tensor_view_t& input,
-                                   int64_t hidden,
-                                   int64_t total,
-                                   cudaStream_t stream) {
-    constexpr int BLOCK = 256;
-    const int64_t wanted = (total + BLOCK - 1) / BLOCK;
-    const unsigned int blocks =
-        static_cast<unsigned int>(wanted < 65536 ? wanted : 65536);
+AYAKA_NODISCARD ayaka_status_t launch_silu_and_mul(const ayaka_tensor_view_t& out,
+                                                   const ayaka_tensor_view_t& input,
+                                                   int64_t hidden,
+                                                   int64_t total,
+                                                   cudaStream_t stream) {
+    const unsigned int blocks = grid_stride_blocks(total, kBlockSize);
 
-    silu_and_mul_kernel<T><<<blocks, BLOCK, 0, stream>>>(
+    silu_and_mul_kernel<T><<<blocks, kBlockSize, 0, stream>>>(
         static_cast<T*>(out.data),
         static_cast<const T*>(input.data),
         hidden,
         total);
 
-    const cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        return ayaka_status_make(AYAKA_STATUS_KERNEL_LAUNCH_ERROR,
-                                 cudaGetErrorString(err));
-    }
-    return ayaka_status_ok();
+    return last_launch_status();
 }
 
 }  // namespace
@@ -59,31 +54,16 @@ ayaka_status_t silu_and_mul_cuda(const ayaka_tensor_view_t& out,
                                  const ayaka_tensor_view_t& input,
                                  ayaka_stream_t stream) {
     const int64_t hidden = out.shape[out.rank - 1];
-    int64_t total = 1;
-    for (int32_t i = 0; i < out.rank; ++i) {
-        total *= out.shape[i];
-    }
+    const int64_t total = view_numel(&out);
     if (total == 0) {
         return ayaka_status_ok();
     }
 
     cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
-
-    switch (input.dtype) {
-        case AYAKA_DTYPE_F32:
-            return launch_silu_and_mul<float>(out, input, hidden, total,
-                                              cuda_stream);
-        case AYAKA_DTYPE_F16:
-            return launch_silu_and_mul<__half>(out, input, hidden, total,
-                                               cuda_stream);
-        case AYAKA_DTYPE_BF16:
-            return launch_silu_and_mul<__nv_bfloat16>(out, input, hidden, total,
-                                                      cuda_stream);
-        default:
-            return ayaka_status_make(
-                AYAKA_STATUS_UNSUPPORTED,
-                "silu_and_mul: dtype must be f32, f16, or bf16");
-    }
+    AYAKA_DISPATCH_FLOAT_DTYPES(input.dtype, "silu_and_mul", [&] {
+        return launch_silu_and_mul<scalar_t>(out, input, hidden, total,
+                                             cuda_stream);
+    });
 }
 
 }  // namespace ayaka

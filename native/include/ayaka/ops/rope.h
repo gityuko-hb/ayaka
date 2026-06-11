@@ -37,7 +37,7 @@ typedef enum {
  *
  * The launch is asynchronous on `stream`; only launch errors are reported.
  */
-AYAKA_EXTERN_C AYAKA_API ayaka_status_t
+AYAKA_EXTERN_C AYAKA_API AYAKA_NODISCARD ayaka_status_t
 ayaka_rope(const ayaka_tensor_view_t* query,
            const ayaka_tensor_view_t* key,
            const ayaka_tensor_view_t* positions,

@@ -17,3 +17,12 @@
 #else
   #define AYAKA_API
 #endif
+
+/* Statuses must be checked; dropping one silently swallows kernel errors. */
+#if defined(__cplusplus) && __cplusplus >= 201703L
+  #define AYAKA_NODISCARD [[nodiscard]]
+#elif defined(__GNUC__)
+  #define AYAKA_NODISCARD __attribute__((warn_unused_result))
+#else
+  #define AYAKA_NODISCARD
+#endif

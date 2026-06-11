@@ -36,10 +36,9 @@ mod cuda {
     use ayaka_kernel_api::AyakaStream;
     use candle_core::cuda_backend::CudaDType;
     use candle_core::cuda_backend::cudarc::driver::DevicePtr;
-    use candle_core::{D, DType, Result, Tensor};
-    use half::{bf16, f16};
+    use candle_core::{D, Result, Tensor};
 
-    use crate::extract;
+    use crate::extract::{self, dispatch_float_dtype, extract_views};
 
     /// Run the native SwiGLU kernel into `out`.
     ///
@@ -79,12 +78,7 @@ mod cuda {
             );
         }
 
-        match dtype {
-            DType::F32 => launch::<f32>(out, input),
-            DType::F16 => launch::<f16>(out, input),
-            DType::BF16 => launch::<bf16>(out, input),
-            dt => candle_core::bail!("silu_and_mul: unsupported dtype {dt:?}"),
-        }
+        dispatch_float_dtype!(dtype, "silu_and_mul", T => launch::<T>(out, input))
     }
 
     fn launch<T: CudaDType>(
@@ -96,23 +90,10 @@ mod cuda {
         let ordinal = extract::cuda_ordinal(device)?;
         let dtype = extract::ayaka_dtype(input.dtype())?;
 
-        let (out_storage, out_layout) = out.storage_and_layout();
-        let (in_storage, in_layout) = input.storage_and_layout();
-        extract::require_contiguous(out_layout, "silu_and_mul out")?;
-        extract::require_contiguous(in_layout, "silu_and_mul input")?;
-
-        let out_slice = extract::cuda_storage(&out_storage, "silu_and_mul out")?
-            .as_cuda_slice::<T>()?
-            .slice(out_layout.start_offset()..);
-        let in_slice = extract::cuda_storage(&in_storage, "silu_and_mul input")?
-            .as_cuda_slice::<T>()?
-            .slice(in_layout.start_offset()..);
-
-        let (out_ptr, _g0) = out_slice.device_ptr(&stream);
-        let (in_ptr, _g1) = in_slice.device_ptr(&stream);
-
-        let out_view = extract::contiguous_view(out_layout, dtype, ordinal, out_ptr);
-        let in_view = extract::contiguous_view(in_layout, dtype, ordinal, in_ptr);
+        extract_views!(&stream, ordinal;
+            out_view <- (out, T, dtype, "silu_and_mul out"),
+            in_view <- (input, T, dtype, "silu_and_mul input"),
+        );
         let raw_stream: AyakaStream = stream.cu_stream().cast();
 
         // SAFETY: views describe live, contiguous CUDA allocations whose

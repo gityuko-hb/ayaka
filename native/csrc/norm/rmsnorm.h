@@ -13,10 +13,10 @@ namespace ayaka {
 
 // Views are pre-validated by the caller: CUDA device, matching dtypes
 // (F32/F16/BF16), contiguous, weight rank 1 matching the last input dim.
-ayaka_status_t rmsnorm_cuda(const ayaka_tensor_view_t& out,
-                            const ayaka_tensor_view_t& input,
-                            const ayaka_tensor_view_t& weight,
-                            float eps,
-                            ayaka_stream_t stream);
+AYAKA_NODISCARD ayaka_status_t rmsnorm_cuda(const ayaka_tensor_view_t& out,
+                                            const ayaka_tensor_view_t& input,
+                                            const ayaka_tensor_view_t& weight,
+                                            float eps,
+                                            ayaka_stream_t stream);
 
 }  // namespace ayaka

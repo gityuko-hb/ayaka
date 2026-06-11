@@ -3,6 +3,8 @@
 #include <stdint.h>
 
 #include "ayaka/ops/rope.h"
+#include "common/dispatch.cuh"
+#include "common/launch_utils.cuh"
 #include "common/type_convert.cuh"
 #include "pos/rope.h"
 
@@ -61,13 +63,12 @@ __global__ void rope_kernel(T* __restrict__ query,
 }
 
 template <typename T>
-ayaka_status_t launch_rope(const ayaka_tensor_view_t& query,
-                           const ayaka_tensor_view_t& key,
-                           const ayaka_tensor_view_t& positions,
-                           const ayaka_tensor_view_t& cache,
-                           bool neox,
-                           cudaStream_t stream) {
-    constexpr int BLOCK = 256;
+AYAKA_NODISCARD ayaka_status_t launch_rope(const ayaka_tensor_view_t& query,
+                                           const ayaka_tensor_view_t& key,
+                                           const ayaka_tensor_view_t& positions,
+                                           const ayaka_tensor_view_t& cache,
+                                           bool neox,
+                                           cudaStream_t stream) {
     const int64_t num_tokens = query.shape[0];
     const int num_heads = static_cast<int>(query.shape[1]);
     const int num_kv_heads = static_cast<int>(key.shape[1]);
@@ -81,19 +82,14 @@ ayaka_status_t launch_rope(const ayaka_tensor_view_t& query,
     const float* cs = static_cast<const float*>(cache.data);
 
     if (neox) {
-        rope_kernel<T, true><<<grid, BLOCK, 0, stream>>>(
+        rope_kernel<T, true><<<grid, kBlockSize, 0, stream>>>(
             q, k, pos, cs, num_heads, num_kv_heads, head_dim, rot_half);
     } else {
-        rope_kernel<T, false><<<grid, BLOCK, 0, stream>>>(
+        rope_kernel<T, false><<<grid, kBlockSize, 0, stream>>>(
             q, k, pos, cs, num_heads, num_kv_heads, head_dim, rot_half);
     }
 
-    const cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        return ayaka_status_make(AYAKA_STATUS_KERNEL_LAUNCH_ERROR,
-                                 cudaGetErrorString(err));
-    }
-    return ayaka_status_ok();
+    return last_launch_status();
 }
 
 }  // namespace
@@ -110,21 +106,10 @@ ayaka_status_t rope_cuda(const ayaka_tensor_view_t& query,
 
     const bool neox = layout == AYAKA_ROPE_LAYOUT_NEOX;
     cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
-
-    switch (query.dtype) {
-        case AYAKA_DTYPE_F32:
-            return launch_rope<float>(query, key, positions, cos_sin_cache, neox,
-                                      cuda_stream);
-        case AYAKA_DTYPE_F16:
-            return launch_rope<__half>(query, key, positions, cos_sin_cache, neox,
-                                       cuda_stream);
-        case AYAKA_DTYPE_BF16:
-            return launch_rope<__nv_bfloat16>(query, key, positions,
-                                              cos_sin_cache, neox, cuda_stream);
-        default:
-            return ayaka_status_make(AYAKA_STATUS_UNSUPPORTED,
-                                     "rope: dtype must be f32, f16, or bf16");
-    }
+    AYAKA_DISPATCH_FLOAT_DTYPES(query.dtype, "rope", [&] {
+        return launch_rope<scalar_t>(query, key, positions, cos_sin_cache, neox,
+                                     cuda_stream);
+    });
 }
 
 }  // namespace ayaka

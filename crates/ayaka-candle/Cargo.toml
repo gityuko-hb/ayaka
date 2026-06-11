@@ -21,21 +21,6 @@ half.workspace = true
 criterion.workspace = true
 
 [[bench]]
-name = "rmsnorm_bench"
-harness = false
-required-features = ["cuda"]
-
-[[bench]]
-name = "fused_add_rmsnorm_bench"
-harness = false
-required-features = ["cuda"]
-
-[[bench]]
-name = "rope_bench"
-harness = false
-required-features = ["cuda"]
-
-[[bench]]
-name = "swiglu_bench"
+name = "ops_bench"
 harness = false
 required-features = ["cuda"]

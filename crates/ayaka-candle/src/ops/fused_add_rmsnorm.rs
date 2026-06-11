@@ -41,10 +41,9 @@ mod cuda {
     use ayaka_kernel_api::AyakaStream;
     use candle_core::cuda_backend::CudaDType;
     use candle_core::cuda_backend::cudarc::driver::DevicePtr;
-    use candle_core::{D, DType, Result, Tensor};
-    use half::{bf16, f16};
+    use candle_core::{D, Result, Tensor};
 
-    use crate::extract;
+    use crate::extract::{self, dispatch_float_dtype, extract_views};
 
     /// Run the native fused add+RMSNorm kernel:
     /// `residual_out = input + residual`, `out = rmsnorm(residual_out) * weight`.
@@ -99,12 +98,8 @@ mod cuda {
             );
         }
 
-        match dtype {
-            DType::F32 => launch::<f32>(out, residual_out, input, residual, weight, eps),
-            DType::F16 => launch::<f16>(out, residual_out, input, residual, weight, eps),
-            DType::BF16 => launch::<bf16>(out, residual_out, input, residual, weight, eps),
-            dt => candle_core::bail!("fused_add_rmsnorm: unsupported dtype {dt:?}"),
-        }
+        dispatch_float_dtype!(dtype, "fused_add_rmsnorm",
+            T => launch::<T>(out, residual_out, input, residual, weight, eps))
     }
 
     fn launch<T: CudaDType>(
@@ -120,45 +115,13 @@ mod cuda {
         let ordinal = extract::cuda_ordinal(device)?;
         let dtype = extract::ayaka_dtype(input.dtype())?;
 
-        let (out_storage, out_layout) = out.storage_and_layout();
-        let (res_out_storage, res_out_layout) = residual_out.storage_and_layout();
-        let (in_storage, in_layout) = input.storage_and_layout();
-        let (res_storage, res_layout) = residual.storage_and_layout();
-        let (w_storage, w_layout) = weight.storage_and_layout();
-        extract::require_contiguous(out_layout, "fused_add_rmsnorm out")?;
-        extract::require_contiguous(res_out_layout, "fused_add_rmsnorm residual_out")?;
-        extract::require_contiguous(in_layout, "fused_add_rmsnorm input")?;
-        extract::require_contiguous(res_layout, "fused_add_rmsnorm residual")?;
-        extract::require_contiguous(w_layout, "fused_add_rmsnorm weight")?;
-
-        let out_slice = extract::cuda_storage(&out_storage, "fused_add_rmsnorm out")?
-            .as_cuda_slice::<T>()?
-            .slice(out_layout.start_offset()..);
-        let res_out_slice =
-            extract::cuda_storage(&res_out_storage, "fused_add_rmsnorm residual_out")?
-                .as_cuda_slice::<T>()?
-                .slice(res_out_layout.start_offset()..);
-        let in_slice = extract::cuda_storage(&in_storage, "fused_add_rmsnorm input")?
-            .as_cuda_slice::<T>()?
-            .slice(in_layout.start_offset()..);
-        let res_slice = extract::cuda_storage(&res_storage, "fused_add_rmsnorm residual")?
-            .as_cuda_slice::<T>()?
-            .slice(res_layout.start_offset()..);
-        let w_slice = extract::cuda_storage(&w_storage, "fused_add_rmsnorm weight")?
-            .as_cuda_slice::<T>()?
-            .slice(w_layout.start_offset()..);
-
-        let (out_ptr, _g0) = out_slice.device_ptr(&stream);
-        let (res_out_ptr, _g1) = res_out_slice.device_ptr(&stream);
-        let (in_ptr, _g2) = in_slice.device_ptr(&stream);
-        let (res_ptr, _g3) = res_slice.device_ptr(&stream);
-        let (w_ptr, _g4) = w_slice.device_ptr(&stream);
-
-        let out_view = extract::contiguous_view(out_layout, dtype, ordinal, out_ptr);
-        let res_out_view = extract::contiguous_view(res_out_layout, dtype, ordinal, res_out_ptr);
-        let in_view = extract::contiguous_view(in_layout, dtype, ordinal, in_ptr);
-        let res_view = extract::contiguous_view(res_layout, dtype, ordinal, res_ptr);
-        let w_view = extract::contiguous_view(w_layout, dtype, ordinal, w_ptr);
+        extract_views!(&stream, ordinal;
+            out_view <- (out, T, dtype, "fused_add_rmsnorm out"),
+            res_out_view <- (residual_out, T, dtype, "fused_add_rmsnorm residual_out"),
+            in_view <- (input, T, dtype, "fused_add_rmsnorm input"),
+            res_view <- (residual, T, dtype, "fused_add_rmsnorm residual"),
+            w_view <- (weight, T, dtype, "fused_add_rmsnorm weight"),
+        );
         let raw_stream: AyakaStream = stream.cu_stream().cast();
 
         // SAFETY: views describe live, contiguous CUDA allocations whose

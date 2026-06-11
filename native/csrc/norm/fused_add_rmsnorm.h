@@ -10,12 +10,13 @@
 namespace ayaka {
 
 // Views are pre-validated by the caller (see ayaka_fused_add_rmsnorm).
-ayaka_status_t fused_add_rmsnorm_cuda(const ayaka_tensor_view_t& out,
-                                      const ayaka_tensor_view_t& residual_out,
-                                      const ayaka_tensor_view_t& input,
-                                      const ayaka_tensor_view_t& residual,
-                                      const ayaka_tensor_view_t& weight,
-                                      float eps,
-                                      ayaka_stream_t stream);
+AYAKA_NODISCARD ayaka_status_t
+fused_add_rmsnorm_cuda(const ayaka_tensor_view_t& out,
+                       const ayaka_tensor_view_t& residual_out,
+                       const ayaka_tensor_view_t& input,
+                       const ayaka_tensor_view_t& residual,
+                       const ayaka_tensor_view_t& weight,
+                       float eps,
+                       ayaka_stream_t stream);
 
 }  // namespace ayaka

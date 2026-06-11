@@ -10,8 +10,8 @@
 namespace ayaka {
 
 // Views are pre-validated by the caller (see ayaka_silu_and_mul).
-ayaka_status_t silu_and_mul_cuda(const ayaka_tensor_view_t& out,
-                                 const ayaka_tensor_view_t& input,
-                                 ayaka_stream_t stream);
+AYAKA_NODISCARD ayaka_status_t silu_and_mul_cuda(const ayaka_tensor_view_t& out,
+                                                 const ayaka_tensor_view_t& input,
+                                                 ayaka_stream_t stream);
 
 }  // namespace ayaka
