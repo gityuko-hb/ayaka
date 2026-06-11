@@ -1,6 +1,7 @@
 pub mod arena;
 pub mod error;
 pub mod host_buffer;
+pub mod slab;
 pub mod span;
 pub mod stats;
 pub mod stream;
@@ -8,6 +9,7 @@ pub mod stream;
 pub use arena::DeviceArena;
 pub use error::{MemoryError, Result};
 pub use host_buffer::HostBuffer;
+pub use slab::{SlabAllocator, SlabSlot};
 pub use span::DeviceSpan;
 pub use stats::{
     DriverMemoryInfo, KvBudget, MemoryLedger, MemoryPurpose, MemorySnapshot, MemoryStats,
