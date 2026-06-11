@@ -18,6 +18,7 @@ set(AYAKA_NATIVE_SOURCES
 )
 
 set(AYAKA_CUDA_HOST_SOURCES
+    src/c_api/c_api_memory.cc
     src/ops/fused_add_rmsnorm.cc
     src/ops/rmsnorm.cc
     src/ops/rope.cc
@@ -52,6 +53,7 @@ set(AYAKA_NATIVE_HEADERS
     include/ayaka/check.h
     include/ayaka/status.h
     include/ayaka/tensor_view.h
+    include/ayaka/memory.h
 )
 
 set(AYAKA_OPS_HEADERS
