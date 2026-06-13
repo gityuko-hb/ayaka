@@ -18,8 +18,10 @@ set(AYAKA_NATIVE_SOURCES
 )
 
 set(AYAKA_CUDA_HOST_SOURCES
+    src/backends/cublaslt_gemm.cc
     src/c_api/c_api_memory.cc
     src/ops/fused_add_rmsnorm.cc
+    src/ops/gemm.cc
     src/ops/rmsnorm.cc
     src/ops/rope.cc
     src/ops/silu_and_mul.cc
@@ -37,6 +39,7 @@ if(AYAKA_ENABLE_CUDA)
         set(CMAKE_CUDA_ARCHITECTURES 86)
     endif()
     enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     list(APPEND AYAKA_NATIVE_SOURCES ${AYAKA_CUDA_HOST_SOURCES} ${AYAKA_CUDA_SOURCES})
@@ -58,6 +61,7 @@ set(AYAKA_NATIVE_HEADERS
 
 set(AYAKA_OPS_HEADERS
     include/ayaka/ops/fused_add_rmsnorm.h
+    include/ayaka/ops/gemm.h
     include/ayaka/ops/rmsnorm.h
     include/ayaka/ops/rope.h
     include/ayaka/ops/silu_and_mul.h
@@ -78,6 +82,13 @@ target_include_directories(ayaka-native
 )
 
 target_compile_definitions(ayaka-native PRIVATE AYAKA_BUILDING_NATIVE)
+
+if(AYAKA_ENABLE_CUDA)
+    # Header include dirs for the host-side cuBLASLt wrapper; the import
+    # library itself is linked by the Rust build (static archives do not
+    # propagate link dependencies).
+    target_link_libraries(ayaka-native PRIVATE CUDA::cublasLt)
+endif()
 
 set_target_properties(ayaka-native PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

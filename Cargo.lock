@@ -151,6 +151,9 @@ version = "0.1.0"
 [[package]]
 name = "ayaka-quant"
 version = "0.1.0"
+dependencies = [
+ "half",
+]
 
 [[package]]
 name = "ayaka-registry"

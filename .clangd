@@ -1,12 +1,3 @@
-CompileFlags:
-  Add:
-    - -I
-    - native/include
-    - -I
-    - native/src
-    - -I
-    - native/csrc
----
 If:
   PathMatch: .*\.(cu|cuh)$
 CompileFlags:

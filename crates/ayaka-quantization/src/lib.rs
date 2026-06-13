@@ -1,17 +1,8 @@
-pub fn add(
-    left: u64,
-    right: u64,
-) -> u64 {
-    left + right
-}
+//! Quantization schemes and GGUF block layouts.
+//!
+//! Owns the description of how weights are stored on disk and how many bytes
+//! each stored weight costs. `ayaka-loader` uses [`QuantScheme::bytes_per_weight`]
+//! for memory estimation and the [`GgufBlock`] descriptors to dequantize GGUF
+//! tensors to F16/BF16 before they reach any kernel.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod scheme;

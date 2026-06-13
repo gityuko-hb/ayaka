@@ -11,6 +11,7 @@ temp/
 .cursor
 docs/
 compile_commands.json
+native/compile_flags.txt
 .cache/
 .vscode/ipch/
 CMakeUserPresets.json

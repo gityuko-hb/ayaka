@@ -12,11 +12,10 @@
 namespace ayaka {
 
 // Views are pre-validated by the caller (see ayaka_rope).
-AYAKA_NODISCARD ayaka_status_t rope_cuda(const ayaka_tensor_view_t& query,
-                                         const ayaka_tensor_view_t& key,
-                                         const ayaka_tensor_view_t& positions,
-                                         const ayaka_tensor_view_t& cos_sin_cache,
-                                         int32_t layout,
-                                         ayaka_stream_t stream);
+AYAKA_NODISCARD ayaka_status_t
+rope_cuda(const ayaka_tensor_view_t &query, const ayaka_tensor_view_t &key,
+          const ayaka_tensor_view_t &positions,
+          const ayaka_tensor_view_t &cos_sin_cache, int32_t layout,
+          ayaka_stream_t stream);
 
-}  // namespace ayaka
+} // namespace ayaka

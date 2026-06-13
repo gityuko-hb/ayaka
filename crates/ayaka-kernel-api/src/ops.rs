@@ -93,3 +93,46 @@ pub unsafe fn silu_and_mul(
 ) -> Result<(), KernelError> {
     unsafe { ffi::ayaka_silu_and_mul(out, input, stream) }.into_result()
 }
+
+/// Dense GEMM via cuBLASLt: `out = op_a(a) @ op_b(b) (+ bias)` with f32
+/// accumulation; `op_x` transposes its argument when `trans_x` is set.
+///
+/// # Safety
+///
+/// - `out`, `a`, `b`, and `bias` (when `Some`) must describe live CUDA
+///   allocations that match their metadata for the duration of the kernel
+///   execution, not just this call.
+/// - `workspace` must be null with `workspace_bytes == 0`, or a live device
+///   allocation of at least `workspace_bytes` on the views' device that no
+///   concurrent work uses until this launch completes.
+/// - `stream` must be a valid CUDA stream on the views' device.
+/// - `out` must not alias `a`, `b`, `bias`, or `workspace`.
+#[cfg(feature = "cuda")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn gemm(
+    out: &AyakaTensorView,
+    a: &AyakaTensorView,
+    b: &AyakaTensorView,
+    bias: Option<&AyakaTensorView>,
+    trans_a: bool,
+    trans_b: bool,
+    workspace: *mut core::ffi::c_void,
+    workspace_bytes: usize,
+    stream: AyakaStream,
+) -> Result<(), KernelError> {
+    let bias_ptr = bias.map_or(core::ptr::null(), |view| view as *const AyakaTensorView);
+    unsafe {
+        ffi::ayaka_gemm(
+            out,
+            a,
+            b,
+            bias_ptr,
+            trans_a as i32,
+            trans_b as i32,
+            workspace,
+            workspace_bytes,
+            stream,
+        )
+    }
+    .into_result()
+}

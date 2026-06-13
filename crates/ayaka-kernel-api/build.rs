@@ -59,6 +59,8 @@ fn link_cuda_runtime() {
             );
         }
         println!("cargo:rustc-link-lib=static=cudart_static");
+        // Import library; resolves to cublasLt64_*.dll at runtime.
+        println!("cargo:rustc-link-lib=cublasLt");
     } else {
         for dir in ["/usr/local/cuda/lib64", "/opt/cuda/lib64"] {
             if PathBuf::from(dir).exists() {
@@ -66,6 +68,7 @@ fn link_cuda_runtime() {
             }
         }
         println!("cargo:rustc-link-lib=dylib=cudart");
+        println!("cargo:rustc-link-lib=dylib=cublasLt");
         println!("cargo:rustc-link-lib=dylib=stdc++");
     }
 }

@@ -8,6 +8,10 @@ use crate::error::KernelError;
 #[cfg(feature = "cuda")]
 use crate::ffi::{self, AyakaMemInfo, AyakaMemcpyKind, AyakaStream};
 
+/// # Safety
+///
+/// `device_ordinal` must name an existing CUDA device. The returned pointer
+/// must be released with [`device_free`] on the same device.
 #[cfg(feature = "cuda")]
 pub unsafe fn device_alloc(
     bytes: usize,
@@ -18,6 +22,10 @@ pub unsafe fn device_alloc(
     Ok(out)
 }
 
+/// # Safety
+///
+/// `ptr` must come from [`device_alloc`] on `device_ordinal`, must not be
+/// freed twice, and no kernel or copy may still use it.
 #[cfg(feature = "cuda")]
 pub unsafe fn device_free(
     ptr: *mut c_void,
@@ -26,6 +34,11 @@ pub unsafe fn device_free(
     unsafe { ffi::ayaka_mem_device_free(ptr, device_ordinal) }.into_result()
 }
 
+/// # Safety
+///
+/// `device_ordinal` must name an existing CUDA device and `stream` must be a
+/// valid CUDA stream on it. The returned pointer is usable only as ordered by
+/// `stream` and must be released with [`device_free_async`].
 #[cfg(feature = "cuda")]
 pub unsafe fn device_alloc_async(
     bytes: usize,
@@ -38,6 +51,11 @@ pub unsafe fn device_alloc_async(
     Ok(out)
 }
 
+/// # Safety
+///
+/// `ptr` must come from [`device_alloc_async`] on `device_ordinal`, must not
+/// be freed twice, and all work using it must be ordered before this free on
+/// `stream`, which must be a valid CUDA stream on the device.
 #[cfg(feature = "cuda")]
 pub unsafe fn device_free_async(
     ptr: *mut c_void,
@@ -47,6 +65,9 @@ pub unsafe fn device_free_async(
     unsafe { ffi::ayaka_mem_device_free_async(ptr, device_ordinal, stream) }.into_result()
 }
 
+/// # Safety
+///
+/// The returned pointer must be released with [`host_pinned_free`].
 #[cfg(feature = "cuda")]
 pub unsafe fn host_pinned_alloc(bytes: usize) -> Result<*mut c_void, KernelError> {
     let mut out = core::ptr::null_mut();
@@ -54,11 +75,20 @@ pub unsafe fn host_pinned_alloc(bytes: usize) -> Result<*mut c_void, KernelError
     Ok(out)
 }
 
+/// # Safety
+///
+/// `ptr` must come from [`host_pinned_alloc`], must not be freed twice, and
+/// no asynchronous copy may still use it.
 #[cfg(feature = "cuda")]
 pub unsafe fn host_pinned_free(ptr: *mut c_void) -> Result<(), KernelError> {
     unsafe { ffi::ayaka_mem_host_pinned_free(ptr) }.into_result()
 }
 
+/// # Safety
+///
+/// `dst` and `src` must be live allocations of at least `bytes` whose sides
+/// match `kind` (host or device), staying valid until the copy completes on
+/// `stream`, which must be a valid CUDA stream.
 #[cfg(feature = "cuda")]
 pub unsafe fn memcpy_async(
     dst: *mut c_void,
@@ -70,6 +100,10 @@ pub unsafe fn memcpy_async(
     unsafe { ffi::ayaka_mem_memcpy_async(dst, src, bytes, kind, stream) }.into_result()
 }
 
+/// # Safety
+///
+/// `dst` must be a live device allocation of at least `bytes`, staying valid
+/// until the memset completes on `stream`, which must be a valid CUDA stream.
 #[cfg(feature = "cuda")]
 pub unsafe fn memset_async(
     dst: *mut c_void,
@@ -90,7 +124,11 @@ pub fn get_info(device_ordinal: i32) -> Result<AyakaMemInfo, KernelError> {
     Ok(info)
 }
 
+// `AyakaStream` is an opaque handle the native side hands to the CUDA
+// runtime; Rust never dereferences it. An invalid handle surfaces as a
+// status error, not UB on this side.
 #[cfg(feature = "cuda")]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn stream_synchronize(stream: AyakaStream) -> Result<(), KernelError> {
     unsafe { ffi::ayaka_mem_stream_synchronize(stream) }.into_result()
 }
