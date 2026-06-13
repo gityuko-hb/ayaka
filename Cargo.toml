@@ -98,10 +98,8 @@ async-trait = "0.1.89"
 clap = "4.6.1"
 cmake = "0.1.54"
 criterion = "0.7"
-
-[workspace.dev-dependencies]
-ayaka-utils = { path = "../crates/ayaka-utils" }
-ayaka-core = { path = "../crates/ayaka-core" }
+ayaka-utils = { path = "crates/ayaka-utils" }
+ayaka-core = { path = "crates/ayaka-core" }
 
 [profile.release-fast]
 inherits = "release"

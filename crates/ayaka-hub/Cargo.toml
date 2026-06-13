@@ -1,0 +1,28 @@
+[package]
+name = "ayaka-hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+hf-hub.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+dirs.workspace = true
+ayaka-utils = { workspace = true }
+fd-lock = "4.0"
+indicatif.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+tempfile.workspace = true
+tracing-test = "0.2.0"
+tokio-test = "0.4"

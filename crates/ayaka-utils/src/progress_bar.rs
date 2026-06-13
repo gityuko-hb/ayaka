@@ -275,6 +275,14 @@ impl SpinnerBar {
         Self { bar }
     }
 
+    /// Wrap an existing `indicatif::ProgressBar` (e.g. one obtained from a
+    /// `MultiProgress`) so it can be driven through the `SpinnerBar` API.
+    /// The caller is responsible for ensuring the bar uses a spinner style.
+    pub fn from_indicatif(bar: ProgressBar) -> Self {
+        configure_bar(&bar);
+        Self { bar }
+    }
+
     /// Update message displayed next to the spinner.
     pub fn set_message(
         &self,
@@ -294,6 +302,21 @@ impl SpinnerBar {
     pub fn finish(
         self,
         msg: &'static str,
+    ) {
+        self.bar.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} {msg}")
+                .unwrap(),
+        );
+        self.bar.finish_with_message(msg);
+    }
+
+    /// Finish the spinner with a runtime-formatted message (`String`).
+    /// Useful when the message includes values (e.g. file count) that are
+    /// only known at runtime.
+    pub fn finish_with_owned(
+        self,
+        msg: String,
     ) {
         self.bar.set_style(
             ProgressStyle::default_spinner()
@@ -329,9 +352,26 @@ impl MultitaskProgress {
         }
     }
 
+    /// Wrap an existing `MultiProgress` so it can be used through the
+    /// `MultitaskProgress` API (multi-bar tracking). Useful when the caller
+    /// already created a `MultiProgress` they want to share with other
+    /// components.
+    pub fn from_mp(mp: MultiProgress) -> Self {
+        if progress_suppressed() {
+            mp.set_draw_target(ProgressDrawTarget::hidden());
+        }
+        Self { mp }
+    }
+
+    /// Consume `self` and return the inner `MultiProgress` so the caller can
+    /// keep using it after a `MultitaskProgress` is dropped.
+    pub fn into_mp(self) -> MultiProgress {
+        self.mp
+    }
+
     pub fn add_task(
         &self,
-        label: &'static str,
+        label: &str,
         total: u64,
         color: ProgressBarColor,
     ) -> ProgressBar {
@@ -343,7 +383,7 @@ impl MultitaskProgress {
 
     pub fn add_spinner(
         &self,
-        label: &'static str,
+        label: &str,
     ) -> ProgressBar {
         let bar = ProgressBar::new_spinner();
         bar.set_style(make_spinner_style(label));
@@ -426,5 +466,16 @@ mod tests {
         assert!(!progress_suppressed());
         let _g = ProgressSuppressGuard::noop();
         assert!(!progress_suppressed());
+    }
+
+    #[test]
+    fn test_multitask_from_mp_round_trip() {
+        let mp = new_multi_progress();
+        let tracker = MultitaskProgress::from_mp(mp);
+        let bar = tracker.add_task("from-mp-test", 10, ProgressBarColor::Green);
+        bar.inc(5);
+        assert_eq!(bar.position(), 5);
+        // Consume and recover the inner MultiProgress.
+        let _mp_back = tracker.into_mp();
     }
 }
