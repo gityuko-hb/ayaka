@@ -32,7 +32,10 @@ impl AyakaStatus {
     /// `message` must be a valid pointer to a null-terminated static C string
     /// or null. The pointer must remain valid for the lifetime of the returned
     /// status.
-    pub const unsafe fn from_static(code: StatusCode, message: *const c_char) -> Self {
+    pub const unsafe fn from_static(
+        code: StatusCode,
+        message: *const c_char,
+    ) -> Self {
         Self {
             code: code.as_i32(),
             message,
@@ -129,8 +132,8 @@ impl StatusCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ext::{OptionExt, ResultExt};
     use crate::ErrorKind;
+    use crate::ext::{OptionExt, ResultExt};
 
     fn maybe_ok(ok: bool) -> core::result::Result<i32, &'static str> {
         if ok {
@@ -151,8 +154,8 @@ mod tests {
 
     #[test]
     fn result_ext_with_context() {
-        let r: Result<i32> = maybe_ok(false)
-            .ayaka_with_context(ErrorKind::Memory, |e| alloc::format!("alloc: {e}"));
+        let r: Result<i32> =
+            maybe_ok(false).ayaka_with_context(ErrorKind::Memory, |e| alloc::format!("alloc: {e}"));
         let err = r.unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Memory);
         assert!(err.message().contains("alloc: boom"));

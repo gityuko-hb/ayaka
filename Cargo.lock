@@ -72,6 +72,7 @@ name = "ayaka"
 version = "0.1.0"
 dependencies = [
  "ayaka-core",
+ "ayaka-error",
  "ayaka-executor",
  "ayaka-request",
  "ayaka-scheduler",
@@ -104,6 +105,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokenizers 0.23.1",
+]
+
+[[package]]
+name = "ayaka-error"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -156,8 +164,8 @@ name = "ayaka-memory"
 version = "0.1.0"
 dependencies = [
  "ayaka-core",
+ "ayaka-error",
  "ayaka-kernel-api",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -252,6 +260,7 @@ name = "ayaka-utils"
 version = "0.1.0"
 dependencies = [
  "ayaka-core",
+ "ayaka-error",
  "candle-core",
  "crossbeam",
  "indicatif",

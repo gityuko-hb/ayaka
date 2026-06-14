@@ -103,7 +103,10 @@ pub type Result<T> = core::result::Result<T, AyakaError>;
 
 impl AyakaError {
     /// Creates a new error with the given kind and message.
-    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+    pub fn new(
+        kind: ErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -193,7 +196,10 @@ impl AyakaError {
 
 #[cfg(feature = "std")]
 impl core::fmt::Display for AyakaError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    fn fmt(
+        &self,
+        f: &mut core::fmt::Formatter<'_>,
+    ) -> core::fmt::Result {
         write!(f, "{}: {}", self.kind.as_str(), self.message)
     }
 }
