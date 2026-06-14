@@ -10,6 +10,7 @@ homepage.workspace = true
 
 [dependencies]
 ayaka-core = { path = "../ayaka-core" }
+ayaka-error = { path = "../ayaka-error" }
 ayaka-executor = { path = "../ayaka-executor" }
 ayaka-request = { path = "../ayaka-request" }
 ayaka-scheduler = { path = "../ayaka-scheduler" }

@@ -5,7 +5,7 @@ use core::ptr::NonNull;
 
 use ayaka_kernel_api::mem;
 
-use crate::{MemoryError, Result};
+use crate::Result;
 
 pub struct PinnedBuffer {
     ptr: NonNull<u8>,
@@ -19,7 +19,7 @@ impl PinnedBuffer {
         } else {
             let raw = unsafe { mem::host_pinned_alloc(len)? };
             NonNull::new(raw.cast::<u8>())
-                .ok_or_else(|| MemoryError::invalid("pinned allocation returned null"))?
+                .ok_or_else(|| crate::error::invalid("pinned allocation returned null"))?
         };
         Ok(Self { ptr, len })
     }
@@ -75,18 +75,18 @@ impl PinnedRing {
         slot_bytes: usize,
     ) -> Result<Self> {
         if slot_count == 0 {
-            return Err(MemoryError::invalid(
+            return Err(crate::error::invalid(
                 "pinned ring slot_count must be non-zero",
             ));
         }
         if slot_bytes == 0 {
-            return Err(MemoryError::invalid(
+            return Err(crate::error::invalid(
                 "pinned ring slot_bytes must be non-zero",
             ));
         }
         let total = slot_count
             .checked_mul(slot_bytes)
-            .ok_or_else(|| MemoryError::overflow("pinned ring total byte count overflow"))?;
+            .ok_or_else(|| crate::error::overflow("pinned ring total byte count overflow"))?;
         Ok(Self {
             buffer: PinnedBuffer::new(total)?,
             slot_count,
@@ -132,9 +132,9 @@ impl<'a> PinnedSlot<'a> {
         let start = align_up(self.cursor, align)?;
         let end = start
             .checked_add(data.len())
-            .ok_or_else(|| MemoryError::overflow("pinned slot write offset overflow"))?;
+            .ok_or_else(|| crate::error::overflow("pinned slot write offset overflow"))?;
         if end > self.bytes.len() {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "pinned slot write of {} bytes exceeds remaining {} bytes",
                 data.len(),
                 self.bytes.len().saturating_sub(start)
@@ -151,14 +151,14 @@ fn align_up(
     align: usize,
 ) -> Result<usize> {
     if align == 0 || !align.is_power_of_two() {
-        return Err(MemoryError::invalid(format!(
+        return Err(crate::error::invalid(format!(
             "alignment must be a non-zero power of two, got {align}"
         )));
     }
     value
         .checked_add(align - 1)
         .map(|v| v & !(align - 1))
-        .ok_or_else(|| MemoryError::overflow("align_up overflow"))
+        .ok_or_else(|| crate::error::overflow("align_up overflow"))
 }
 
 #[cfg(test)]

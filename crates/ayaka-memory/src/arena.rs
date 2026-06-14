@@ -1,4 +1,4 @@
-use crate::{DeviceSpan, MemoryError, Result};
+use crate::{DeviceSpan, Result};
 
 pub struct DeviceArena {
     base: DeviceSpan,
@@ -37,12 +37,12 @@ impl DeviceArena {
         let offset = align_up(self.cursor, align)?;
         let end = offset
             .checked_add(bytes)
-            .ok_or_else(|| MemoryError::overflow("arena allocation end offset overflow"))?;
+            .ok_or_else(|| crate::error::overflow("arena allocation end offset overflow"))?;
         if end > self.base.len {
-            return Err(MemoryError::ArenaExhausted {
-                needed: bytes,
-                remaining: self.base.len.saturating_sub(offset),
-            });
+            return Err(crate::error::arena_exhausted(
+                bytes,
+                self.base.len.saturating_sub(offset),
+            ));
         }
         let span = self.base.checked_subspan(offset, bytes)?;
         self.cursor = end;
@@ -55,14 +55,14 @@ fn align_up(
     align: usize,
 ) -> Result<usize> {
     if align == 0 || !align.is_power_of_two() {
-        return Err(MemoryError::invalid(format!(
+        return Err(crate::error::invalid(format!(
             "arena alignment must be a non-zero power of two, got {align}"
         )));
     }
     value
         .checked_add(align - 1)
         .map(|v| v & !(align - 1))
-        .ok_or_else(|| MemoryError::overflow("arena align_up overflow"))
+        .ok_or_else(|| crate::error::overflow("arena align_up overflow"))
 }
 
 #[cfg(test)]
@@ -89,8 +89,10 @@ mod tests {
 
     #[test]
     fn exhaustion_is_typed_error() {
+        use ayaka_error::ErrorKind;
         let mut arena = DeviceArena::new(DeviceSpan::new(0x1000, 64));
         let err = arena.alloc(65, 1).unwrap_err();
-        assert!(matches!(err, MemoryError::ArenaExhausted { .. }));
+        assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+        assert!(err.message().contains("arena exhausted"));
     }
 }

@@ -9,7 +9,7 @@ pub mod stream;
 pub mod workspace;
 
 pub use arena::DeviceArena;
-pub use error::{MemoryError, Result};
+pub use ayaka_error::Result;
 pub use host_buffer::HostBuffer;
 pub use pool::{PoolBlock, SizeClassPool};
 pub use slab::{SlabAllocator, SlabSlot};

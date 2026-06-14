@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use crate::{DeviceSpan, MemoryError, Result};
+use crate::{DeviceSpan, Result};
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -32,16 +32,16 @@ impl SlabAllocator {
         num_slots: usize,
     ) -> Result<Self> {
         if slot_bytes == 0 {
-            return Err(MemoryError::invalid("slab slot_bytes must be non-zero"));
+            return Err(crate::error::invalid("slab slot_bytes must be non-zero"));
         }
         if num_slots == 0 {
-            return Err(MemoryError::invalid("slab num_slots must be non-zero"));
+            return Err(crate::error::invalid("slab num_slots must be non-zero"));
         }
         let required = slot_bytes
             .checked_mul(num_slots)
-            .ok_or_else(|| MemoryError::overflow("slab byte size overflow"))?;
+            .ok_or_else(|| crate::error::overflow("slab byte size overflow"))?;
         if required > base.len {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "slab requires {required} bytes but base span has {} bytes",
                 base.len
             )));
@@ -107,9 +107,7 @@ impl SlabAllocator {
                 }
             }
         }
-        Err(MemoryError::SlabExhausted {
-            num_slots: self.num_slots,
-        })
+        Err(crate::error::slab_exhausted(self.num_slots))
     }
 
     pub fn free(
@@ -118,17 +116,14 @@ impl SlabAllocator {
     ) -> Result<()> {
         let raw = slot.raw() as usize;
         if raw >= self.num_slots {
-            return Err(MemoryError::InvalidSlot {
-                slot: slot.raw(),
-                num_slots: self.num_slots,
-            });
+            return Err(crate::error::invalid_slot(slot.raw(), self.num_slots));
         }
         let word_index = raw / 64;
         let bit = raw % 64;
         let mask = 1u64 << bit;
         let previous = self.words[word_index].fetch_and(!mask, Ordering::AcqRel);
         if previous & mask == 0 {
-            return Err(MemoryError::SlotAlreadyFree { slot: slot.raw() });
+            return Err(crate::error::slot_already_free(slot.raw()));
         }
         self.cursor_word
             .store(word_index, Ordering::Release);
@@ -142,14 +137,11 @@ impl SlabAllocator {
     ) -> Result<DeviceSpan> {
         let raw = slot.raw() as usize;
         if raw >= self.num_slots {
-            return Err(MemoryError::InvalidSlot {
-                slot: slot.raw(),
-                num_slots: self.num_slots,
-            });
+            return Err(crate::error::invalid_slot(slot.raw(), self.num_slots));
         }
         let offset = raw
             .checked_mul(self.slot_bytes)
-            .ok_or_else(|| MemoryError::overflow("slab slot offset overflow"))?;
+            .ok_or_else(|| crate::error::overflow("slab slot offset overflow"))?;
         self.base.checked_subspan(offset, self.slot_bytes)
     }
 }
@@ -181,13 +173,13 @@ mod tests {
 
     #[test]
     fn full_slab_returns_typed_error() {
+        use ayaka_error::ErrorKind;
         let slab = SlabAllocator::new(DeviceSpan::new(0x1000, 2048), 1024, 2).unwrap();
         let _a = slab.alloc().unwrap();
         let _b = slab.alloc().unwrap();
-        assert!(matches!(
-            slab.alloc().unwrap_err(),
-            MemoryError::SlabExhausted { num_slots: 2 }
-        ));
+        let err = slab.alloc().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+        assert!(err.message().contains("slab exhausted"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{DeviceSpan, MemoryError, Result};
+use crate::{DeviceSpan, Result};
 
 #[cfg(feature = "cuda")]
 use crate::{DeviceBuffer, MemoryPurpose};
@@ -50,17 +50,17 @@ impl WorkspacePlan {
     ) -> Result<SectionId> {
         let name = name.into();
         if max_bytes == 0 {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "workspace section {name} max_bytes must be non-zero"
             )));
         }
         if align == 0 || !align.is_power_of_two() {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "workspace section {name} alignment must be a non-zero power of two"
             )));
         }
         if self.names.contains_key(&name) {
-            return Err(MemoryError::WorkspaceDuplicateSection { name });
+            return Err(crate::error::workspace_duplicate_section(name));
         }
         let id = SectionId(self.requirements.len() as u32);
         self.requirements.push(SectionRequirement {
@@ -78,7 +78,7 @@ impl WorkspacePlan {
             cursor = align_up(cursor, req.align)?;
             cursor = cursor
                 .checked_add(req.max_bytes)
-                .ok_or_else(|| MemoryError::overflow("workspace required byte count overflow"))?;
+                .ok_or_else(|| crate::error::overflow("workspace required byte count overflow"))?;
         }
         Ok(cursor)
     }
@@ -89,7 +89,7 @@ impl WorkspacePlan {
     ) -> Result<Workspace> {
         let required = self.required_bytes()?;
         if required > base.len {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "workspace requires {required} bytes but base span has {} bytes",
                 base.len
             )));
@@ -135,7 +135,7 @@ impl Workspace {
         self.sections
             .get(id.raw() as usize)
             .map(|info| info.span)
-            .ok_or(MemoryError::WorkspaceUnknownSection { id: id.raw() })
+            .ok_or_else(|| crate::error::workspace_unknown_section(id.raw()))
     }
 
     pub fn info(
@@ -144,7 +144,7 @@ impl Workspace {
     ) -> Result<&SectionInfo> {
         self.sections
             .get(id.raw() as usize)
-            .ok_or(MemoryError::WorkspaceUnknownSection { id: id.raw() })
+            .ok_or_else(|| crate::error::workspace_unknown_section(id.raw()))
     }
 
     pub fn sections(&self) -> &[SectionInfo] {
@@ -186,7 +186,7 @@ fn align_up(
     value
         .checked_add(align - 1)
         .map(|v| v & !(align - 1))
-        .ok_or_else(|| MemoryError::overflow("workspace align_up overflow"))
+        .ok_or_else(|| crate::error::overflow("workspace align_up overflow"))
 }
 
 #[cfg(test)]

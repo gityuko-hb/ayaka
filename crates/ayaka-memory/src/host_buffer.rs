@@ -1,7 +1,7 @@
 use core::ptr::NonNull;
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 
-use crate::{MemoryError, Result};
+use crate::Result;
 
 const HOST_ALIGNMENT: usize = 64;
 
@@ -23,9 +23,9 @@ impl HostBuffer {
         }
 
         let layout = Layout::from_size_align(len, HOST_ALIGNMENT)
-            .map_err(|_| MemoryError::invalid(format!("invalid host layout for {len} bytes")))?;
+            .map_err(|_| crate::error::invalid(format!("invalid host layout for {len} bytes")))?;
         let raw = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(raw).ok_or(MemoryError::HostAlloc { bytes: len })?;
+        let ptr = NonNull::new(raw).ok_or(crate::error::host_alloc(len))?;
         Ok(Self {
             ptr,
             len,

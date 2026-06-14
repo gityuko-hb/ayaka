@@ -121,6 +121,7 @@ dependencies = [
  "ayaka-utils",
  "dirs",
  "fd-lock",
+ "futures",
  "hf-hub",
  "indicatif",
  "serde",
@@ -130,6 +131,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "tracing-subscriber",
  "tracing-test",
 ]
 

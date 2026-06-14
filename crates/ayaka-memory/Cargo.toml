@@ -14,6 +14,6 @@ cuda = ["dep:ayaka-kernel-api", "ayaka-kernel-api/cuda"]
 
 [dependencies]
 ayaka-core = { path = "../ayaka-core" }
+ayaka-error = { path = "../ayaka-error" }
 ayaka-kernel-api = { path = "../ayaka-kernel-api", optional = true }
-thiserror.workspace = true
 tracing.workspace = true

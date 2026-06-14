@@ -1,8 +1,8 @@
 //! ```
-//! use ayaka::{EngineError, TokenEvent};
+//! use ayaka::{AyakaError, TokenEvent};
 //!
 //! fn assert_public_event_type(_: Option<TokenEvent>) {}
-//! fn assert_public_error_type(_: Option<EngineError>) {}
+//! fn assert_public_error_type(_: Option<AyakaError>) {}
 //!
 //! assert_public_event_type(None);
 //! assert_public_error_type(None);
@@ -13,7 +13,7 @@ use ayaka_executor::{MockExecution, MockExecutor};
 use ayaka_scheduler::SimpleScheduler;
 use ayaka_telemetry::TelemetryCounters;
 
-pub use ayaka_core::error::EngineError;
+pub use ayaka_error::AyakaError;
 pub use ayaka_executor::MockExecutorConfig;
 pub use ayaka_request::{
     FinishReason, RequestError, RequestState, RequestStatus, SequenceState, TokenEvent,
@@ -32,9 +32,9 @@ impl MockEngineConfig {
     pub fn new(
         max_batch_size: usize,
         mock_token_ids: Vec<TokenId>,
-    ) -> Result<Self, EngineError> {
+    ) -> Result<Self, AyakaError> {
         let scheduler = SchedulerConfig::new(max_batch_size)
-            .map_err(|err| EngineError::InvalidParameter(err.to_string()))?;
+            .map_err(|err| AyakaError::invalid_argument(err.to_string()))?;
         Ok(Self {
             scheduler,
             executor: MockExecutorConfig::new(mock_token_ids),
@@ -61,15 +61,15 @@ impl AyakaEngine {
     pub fn generate_stream(
         &mut self,
         request: GenerateRequest,
-    ) -> Result<Vec<TokenEvent>, EngineError> {
+    ) -> Result<Vec<TokenEvent>, AyakaError> {
         let state = request.into_request_state().map_err(|err| {
             self.telemetry.record_rejected_request();
-            EngineError::InvalidParameter(err.to_string())
+            AyakaError::invalid_argument(err.to_string())
         })?;
 
         self.scheduler.admit(state).map_err(|err| {
             self.telemetry.record_rejected_request();
-            EngineError::InvalidParameter(err.to_string())
+            AyakaError::invalid_argument(err.to_string())
         })?;
         self.telemetry.record_admitted_request();
 
@@ -81,9 +81,11 @@ impl AyakaEngine {
         let execution = self
             .executor
             .execute(batch.into_requests())
-            .map_err(|err| EngineError::Internal {
-                msg: err.to_string(),
-                location: "ayaka::AyakaEngine::generate_stream".into(),
+            .map_err(|err| {
+                AyakaError::internal(format!(
+                    "executor failed in ayaka::AyakaEngine::generate_stream: {}",
+                    err
+                ))
             })?;
         self.record_execution(&execution);
         Ok(execution.events)
@@ -173,7 +175,7 @@ mod tests {
     #[test]
     fn facade_reexports_public_signature_types() {
         fn assert_public_event_type(_: Option<TokenEvent>) {}
-        fn assert_public_error_type(_: Option<EngineError>) {}
+        fn assert_public_error_type(_: Option<AyakaError>) {}
         fn assert_public_scheduler_config(_: Option<SchedulerConfig>) {}
         fn assert_public_executor_config(_: Option<MockExecutorConfig>) {}
         fn assert_public_telemetry_snapshot(_: Option<TelemetrySnapshot>) {}

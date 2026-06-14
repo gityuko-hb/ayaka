@@ -1,4 +1,4 @@
-use crate::{MemoryError, Result};
+use crate::Result;
 
 /// Non-owning byte span in device memory.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl DeviceSpan {
     pub fn end_ptr(self) -> Result<u64> {
         self.ptr
             .checked_add(self.len as u64)
-            .ok_or_else(|| MemoryError::overflow("device span end pointer overflow"))
+            .ok_or_else(|| crate::error::overflow("device span end pointer overflow"))
     }
 
     pub fn checked_subspan(
@@ -36,9 +36,9 @@ impl DeviceSpan {
     ) -> Result<Self> {
         let end = offset
             .checked_add(len)
-            .ok_or_else(|| MemoryError::overflow("device subspan offset overflow"))?;
+            .ok_or_else(|| crate::error::overflow("device subspan offset overflow"))?;
         if end > self.len {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "subspan [{offset}, {end}) exceeds span length {}",
                 self.len
             )));
@@ -46,7 +46,7 @@ impl DeviceSpan {
         let ptr = self
             .ptr
             .checked_add(offset as u64)
-            .ok_or_else(|| MemoryError::overflow("device subspan pointer overflow"))?;
+            .ok_or_else(|| crate::error::overflow("device subspan pointer overflow"))?;
         Ok(Self { ptr, len })
     }
 

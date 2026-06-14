@@ -5,7 +5,7 @@ use core::ffi::c_void;
 use ayaka_kernel_api::ffi::AyakaMemcpyKind;
 use ayaka_kernel_api::mem;
 
-use crate::{DeviceSpan, MemoryError, Result, StreamHandle};
+use crate::{DeviceSpan, Result, StreamHandle};
 
 pub fn h2d_async(
     dst: DeviceSpan,
@@ -13,7 +13,7 @@ pub fn h2d_async(
     stream: StreamHandle,
 ) -> Result<()> {
     if src.len() > dst.len {
-        return Err(MemoryError::invalid(format!(
+        return Err(crate::error::invalid(format!(
             "h2d copy source length {} exceeds destination length {}",
             src.len(),
             dst.len
@@ -37,7 +37,7 @@ pub fn d2h_async(
     stream: StreamHandle,
 ) -> Result<()> {
     if dst.len() > src.len {
-        return Err(MemoryError::invalid(format!(
+        return Err(crate::error::invalid(format!(
             "d2h copy destination length {} exceeds source length {}",
             dst.len(),
             src.len
@@ -62,7 +62,7 @@ pub fn d2d_async(
     stream: StreamHandle,
 ) -> Result<()> {
     if bytes > dst.len || bytes > src.len {
-        return Err(MemoryError::invalid(format!(
+        return Err(crate::error::invalid(format!(
             "d2d copy length {bytes} exceeds dst {} or src {}",
             dst.len, src.len
         )));

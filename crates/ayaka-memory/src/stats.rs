@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{MemoryError, Result};
+use crate::Result;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum MemoryPurpose {
@@ -66,7 +66,7 @@ impl MemoryLedger {
             })
             .map(|_| ())
             .map_err(|_| {
-                MemoryError::invalid(format!(
+                crate::error::invalid(format!(
                     "ledger deregister underflow for {purpose:?}: {bytes} bytes"
                 ))
             })
@@ -147,10 +147,10 @@ impl KvBudget {
         safety_margin_fraction: f64,
     ) -> Result<Self> {
         if block_bytes == 0 {
-            return Err(MemoryError::invalid("block_bytes must be non-zero"));
+            return Err(crate::error::invalid("block_bytes must be non-zero"));
         }
         if !(0.0..=1.0).contains(&safety_margin_fraction) {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "safety_margin_fraction must be in [0, 1], got {safety_margin_fraction}"
             )));
         }

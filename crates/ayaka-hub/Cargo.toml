@@ -26,3 +26,5 @@ tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
 tempfile.workspace = true
 tracing-test = "0.2.0"
 tokio-test = "0.4"
+tracing-subscriber.workspace = true
+futures.workspace = true

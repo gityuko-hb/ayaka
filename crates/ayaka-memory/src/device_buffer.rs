@@ -7,10 +7,10 @@ use std::sync::{Mutex, OnceLock};
 use ayaka_core::device::Device;
 use ayaka_kernel_api::mem;
 
+use crate::Result;
 use crate::span::DeviceSpan;
 use crate::stats::{MemoryPurpose, global_ledger};
 use crate::stream::StreamHandle;
-use crate::{MemoryError, Result};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DeviceAllocSource {
@@ -179,7 +179,7 @@ unsafe impl Sync for DeviceBuffer {}
 
 fn cuda_ordinal(device: Device) -> Result<i32> {
     if !device.is_cuda() {
-        return Err(MemoryError::UnsupportedDevice { device });
+        return Err(crate::error::unsupported_device(device));
     }
     Ok(i32::from(device.ordinal))
 }
@@ -191,7 +191,7 @@ fn mem_pool_supported_cached(device: Device) -> Result<bool> {
     {
         let guard = cache
             .lock()
-            .map_err(|_| MemoryError::invalid("memory pool support cache lock poisoned"))?;
+            .map_err(|_| crate::error::invalid("memory pool support cache lock poisoned"))?;
         if let Some(&supported) = guard.get(&device.ordinal) {
             return Ok(supported);
         }
@@ -200,7 +200,7 @@ fn mem_pool_supported_cached(device: Device) -> Result<bool> {
     let supported = mem::pool_supported(ordinal)?;
     let mut guard = cache
         .lock()
-        .map_err(|_| MemoryError::invalid("memory pool support cache lock poisoned"))?;
+        .map_err(|_| crate::error::invalid("memory pool support cache lock poisoned"))?;
     guard.insert(device.ordinal, supported);
     Ok(supported)
 }

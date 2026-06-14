@@ -1,7 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 //! Reference: https://github.com/EricLBuehler/mistral.rs/blob/master/mistralrs-core/src/utils/memory_usage.rs
-use ayaka_core::error::EngineError;
+use ayaka_error::AyakaError;
 use candle_core::Device;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -64,7 +64,7 @@ impl MemoryUsage {
     pub fn query(
         &self,
         device: &Device,
-    ) -> Result<MemorySnapshot, EngineError> {
+    ) -> Result<MemorySnapshot, AyakaError> {
         match device {
             Device::Cpu => self.query_cpu(),
 
@@ -78,17 +78,21 @@ impl MemoryUsage {
             },
 
             #[cfg(not(feature = "cuda"))]
-            Device::Cuda(_) => Err(EngineError::UnsupportedDevice("cuda".into())),
+            Device::Cuda(_) => Err(AyakaError::unsupported(
+                "cuda device is not supported without CUDA feature",
+            )),
 
             #[cfg(feature = "metal")]
             Device::Metal(dev) => self.query_metal(dev),
 
             #[cfg(not(feature = "metal"))]
-            Device::Metal(_) => Err(EngineError::UnsupportedDevice("metal".into())),
+            Device::Metal(_) => Err(AyakaError::unsupported(
+                "metal device is not supported without Metal feature",
+            )),
         }
     }
 
-    fn query_cpu(&self) -> Result<MemorySnapshot, EngineError> {
+    fn query_cpu(&self) -> Result<MemorySnapshot, AyakaError> {
         let sys = System::new_all();
         Ok(MemorySnapshot {
             total_bytes: sys.total_memory() as usize,
@@ -101,7 +105,7 @@ impl MemoryUsage {
     fn query_discrete_cuda(
         &self,
         dev: &candle_core::CudaDevice,
-    ) -> Result<MemorySnapshot, EngineError> {
+    ) -> Result<MemorySnapshot, AyakaError> {
         use candle_core::cuda::cudarc::driver::result;
         use candle_core::cuda_backend::WrapErr;
 
@@ -109,17 +113,11 @@ impl MemoryUsage {
             .context()
             .bind_to_thread()
             .w()
-            .map_err(|e| EngineError::Internal {
-                msg: e.to_string(),
-                location: concat!(file!(), ":", line!()).to_string(),
-            })?;
+            .map_err(|e| AyakaError::internal(format!("{} at {}:{}", e, file!(), line!())))?;
 
         let (free, total) = result::mem_get_info()
             .w()
-            .map_err(|e| EngineError::Internal {
-                msg: e.to_string(),
-                location: concat!(file!(), ":", line!()).to_string(),
-            })?;
+            .map_err(|e| AyakaError::internal(format!("{} at {}:{}", e, file!(), line!())))?;
 
         Ok(MemorySnapshot {
             total_bytes: total,
@@ -129,7 +127,7 @@ impl MemoryUsage {
     }
 
     #[cfg(feature = "cuda")]
-    fn query_integrated_cuda(&self) -> Result<MemorySnapshot, EngineError> {
+    fn query_integrated_cuda(&self) -> Result<MemorySnapshot, AyakaError> {
         use crate::env::EnvConfig;
         let sys = System::new_all();
         let total = sys.total_memory() as usize;
@@ -168,7 +166,7 @@ impl MemoryUsage {
     fn query_metal(
         &self,
         dev: &candle_core::MetalDevice,
-    ) -> Result<MemorySnapshot, EngineError> {
+    ) -> Result<MemorySnapshot, AyakaError> {
         let sysctl_floor = self.metal_sysctl_floor()?;
         let device_max = dev.device().recommended_max_working_set_size() as usize;
         let budget = sysctl_floor.max(device_max);
@@ -191,7 +189,7 @@ impl MemoryUsage {
     }
 
     #[cfg(feature = "metal")]
-    fn metal_sysctl_floor(&self) -> Result<usize, EngineError> {
+    fn metal_sysctl_floor(&self) -> Result<usize, AyakaError> {
         let sys = System::new_all();
         let sys_mb = sys.total_memory() / BYTES_PER_MIB;
 
@@ -321,16 +319,17 @@ impl MemoryPlanner {
         &self,
         device: &Device,
         estimated_model_bytes: usize,
-    ) -> Result<(), EngineError> {
+    ) -> Result<(), AyakaError> {
         let snapshot = MemoryUsage.query(device)?;
         let budget = self.budget_bytes(&snapshot);
 
         if estimated_model_bytes > budget {
-            return Err(EngineError::OutOfMemoryDevice {
-                device: format!("{:?}", device.location()),
-                needed_mb: estimated_model_bytes / (1 << 20),
-                available_mb: budget / (1 << 20),
-            });
+            return Err(AyakaError::out_of_memory(format!(
+                "device {:?} OOM: needed {} MB, available {} MB",
+                device.location(),
+                estimated_model_bytes / (1 << 20),
+                budget / (1 << 20)
+            )));
         }
 
         tracing::info!(
@@ -362,7 +361,7 @@ impl MemoryPlanner {
         hidden_size: usize,
         num_layers: usize,
         dtype_bytes: usize,
-    ) -> Result<MemoryPlan, EngineError> {
+    ) -> Result<MemoryPlan, AyakaError> {
         let snapshot = MemoryUsage.query(device)?;
         let budget = self.budget_bytes(&snapshot);
 
@@ -417,7 +416,7 @@ pub struct MultiDeviceMemory {
 }
 
 impl MultiDeviceMemory {
-    pub fn query_all(devices: &[Device]) -> Result<Self, EngineError> {
+    pub fn query_all(devices: &[Device]) -> Result<Self, AyakaError> {
         let mut snapshots = Vec::with_capacity(devices.len());
         for device in devices {
             let label = format!("{:?}", device.location());

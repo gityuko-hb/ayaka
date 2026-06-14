@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use crate::{DeviceSpan, MemoryError, Result};
+use crate::{DeviceSpan, Result};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct PoolBlock {
@@ -29,12 +29,12 @@ impl SizeClassPool {
         max_class: usize,
     ) -> Result<Self> {
         if min_class == 0 || !min_class.is_power_of_two() {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "min_class must be a non-zero power of two, got {min_class}"
             )));
         }
         if max_class < min_class || !max_class.is_power_of_two() {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "max_class must be a power of two >= min_class, got {max_class}"
             )));
         }
@@ -51,7 +51,7 @@ impl SizeClassPool {
             }
             bytes = bytes
                 .checked_mul(2)
-                .ok_or_else(|| MemoryError::overflow("pool class size overflow"))?;
+                .ok_or_else(|| crate::error::overflow("pool class size overflow"))?;
         }
 
         Ok(Self {
@@ -66,7 +66,7 @@ impl SizeClassPool {
         bytes: usize,
     ) -> Result<PoolBlock> {
         if bytes == 0 {
-            return Err(MemoryError::invalid(
+            return Err(crate::error::invalid(
                 "pool allocation bytes must be non-zero",
             ));
         }
@@ -76,7 +76,7 @@ impl SizeClassPool {
         if let Some(offset) = class
             .free_offsets
             .lock()
-            .map_err(|_| MemoryError::invalid("pool free list lock poisoned"))?
+            .map_err(|_| crate::error::invalid("pool free list lock poisoned"))?
             .pop()
         {
             return Ok(PoolBlock {
@@ -91,17 +91,17 @@ impl SizeClassPool {
         let mut tail = self
             .tail
             .lock()
-            .map_err(|_| MemoryError::invalid("pool tail lock poisoned"))?;
+            .map_err(|_| crate::error::invalid("pool tail lock poisoned"))?;
         let offset = align_up(*tail, class.bytes)?;
         let end = offset
             .checked_add(class.bytes)
-            .ok_or_else(|| MemoryError::overflow("pool allocation end offset overflow"))?;
+            .ok_or_else(|| crate::error::overflow("pool allocation end offset overflow"))?;
         if end > self.base.len {
-            return Err(MemoryError::PoolExhausted {
-                class_bytes: class.bytes,
-                requested: bytes,
-                remaining: self.base.len.saturating_sub(offset),
-            });
+            return Err(crate::error::pool_exhausted(
+                class.bytes,
+                bytes,
+                self.base.len.saturating_sub(offset),
+            ));
         }
         *tail = end;
         Ok(PoolBlock {
@@ -121,10 +121,10 @@ impl SizeClassPool {
             .classes
             .get(block.class_index)
             .ok_or_else(|| {
-                MemoryError::invalid(format!("pool class {} is invalid", block.class_index))
+                crate::error::invalid(format!("pool class {} is invalid", block.class_index))
             })?;
         if class.bytes != block.class_bytes {
-            return Err(MemoryError::invalid(format!(
+            return Err(crate::error::invalid(format!(
                 "pool block class size {} does not match pool class {}",
                 block.class_bytes, class.bytes
             )));
@@ -132,7 +132,7 @@ impl SizeClassPool {
         class
             .free_offsets
             .lock()
-            .map_err(|_| MemoryError::invalid("pool free list lock poisoned"))?
+            .map_err(|_| crate::error::invalid("pool free list lock poisoned"))?
             .push(block.offset);
         Ok(())
     }
@@ -145,7 +145,7 @@ impl SizeClassPool {
             .iter()
             .position(|class| bytes <= class.bytes)
             .ok_or_else(|| {
-                MemoryError::invalid(format!(
+                crate::error::invalid(format!(
                     "pool allocation request {bytes} exceeds max class {}",
                     self.classes.last().map(|c| c.bytes).unwrap_or(0)
                 ))
@@ -160,7 +160,7 @@ fn align_up(
     value
         .checked_add(align - 1)
         .map(|v| v & !(align - 1))
-        .ok_or_else(|| MemoryError::overflow("pool align_up overflow"))
+        .ok_or_else(|| crate::error::overflow("pool align_up overflow"))
 }
 
 #[cfg(test)]
@@ -186,14 +186,11 @@ mod tests {
 
     #[test]
     fn exhaustion_is_typed_error() {
+        use ayaka_error::ErrorKind;
         let pool = SizeClassPool::new(DeviceSpan::new(0x1000, 512), 256, 512).unwrap();
         let _a = pool.alloc(400).unwrap();
-        assert!(matches!(
-            pool.alloc(400).unwrap_err(),
-            MemoryError::PoolExhausted {
-                class_bytes: 512,
-                ..
-            }
-        ));
+        let err = pool.alloc(400).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+        assert!(err.message().contains("pool exhausted"));
     }
 }

@@ -6,9 +6,9 @@
 //! from a live tensor.
 
 #[cfg(feature = "cuda")]
-use crate::error::KernelError;
-#[cfg(feature = "cuda")]
 use crate::ffi::{self, AyakaStream, AyakaTensorView, RopeLayout};
+#[cfg(feature = "cuda")]
+use ayaka_error::AyakaError;
 
 /// RMSNorm over the last dimension: `out = input * rsqrt(mean(input^2) + eps) * weight`.
 ///
@@ -26,7 +26,7 @@ pub unsafe fn rmsnorm(
     weight: &AyakaTensorView,
     eps: f32,
     stream: AyakaStream,
-) -> Result<(), KernelError> {
+) -> Result<(), AyakaError> {
     unsafe { ffi::ayaka_rmsnorm(out, input, weight, eps, stream) }.into_result()
 }
 
@@ -49,7 +49,7 @@ pub unsafe fn fused_add_rmsnorm(
     weight: &AyakaTensorView,
     eps: f32,
     stream: AyakaStream,
-) -> Result<(), KernelError> {
+) -> Result<(), AyakaError> {
     unsafe { ffi::ayaka_fused_add_rmsnorm(out, residual_out, input, residual, weight, eps, stream) }
         .into_result()
 }
@@ -71,7 +71,7 @@ pub unsafe fn rope(
     cos_sin_cache: &AyakaTensorView,
     layout: RopeLayout,
     stream: AyakaStream,
-) -> Result<(), KernelError> {
+) -> Result<(), AyakaError> {
     unsafe { ffi::ayaka_rope(query, key, positions, cos_sin_cache, layout as i32, stream) }
         .into_result()
 }
@@ -90,7 +90,7 @@ pub unsafe fn silu_and_mul(
     out: &AyakaTensorView,
     input: &AyakaTensorView,
     stream: AyakaStream,
-) -> Result<(), KernelError> {
+) -> Result<(), AyakaError> {
     unsafe { ffi::ayaka_silu_and_mul(out, input, stream) }.into_result()
 }
 
@@ -119,7 +119,7 @@ pub unsafe fn gemm(
     workspace: *mut core::ffi::c_void,
     workspace_bytes: usize,
     stream: AyakaStream,
-) -> Result<(), KernelError> {
+) -> Result<(), AyakaError> {
     let bias_ptr = bias.map_or(core::ptr::null(), |view| view as *const AyakaTensorView);
     unsafe {
         ffi::ayaka_gemm(
