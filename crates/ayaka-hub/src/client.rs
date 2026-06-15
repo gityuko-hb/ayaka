@@ -13,7 +13,11 @@ use tracing::trace;
 use crate::{
     cache::Cache,
     error::{HubError, HubResult, classify_api_error},
-    path::{hub_cache_dir, is_offline, offline_get, offline_snapshot_files, read_token},
+    path::{
+        hub_cache_dir, is_offline, offline_get, offline_snapshot_files, read_retry_base_delay_env,
+        read_retry_max_env, read_token,
+    },
+    retry::{RetryPolicy, backoff_for, is_retryable},
 };
 
 // ── Internal configuration (Send + Sync + Clone) ───────────────────────────────
@@ -27,6 +31,7 @@ pub(crate) struct HubClientConfig {
     pub cache_dir: PathBuf,
     pub token: Option<String>,
     pub progress: bool,
+    pub retry: RetryPolicy,
 }
 
 impl HubClientConfig {
@@ -266,21 +271,42 @@ impl HubClient {
         let config = Arc::clone(&self.config);
         let model_id_owned = model_id.to_string();
         let revision_owned = revision.to_string();
+        let retry = self.config.retry;
 
         let files: Vec<String> = tokio::task::spawn_blocking(move || {
-            let api = config.build_sync_api()?;
-            let repo = api.repo(Repo::with_revision(
-                model_id_owned,
-                RepoType::Model,
-                revision_owned,
-            ));
-            let info = repo.info().map_err(|e| classify_api_error(&e))?;
-            Ok::<Vec<String>, HubError>(
-                info.siblings
-                    .into_iter()
-                    .map(|s| s.rfilename)
-                    .collect(),
-            )
+            let mut attempt: u32 = 0;
+            loop {
+                let api = config.build_sync_api()?;
+                let repo = api.repo(Repo::with_revision(
+                    model_id_owned.clone(),
+                    RepoType::Model,
+                    revision_owned.clone(),
+                ));
+                match repo.info() {
+                    Ok(info) => {
+                        return Ok::<Vec<String>, HubError>(
+                            info.siblings
+                                .into_iter()
+                                .map(|s| s.rfilename)
+                                .collect(),
+                        );
+                    },
+                    Err(e) => {
+                        let hub_err = classify_api_error(&e);
+                        if is_retryable(&hub_err) && attempt < retry.max_retries {
+                            let delay = backoff_for(retry, attempt);
+                            trace!(
+                                "list_files attempt {} failed ({}); retrying in {:?}",
+                                attempt, hub_err, delay
+                            );
+                            std::thread::sleep(delay);
+                            attempt += 1;
+                            continue;
+                        }
+                        return Err(hub_err);
+                    },
+                }
+            }
         })
         .await
         .map_err(|e| HubError::Api(format!("list_files task panicked: {e}")))??;
@@ -359,16 +385,36 @@ impl HubClient {
         let model_id_owned = model_id.to_string();
         let file_owned = file.to_string();
         let revision_owned = revision.to_string();
+        let retry = self.config.retry;
 
         let result = tokio::task::spawn_blocking(move || {
-            let api = config.build_sync_api()?;
-            let repo = api.repo(Repo::with_revision(
-                model_id_owned,
-                RepoType::Model,
-                revision_owned,
-            ));
-            repo.get(&file_owned)
-                .map_err(|e| classify_api_error(&e))
+            let mut attempt: u32 = 0;
+            loop {
+                let api = config.build_sync_api()?;
+                let repo = api.repo(Repo::with_revision(
+                    model_id_owned.clone(),
+                    RepoType::Model,
+                    revision_owned.clone(),
+                ));
+                match repo.get(&file_owned) {
+                    Ok(path) => return Ok::<PathBuf, HubError>(path),
+                    Err(e) => {
+                        let hub_err = classify_api_error(&e);
+                        if is_retryable(&hub_err) && attempt < retry.max_retries {
+                            let delay = backoff_for(retry, attempt);
+                            trace!(
+                                "get_file({file_owned}) attempt {} failed ({}); \
+                                 retrying in {:?}",
+                                attempt, hub_err, delay
+                            );
+                            std::thread::sleep(delay);
+                            attempt += 1;
+                            continue;
+                        }
+                        return Err(hub_err);
+                    },
+                }
+            }
         })
         .await
         .map_err(|e| HubError::Api(format!("get_file task panicked: {e}")))?;
@@ -461,19 +507,37 @@ impl HubClient {
             let file_owned = file.to_string();
             let revision_owned = revision.to_string();
             let file_bar = file_bars[idx].clone();
+            let retry = self.config.retry;
 
             set.spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
-                    let api = config.build_sync_api()?;
-                    let repo = api.repo(Repo::with_revision(
-                        model_id_owned,
-                        RepoType::Model,
-                        revision_owned,
-                    ));
-                    let path = repo
-                        .get(&file_owned)
-                        .map_err(|e| classify_api_error(&e))?;
-                    Ok::<PathBuf, HubError>(path)
+                    let mut attempt: u32 = 0;
+                    loop {
+                        let api = config.build_sync_api()?;
+                        let repo = api.repo(Repo::with_revision(
+                            model_id_owned.clone(),
+                            RepoType::Model,
+                            revision_owned.clone(),
+                        ));
+                        match repo.get(&file_owned) {
+                            Ok(path) => return Ok::<PathBuf, HubError>(path),
+                            Err(e) => {
+                                let hub_err = classify_api_error(&e);
+                                if is_retryable(&hub_err) && attempt < retry.max_retries {
+                                    let delay = backoff_for(retry, attempt);
+                                    trace!(
+                                        "parallel_fetch[{file_owned}] attempt {} \
+                                         failed ({}); retrying in {:?}",
+                                        attempt, hub_err, delay
+                                    );
+                                    std::thread::sleep(delay);
+                                    attempt += 1;
+                                    continue;
+                                }
+                                return Err(hub_err);
+                            },
+                        }
+                    }
                 })
                 .await
                 .map_err(|e| HubError::Api(format!("parallel_fetch task panicked: {e}")));
@@ -556,6 +620,8 @@ pub struct HubClientBuilder {
     progress: bool,
     ttl_secs: Option<u64>,
     progress_holder: Option<ProgressHolder>,
+    max_retries: Option<u32>,
+    retry_base_delay_ms: Option<u64>,
 }
 
 impl HubClientBuilder {
@@ -603,6 +669,35 @@ impl HubClientBuilder {
         self
     }
 
+    /// Set the maximum number of retry attempts after the first failure
+    /// (default: 0 — no retry). Retries trigger on transient errors: connection
+    /// reset / abort / refused, timeout, broken pipe, HTTP 5xx, and HTTP 429.
+    /// Auth, NotFound, Offline, and Cache errors are never retried.
+    ///
+    /// Resolution order: explicit builder value → `AYAKA_HUB_MAX_RETRIES` env
+    /// var → default (0).
+    pub fn with_max_retries(
+        mut self,
+        n: u32,
+    ) -> Self {
+        self.max_retries = Some(n);
+        self
+    }
+
+    /// Set the base delay (milliseconds) for exponential backoff between
+    /// retries (default: 100). Delay after attempt `n` is
+    /// `base_delay_ms * 2^n`, capped at 5 seconds.
+    ///
+    /// Resolution order: explicit builder value → `AYAKA_HUB_RETRY_BASE_DELAY_MS`
+    /// env var → default (100).
+    pub fn with_retry_base_delay_ms(
+        mut self,
+        ms: u64,
+    ) -> Self {
+        self.retry_base_delay_ms = Some(ms);
+        self
+    }
+
     pub fn build(self) -> HubResult<HubClient> {
         let cache_dir = self
             .cache_dir
@@ -613,10 +708,26 @@ impl HubClientBuilder {
 
         let token = self.token.or_else(read_token);
 
+        // Retry resolution: builder > env > default.
+        let defaults = RetryPolicy::default();
+        let max_retries = self
+            .max_retries
+            .or_else(read_retry_max_env)
+            .unwrap_or(defaults.max_retries);
+        let base_delay_ms = self
+            .retry_base_delay_ms
+            .or_else(read_retry_base_delay_env)
+            .unwrap_or(defaults.base_delay_ms);
+        let retry = RetryPolicy {
+            max_retries,
+            base_delay_ms,
+        };
+
         let inner_config = Arc::new(HubClientConfig {
             cache_dir: cache_dir.clone(),
             token,
             progress: self.progress,
+            retry,
         });
 
         let mut cache = Cache::new(cache_dir);
@@ -716,5 +827,69 @@ mod tests {
         // Should be the only Arc reference, so `try_unwrap` succeeds.
         let mp = h.into_multi_progress();
         assert!(mp.is_some());
+    }
+
+    #[test]
+    fn builder_default_retry_is_zero() {
+        let dir = TempDir::new().unwrap();
+        let client = HubClient::builder()
+            .with_cache_dir(dir.path().to_path_buf())
+            .build()
+            .unwrap();
+        assert_eq!(client.config.retry.max_retries, 0);
+        assert_eq!(client.config.retry.base_delay_ms, 100);
+    }
+
+    #[test]
+    fn builder_with_max_retries_wins() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var(crate::path::HUB_RETRY_MAX_ENV, "7") };
+        let client = HubClient::builder()
+            .with_cache_dir(dir.path().to_path_buf())
+            .with_max_retries(2)
+            .build()
+            .unwrap();
+        unsafe { std::env::remove_var(crate::path::HUB_RETRY_MAX_ENV) };
+        // Builder explicit value beats env var.
+        assert_eq!(client.config.retry.max_retries, 2);
+    }
+
+    #[test]
+    fn env_var_used_when_builder_omits() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var(crate::path::HUB_RETRY_MAX_ENV, "5") };
+        let client = HubClient::builder()
+            .with_cache_dir(dir.path().to_path_buf())
+            .build()
+            .unwrap();
+        unsafe { std::env::remove_var(crate::path::HUB_RETRY_MAX_ENV) };
+        assert_eq!(client.config.retry.max_retries, 5);
+    }
+
+    #[test]
+    fn invalid_env_falls_back_to_default() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var(crate::path::HUB_RETRY_MAX_ENV, "garbage") };
+        let client = HubClient::builder()
+            .with_cache_dir(dir.path().to_path_buf())
+            .build()
+            .unwrap();
+        unsafe { std::env::remove_var(crate::path::HUB_RETRY_MAX_ENV) };
+        assert_eq!(client.config.retry.max_retries, 0);
+    }
+
+    #[test]
+    fn base_delay_resolution_priority() {
+        let dir = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var(crate::path::HUB_RETRY_BASE_DELAY_ENV, "999");
+        }
+        let client = HubClient::builder()
+            .with_cache_dir(dir.path().to_path_buf())
+            .with_retry_base_delay_ms(50)
+            .build()
+            .unwrap();
+        unsafe { std::env::remove_var(crate::path::HUB_RETRY_BASE_DELAY_ENV) };
+        assert_eq!(client.config.retry.base_delay_ms, 50);
     }
 }

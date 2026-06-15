@@ -97,6 +97,38 @@ fn make_spinner_style(label: &str) -> ProgressStyle {
         .tick_strings(crate::constants::PROGRESS_TICK_CHARS)
 }
 
+/// Public style for progress bars tracking bytes (download / shard loading).
+///
+/// Uses `indicatif` token `{bytes}`, `{total_bytes}`, `{bytes_per_sec}`,
+/// `{eta}`, `{elapsed_precise}`, `{msg}`. Pair with `ProgressBar::inc_bytes`.
+pub fn make_bytes_bar_style(
+    label: &str,
+    color: ProgressBarColor,
+) -> ProgressStyle {
+    let c = color.name();
+    ProgressStyle::default_bar()
+        .template(&format!(
+            "{label}: [{{elapsed_precise}}] \
+             [{{bar:{width}.{c}/{c}}}] \
+             {{bytes}}/{{total_bytes}} ({{bytes_per_sec}}, eta {{eta}}) {{msg}}",
+            width = crate::constants::PROGRESS_BAR_WIDTH,
+        ))
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏ ")
+}
+
+/// Format bytes in binary units (1024-based), e.g. `"1.23 GiB"`, `"512.00 MiB"`.
+#[inline]
+pub fn fmt_bytes(bytes: u64) -> String {
+    format!("{:.2}", indicatif::BinaryBytes(bytes))
+}
+
+/// Format throughput in binary units per second, e.g. `"12.50 MiB/s"`.
+#[inline]
+pub fn fmt_throughput(bytes_per_sec: f64) -> String {
+    format!("{}/s", indicatif::BinaryBytes(bytes_per_sec as u64))
+}
+
 /// Apply suppress target if we need it
 pub fn configure_bar(bar: &ProgressBar) {
     if progress_suppressed() {
@@ -426,19 +458,27 @@ impl<'a, T: Iterator + 'a> IterWithProgress<'a, T::Item> for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Tests that read the global suppress counter must serialize so they
+    // do not race with each other when cargo test runs them in parallel.
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_suppress_guard_decrement_on_drop() {
-        assert!(!progress_suppressed());
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let captured = progress_suppressed();
         {
             let _g = ProgressSuppressGuard::silent();
             assert!(progress_suppressed());
         }
-        assert!(!progress_suppressed());
+        assert_eq!(progress_suppressed(), captured);
     }
 
     #[test]
     fn test_suppress_guard_nested() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let captured = progress_suppressed();
         let _g1 = ProgressSuppressGuard::silent();
         let _g2 = ProgressSuppressGuard::silent();
         assert!(progress_suppressed());
@@ -446,26 +486,29 @@ mod tests {
         // Still suppressed because G2 hasn't dropped yet.
         assert!(progress_suppressed());
         drop(_g2);
-        assert!(!progress_suppressed());
+        assert_eq!(progress_suppressed(), captured);
     }
 
     #[test]
     fn test_suppress_guard_unwind_safe() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let captured = progress_suppressed();
         // Ensure the counter is decremented even when catch_unwind is used.
         let _ = std::panic::catch_unwind(|| {
             let _g = ProgressSuppressGuard::silent();
             assert!(progress_suppressed());
             panic!("test panic");
         });
-        // The counter must return to 0 after the unwind.
-        assert!(!progress_suppressed());
+        // The counter must return to the captured value after the unwind.
+        assert_eq!(progress_suppressed(), captured);
     }
 
     #[test]
     fn test_noop_guard_zero_cost() {
-        assert!(!progress_suppressed());
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let captured = progress_suppressed();
         let _g = ProgressSuppressGuard::noop();
-        assert!(!progress_suppressed());
+        assert_eq!(progress_suppressed(), captured);
     }
 
     #[test]
@@ -477,5 +520,25 @@ mod tests {
         assert_eq!(bar.position(), 5);
         // Consume and recover the inner MultiProgress.
         let _mp_back = tracker.into_mp();
+    }
+
+    #[test]
+    fn fmt_bytes_binary_units() {
+        assert!(fmt_bytes(0).contains("B"));
+        assert!(fmt_bytes(1024).contains("KiB"));
+        assert!(fmt_bytes(1024 * 1024).contains("MiB"));
+        assert!(fmt_bytes(1024u64.pow(3)).contains("GiB"));
+    }
+
+    #[test]
+    fn fmt_throughput_appends_per_sec() {
+        let s = fmt_throughput(1024.0 * 1024.0);
+        assert!(s.ends_with("/s"));
+        assert!(s.contains("MiB"));
+    }
+
+    #[test]
+    fn make_bytes_bar_style_is_valid() {
+        let _ = make_bytes_bar_style("test", ProgressBarColor::Blue);
     }
 }

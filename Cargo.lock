@@ -126,16 +126,20 @@ dependencies = [
 name = "ayaka-hub"
 version = "0.1.0"
 dependencies = [
+ "ayaka-tokenizer",
  "ayaka-utils",
  "dirs",
  "fd-lock",
  "futures",
  "hf-hub",
  "indicatif",
+ "memmap2",
+ "safetensors 0.8.0",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokenizers 0.23.1",
  "tokio",
  "tokio-test",
  "tracing",
@@ -154,6 +158,9 @@ dependencies = [
 [[package]]
 name = "ayaka-kv"
 version = "0.1.0"
+dependencies = [
+ "ayaka-core",
+]
 
 [[package]]
 name = "ayaka-loader"
@@ -269,6 +276,7 @@ dependencies = [
  "rayon",
  "serde",
  "sysinfo",
+ "tokio",
  "tqdm",
  "tracing",
  "tracing-subscriber",
@@ -3043,6 +3051,19 @@ dependencies = [
  "hashbrown 0.16.1",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "safetensors"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79b079b829cb27a1c3c374341345ed2e8b2c0c839034522cee576c140bd7f846"
+dependencies = [
+ "hashbrown 0.16.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

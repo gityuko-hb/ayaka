@@ -9,6 +9,8 @@ pub const HUB_OFFLINE_ENV: &str = "HF_HUB_OFFLINE";
 pub const HUB_CACHE_ENV: &str = "HF_HUB_CACHE";
 pub const HUB_HOME_ENV: &str = "HF_HOME";
 pub const HUB_TOKEN_ENV: &str = "HF_TOKEN";
+pub const HUB_RETRY_MAX_ENV: &str = "AYAKA_HUB_MAX_RETRIES";
+pub const HUB_RETRY_BASE_DELAY_ENV: &str = "AYAKA_HUB_RETRY_BASE_DELAY_MS";
 
 /// Returns `true` when the user has requested fully-offline operation via
 /// `HF_HUB_OFFLINE`.
@@ -76,6 +78,41 @@ pub fn read_token() -> Option<String> {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         })
+}
+
+// ── Retry env resolution ───────────────────────────────────────────────────────
+
+/// Read `AYAKA_HUB_MAX_RETRIES` (default: `None` ⇒ builder default 0).
+///
+/// Invalid values are logged as warnings and treated as unset so a typo never
+/// silently changes behavior.
+pub fn read_retry_max_env() -> Option<u32> {
+    let raw = env::var(HUB_RETRY_MAX_ENV)
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    match raw.parse::<u32>() {
+        Ok(n) => Some(n),
+        Err(e) => {
+            warn!("{HUB_RETRY_MAX_ENV}={raw:?} is not a valid u32 ({e}); ignoring");
+            None
+        },
+    }
+}
+
+/// Read `AYAKA_HUB_RETRY_BASE_DELAY_MS` (default: `None` ⇒ builder default 100).
+///
+/// Invalid values are logged as warnings and treated as unset.
+pub fn read_retry_base_delay_env() -> Option<u64> {
+    let raw = env::var(HUB_RETRY_BASE_DELAY_ENV)
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    match raw.parse::<u64>() {
+        Ok(n) => Some(n),
+        Err(e) => {
+            warn!("{HUB_RETRY_BASE_DELAY_ENV}={raw:?} is not a valid u64 ({e}); ignoring");
+            None
+        },
+    }
 }
 
 // ── Snapshot resolution ────────────────────────────────────────────────────────
@@ -216,6 +253,47 @@ mod tests {
     fn is_offline_unset_is_online() {
         unsafe { env::remove_var(HUB_OFFLINE_ENV) };
         assert!(!is_offline());
+    }
+
+    #[test]
+    fn retry_max_env_parses_valid_value() {
+        unsafe { env::set_var(HUB_RETRY_MAX_ENV, "3") };
+        assert_eq!(read_retry_max_env(), Some(3));
+        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
+    }
+
+    #[test]
+    fn retry_max_env_returns_none_when_unset() {
+        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
+        assert_eq!(read_retry_max_env(), None);
+    }
+
+    #[test]
+    fn retry_max_env_ignores_invalid_value() {
+        unsafe { env::set_var(HUB_RETRY_MAX_ENV, "not-a-number") };
+        assert_eq!(read_retry_max_env(), None);
+        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
+    }
+
+    #[test]
+    fn retry_max_env_ignores_empty_value() {
+        unsafe { env::set_var(HUB_RETRY_MAX_ENV, "") };
+        assert_eq!(read_retry_max_env(), None);
+        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
+    }
+
+    #[test]
+    fn retry_base_delay_env_parses_valid_value() {
+        unsafe { env::set_var(HUB_RETRY_BASE_DELAY_ENV, "250") };
+        assert_eq!(read_retry_base_delay_env(), Some(250));
+        unsafe { env::remove_var(HUB_RETRY_BASE_DELAY_ENV) };
+    }
+
+    #[test]
+    fn retry_base_delay_env_ignores_invalid_value() {
+        unsafe { env::set_var(HUB_RETRY_BASE_DELAY_ENV, "abc") };
+        assert_eq!(read_retry_base_delay_env(), None);
+        unsafe { env::remove_var(HUB_RETRY_BASE_DELAY_ENV) };
     }
 
     #[test]

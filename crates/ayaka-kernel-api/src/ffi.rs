@@ -95,6 +95,17 @@ unsafe extern "C" {
         stream: AyakaStream,
     ) -> AyakaStatus;
 
+    /// `ayaka_append_kv` in `native/include/ayaka/ops/append_kv.h`. `layout`
+    /// is an `ayaka_core::layout::KvLayout` discriminant; `kv_cache` is written.
+    pub fn ayaka_append_kv(
+        key: *const AyakaTensorView,
+        value: *const AyakaTensorView,
+        kv_cache: *const AyakaTensorView,
+        slot_mapping: *const AyakaTensorView,
+        layout: i32,
+        stream: AyakaStream,
+    ) -> AyakaStatus;
+
     /// `ayaka_silu_and_mul` in `native/include/ayaka/ops/silu_and_mul.h`.
     pub fn ayaka_silu_and_mul(
         out: *const AyakaTensorView,
@@ -227,6 +238,13 @@ mod tests {
         assert_eq!(AyakaMemcpyKind::HostToDevice as i32, 1);
         assert_eq!(AyakaMemcpyKind::DeviceToHost as i32, 2);
         assert_eq!(AyakaMemcpyKind::DeviceToDevice as i32, 3);
+    }
+
+    #[test]
+    fn test_kv_layout_discriminants_match_header() {
+        // append_kv passes `KvLayout as i32`; must match ayaka_kv_layout_t.
+        assert_eq!(ayaka_core::layout::KvLayout::Nhd as i32, 0);
+        assert_eq!(ayaka_core::layout::KvLayout::Hnd as i32, 1);
     }
 
     #[test]

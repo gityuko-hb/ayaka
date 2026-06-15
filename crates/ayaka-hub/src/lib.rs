@@ -24,12 +24,17 @@ pub mod client;
 pub mod error;
 pub mod path;
 pub mod resolver;
+pub mod retry;
 
 // ── Flat re-exports (primary public API) ──────────────────────────────────────
 
 pub use client::{HubClient, HubClientBuilder, ProgressHolder};
 pub use error::{HubError, HubResult};
-pub use path::{HUB_OFFLINE_ENV, hub_cache_dir, is_offline, read_token};
+pub use path::{
+    HUB_OFFLINE_ENV, HUB_RETRY_BASE_DELAY_ENV, HUB_RETRY_MAX_ENV, hub_cache_dir, is_offline,
+    read_retry_base_delay_env, read_retry_max_env, read_token,
+};
 pub use resolver::{
     ModelLoadConfig, ModelPaths, resolve_model_files, resolve_quantized_files, resolve_uqff_shards,
 };
+pub use retry::{RetryPolicy, backoff_for, is_retryable};

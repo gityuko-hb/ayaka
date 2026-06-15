@@ -1,9 +1,13 @@
+pub mod append_kv;
 pub mod fused_add_rmsnorm;
 pub mod gemm;
 pub mod rmsnorm;
 pub mod rope;
 pub mod silu_and_mul;
 
+#[cfg(feature = "cuda")]
+pub use append_kv::append_kv;
+pub use append_kv::{KvLayout, append_kv_ref};
 pub use fused_add_rmsnorm::fused_add_rmsnorm_ref;
 #[cfg(feature = "cuda")]
 pub use fused_add_rmsnorm::{fused_add_rmsnorm, fused_add_rmsnorm_new};

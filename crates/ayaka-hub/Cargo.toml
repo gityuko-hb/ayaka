@@ -28,3 +28,59 @@ tracing-test = "0.2.0"
 tokio-test = "0.4"
 tracing-subscriber.workspace = true
 futures.workspace = true
+safetensors.workspace = true
+memmap2.workspace = true
+tokenizers.workspace = true
+ayaka-tokenizer = { path = "../ayaka-tokenizer" }
+
+[[example]]
+name = "basic_quickstart"
+path = "examples/basic/quickstart.rs"
+
+[[example]]
+name = "basic_list_files"
+path = "examples/basic/list_files.rs"
+
+[[example]]
+name = "features_with_progress"
+path = "examples/features/with_progress.rs"
+
+[[example]]
+name = "features_offline_mode"
+path = "examples/features/offline_mode.rs"
+
+[[example]]
+name = "features_revision_pinning"
+path = "examples/features/revision_pinning.rs"
+
+[[example]]
+name = "features_private_repo"
+path = "examples/features/private_repo.rs"
+
+[[example]]
+name = "quantized_gguf"
+path = "examples/quantized/gguf.rs"
+
+[[example]]
+name = "quantized_uqff_shards"
+path = "examples/quantized/uqff_shards.rs"
+
+[[example]]
+name = "cache_invalidation"
+path = "examples/cache/invalidation.rs"
+
+[[example]]
+name = "cache_custom_dir"
+path = "examples/cache/custom_dir.rs"
+
+[[example]]
+name = "cache_parallel_vs_serial"
+path = "examples/cache/parallel_vs_serial.rs"
+
+[[example]]
+name = "integration_safetensors_open"
+path = "examples/integration/safetensors_open.rs"
+
+[[example]]
+name = "integration_tokenizer_load"
+path = "examples/integration/tokenizer_load.rs"

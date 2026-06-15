@@ -20,6 +20,7 @@ set(AYAKA_NATIVE_SOURCES
 set(AYAKA_CUDA_HOST_SOURCES
     src/backends/cublaslt_gemm.cc
     src/c_api/c_api_memory.cc
+    src/ops/append_kv.cc
     src/ops/fused_add_rmsnorm.cc
     src/ops/gemm.cc
     src/ops/rmsnorm.cc
@@ -29,6 +30,7 @@ set(AYAKA_CUDA_HOST_SOURCES
 
 set(AYAKA_CUDA_SOURCES
     csrc/activation/swiglu.cu
+    csrc/kv_cache/append_kv.cu
     csrc/norm/fused_add_rmsnorm.cu
     csrc/norm/rmsnorm.cu
     csrc/pos/rope.cu
@@ -56,10 +58,12 @@ set(AYAKA_NATIVE_HEADERS
     include/ayaka/check.h
     include/ayaka/status.h
     include/ayaka/tensor_view.h
+    include/ayaka/kv_layout.h
     include/ayaka/memory.h
 )
 
 set(AYAKA_OPS_HEADERS
+    include/ayaka/ops/append_kv.h
     include/ayaka/ops/fused_add_rmsnorm.h
     include/ayaka/ops/gemm.h
     include/ayaka/ops/rmsnorm.h
