@@ -66,6 +66,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn register_then_lookup() {
         register(Arc::new(DummyFactory));
         let f = get("dummy-arch").expect("registered factory should be found");
