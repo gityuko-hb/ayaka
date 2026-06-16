@@ -74,7 +74,7 @@ ayaka_status_t validate_append_kv(const ayaka_tensor_view_t* key,
 
 }  // namespace
 
-extern "C" AYAKA_API ayaka_status_t ayaka_append_kv(
+extern "C" AYAKA_API inline ayaka_status_t ayaka_append_kv(
     const ayaka_tensor_view_t* key, const ayaka_tensor_view_t* value,
     const ayaka_tensor_view_t* kv_cache,
     const ayaka_tensor_view_t* slot_mapping, int32_t layout,

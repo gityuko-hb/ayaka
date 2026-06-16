@@ -58,6 +58,35 @@ impl PageTable {
         self.pages.get(&seq).map_or(&[], Vec::as_slice)
     }
 
+    /// Repoint logical `block` of `seq` at a new physical page (used by
+    /// copy-on-write). Returns the page that was there before.
+    ///
+    /// # Panics
+    /// If `seq` has no page for `block`.
+    pub fn replace_page(
+        &mut self,
+        seq: SequenceId,
+        block: usize,
+        page: PageId,
+    ) -> PageId {
+        let pages = self
+            .pages
+            .get_mut(&seq)
+            .unwrap_or_else(|| panic!("PageTable: replace_page on unknown {seq}"));
+        let slot = pages
+            .get_mut(block)
+            .unwrap_or_else(|| panic!("PageTable: {seq} has no block {block}"));
+        core::mem::replace(slot, page)
+    }
+
+    /// Remove `seq` from the table and return its pages (for reclamation).
+    pub fn take_pages(
+        &mut self,
+        seq: SequenceId,
+    ) -> Vec<PageId> {
+        self.pages.remove(&seq).unwrap_or_default()
+    }
+
     /// Flat slot index for each token `position` of `seq`, suitable as the
     /// kernel's `slot_mapping`:
     /// `slot = page[pos / block_size] * block_size + pos % block_size`.

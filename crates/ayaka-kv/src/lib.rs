@@ -1,4 +1,5 @@
 pub mod allocator;
+pub mod block_manager;
 pub mod page_table;
 
 pub use allocator::PageAllocator;

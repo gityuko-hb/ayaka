@@ -11,12 +11,16 @@ use ayaka_core::id::PageId;
 /// never equal it).
 const NULL: u32 = u32::MAX;
 
-/// Free-list allocator over a fixed set of physical pages.
+/// Free-list allocator over a fixed set of physical pages, with per-page
+/// reference counts so a page can be shared across sequences (prefix reuse /
+/// fork). A page returns to the free list only when its count reaches zero.
 #[derive(Debug)]
 pub struct PageAllocator {
     /// `next[i]`: the next free page after page `i`, or [`NULL`] at the tail.
     /// For an allocated page the entry is unused.
     next: Vec<u32>,
+    /// `ref_count[i]`: number of holders of page `i`; `0` means free.
+    ref_count: Vec<u32>,
     /// Head of the free list, or [`NULL`] when no page is free.
     head: u32,
     /// Number of currently free pages (invariant: equals the free-list length).
@@ -51,6 +55,7 @@ impl PageAllocator {
         };
         Self {
             next,
+            ref_count: vec![0; num_blocks],
             head,
             free_count: n,
         }
@@ -66,7 +71,8 @@ impl PageAllocator {
         self.free_count as usize
     }
 
-    /// Take a free page, or `None` if the pool is exhausted.
+    /// Take a free page with reference count 1, or `None` if the pool is
+    /// exhausted.
     pub fn alloc(&mut self) -> Option<PageId> {
         if self.head == NULL {
             return None;
@@ -74,31 +80,83 @@ impl PageAllocator {
         let page = self.head;
         self.head = self.next[page as usize];
         self.free_count -= 1;
+        self.ref_count[page as usize] = 1;
         Some(PageId::new(page))
     }
 
-    /// Return a previously allocated page to the pool.
+    /// Add a reference to an already-allocated page (shared ownership, e.g.
+    /// fork / prefix reuse). Returns the new reference count.
     ///
     /// # Panics
-    /// If `page` is out of range, or (in debug builds) freeing it would push
-    /// the free count past capacity — a sign of a double free.
+    /// If `page` is out of range or currently free (count 0).
+    pub fn retain(
+        &mut self,
+        page: PageId,
+    ) -> u32 {
+        let idx = self.checked_index(page);
+        assert!(
+            self.ref_count[idx] > 0,
+            "PageAllocator: retain of free page {}",
+            page.raw()
+        );
+        self.ref_count[idx] += 1;
+        self.ref_count[idx]
+    }
+
+    /// Drop one reference to `page`. The page returns to the free list only
+    /// when its count reaches zero. Returns the remaining reference count
+    /// (`0` means it was reclaimed).
+    ///
+    /// # Panics
+    /// If `page` is out of range or already free (double free).
+    pub fn release(
+        &mut self,
+        page: PageId,
+    ) -> u32 {
+        let idx = self.checked_index(page);
+        assert!(
+            self.ref_count[idx] > 0,
+            "PageAllocator: release of free page {} (double free?)",
+            page.raw()
+        );
+        self.ref_count[idx] -= 1;
+        if self.ref_count[idx] == 0 {
+            self.next[idx] = self.head;
+            self.head = idx as u32;
+            self.free_count += 1;
+        }
+        self.ref_count[idx]
+    }
+
+    /// Current reference count of `page` (`0` if free).
+    pub fn ref_count(
+        &self,
+        page: PageId,
+    ) -> u32 {
+        self.ref_count[self.checked_index(page)]
+    }
+
+    /// Backwards-compatible alias for [`PageAllocator::release`]; drops one
+    /// reference.
     pub fn free(
         &mut self,
         page: PageId,
     ) {
-        let idx = page.raw();
+        let _ = self.release(page);
+    }
+
+    fn checked_index(
+        &self,
+        page: PageId,
+    ) -> usize {
+        let idx = page.raw() as usize;
         assert!(
-            (idx as usize) < self.next.len(),
-            "PageAllocator: freed page {idx} out of range (capacity {})",
+            idx < self.next.len(),
+            "PageAllocator: page {} out of range (capacity {})",
+            page.raw(),
             self.next.len()
         );
-        debug_assert!(
-            (self.free_count as usize) < self.next.len(),
-            "PageAllocator: free of {idx} exceeds capacity (double free?)"
-        );
-        self.next[idx as usize] = self.head;
-        self.head = idx;
-        self.free_count += 1;
+        idx
     }
 }
 
@@ -155,5 +213,36 @@ mod tests {
         let mut a = PageAllocator::new(0);
         assert_eq!(a.capacity(), 0);
         assert!(a.alloc().is_none());
+    }
+
+    #[test]
+    fn alloc_sets_ref_count_one() {
+        let mut a = PageAllocator::new(2);
+        let p = a.alloc().unwrap();
+        assert_eq!(a.ref_count(p), 1);
+    }
+
+    #[test]
+    fn shared_page_reclaimed_only_at_zero() {
+        let mut a = PageAllocator::new(1); // single page -> easy exhaustion check
+        let p = a.alloc().unwrap();
+        assert_eq!(a.retain(p), 2);
+        // Still held: the pool is exhausted and the page is not free.
+        assert!(a.alloc().is_none());
+        assert_eq!(a.release(p), 1); // one holder left, not reclaimed
+        assert_eq!(a.free_count(), 0);
+        assert!(a.alloc().is_none());
+        assert_eq!(a.release(p), 0); // last holder -> reclaimed
+        assert_eq!(a.free_count(), 1);
+        assert_eq!(a.alloc().unwrap(), p);
+    }
+
+    #[test]
+    #[should_panic(expected = "double free")]
+    fn release_of_free_page_panics() {
+        let mut a = PageAllocator::new(1);
+        let p = a.alloc().unwrap();
+        a.release(p);
+        a.release(p); // already free
     }
 }
