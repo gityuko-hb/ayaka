@@ -219,6 +219,9 @@ dependencies = [
 [[package]]
 name = "ayaka-prefix-cache"
 version = "0.1.0"
+dependencies = [
+ "ayaka-core",
+]
 
 [[package]]
 name = "ayaka-quant"
