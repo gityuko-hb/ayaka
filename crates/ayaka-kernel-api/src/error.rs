@@ -3,6 +3,8 @@
 use core::ffi::CStr;
 use core::fmt;
 
+use ayaka_error::{AyakaError, ErrorKind};
+
 use crate::ffi::{AyakaStatus, AyakaStatusCode};
 
 /// A failed status returned by a native kernel entry point.
@@ -22,6 +24,32 @@ impl fmt::Display for KernelError {
 }
 
 impl std::error::Error for KernelError {}
+
+/// Map a native status code onto the closest domain kind so callers can react
+/// to it through the shared `AyakaError` surface (and stable `StatusCode`).
+const fn kind_for_code(code: AyakaStatusCode) -> ErrorKind {
+    match code {
+        AyakaStatusCode::Ok => ErrorKind::Internal,
+        AyakaStatusCode::InvalidArgument => ErrorKind::InvalidArgument,
+        AyakaStatusCode::DTypeError => ErrorKind::DType,
+        AyakaStatusCode::ShapeError => ErrorKind::Shape,
+        AyakaStatusCode::DeviceError | AyakaStatusCode::StreamError => ErrorKind::Cuda,
+        AyakaStatusCode::Unsupported => ErrorKind::Unsupported,
+        AyakaStatusCode::OutOfMemory => ErrorKind::OutOfMemory,
+        AyakaStatusCode::ContextLengthExceeded => ErrorKind::ContextLengthExceeded,
+        AyakaStatusCode::NotFound => ErrorKind::NotFound,
+        AyakaStatusCode::AbiMismatch => ErrorKind::AbiMismatch,
+        AyakaStatusCode::KernelLaunchError => ErrorKind::KernelLaunch,
+        AyakaStatusCode::InternalError => ErrorKind::Internal,
+        AyakaStatusCode::Cancelled => ErrorKind::Cancelled,
+    }
+}
+
+impl From<KernelError> for AyakaError {
+    fn from(err: KernelError) -> Self {
+        AyakaError::new(kind_for_code(err.code), err.message)
+    }
+}
 
 impl AyakaStatus {
     /// Convert into a `Result`, copying the message out of the C string.

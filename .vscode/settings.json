@@ -22,5 +22,6 @@
         "*.cu": "cuda-cpp",
         "*.cuh": "cuda-cpp"
     },
-    "git.ignoreLimitWarning": true
+    "git.ignoreLimitWarning": true,
+    "cmake.sourceDirectory": "D:/Mora/ayaka/native"
 }

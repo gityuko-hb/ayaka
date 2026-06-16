@@ -1,19 +1,12 @@
 [package]
-name = "ayaka-kernel-api"
+name = "ayaka-model"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+keywords.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
-[features]
-cuda = []
-
 [dependencies]
-ayaka-core = { path = "../ayaka-core" }
-ayaka-error = { path = "../ayaka-error" }
-
-[build-dependencies]
-cmake.workspace = true

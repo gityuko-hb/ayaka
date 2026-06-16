@@ -27,7 +27,7 @@ pub unsafe fn rmsnorm(
     eps: f32,
     stream: AyakaStream,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_rmsnorm(out, input, weight, eps, stream) }.into_result()
+    unsafe { ffi::ayaka_rmsnorm(out, input, weight, eps, stream) }.into_result().map_err(AyakaError::from)
 }
 
 /// Fused residual-add + RMSNorm: `residual_out = input + residual`,
@@ -52,6 +52,7 @@ pub unsafe fn fused_add_rmsnorm(
 ) -> Result<(), AyakaError> {
     unsafe { ffi::ayaka_fused_add_rmsnorm(out, residual_out, input, residual, weight, eps, stream) }
         .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// In-place rotary position embedding on `query` and `key`.
@@ -74,6 +75,7 @@ pub unsafe fn rope(
 ) -> Result<(), AyakaError> {
     unsafe { ffi::ayaka_rope(query, key, positions, cos_sin_cache, layout as i32, stream) }
         .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// SwiGLU: `out[.., d] = silu(input[.., d]) * input[.., hidden + d]` with
@@ -91,7 +93,7 @@ pub unsafe fn silu_and_mul(
     input: &AyakaTensorView,
     stream: AyakaStream,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_silu_and_mul(out, input, stream) }.into_result()
+    unsafe { ffi::ayaka_silu_and_mul(out, input, stream) }.into_result().map_err(AyakaError::from)
 }
 
 /// Dense GEMM via cuBLASLt: `out = op_a(a) @ op_b(b) (+ bias)` with f32
@@ -135,4 +137,5 @@ pub unsafe fn gemm(
         )
     }
     .into_result()
+    .map_err(AyakaError::from)
 }

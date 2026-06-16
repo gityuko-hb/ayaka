@@ -8,4 +8,24 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "ayaka-memory/cuda"]
+
 [dependencies]
+ayaka-core = { path = "../ayaka-core" }
+ayaka-error = { path = "../ayaka-error" }
+ayaka-memory = { path = "../ayaka-memory" }
+ayaka-quant = { path = "../ayaka-quantization" }
+candle-core.workspace = true
+candle-nn.workspace = true
+safetensors.workspace = true
+memmap2.workspace = true
+bytemuck.workspace = true
+half.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
