@@ -197,10 +197,24 @@ dependencies = [
 [[package]]
 name = "ayaka-model"
 version = "0.1.0"
+dependencies = [
+ "ayaka-candle",
+ "ayaka-loader",
+ "ayaka-memory",
+ "ayaka-registry",
+ "candle-core",
+ "candle-nn",
+ "half",
+ "tempfile",
+]
 
 [[package]]
 name = "ayaka-pipeline"
 version = "0.1.0"
+dependencies = [
+ "ayaka-loader",
+ "candle-core",
+]
 
 [[package]]
 name = "ayaka-prefix-cache"
@@ -216,6 +230,10 @@ dependencies = [
 [[package]]
 name = "ayaka-registry"
 version = "0.1.0"
+dependencies = [
+ "ayaka-loader",
+ "candle-core",
+]
 
 [[package]]
 name = "ayaka-request"

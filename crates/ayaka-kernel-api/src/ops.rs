@@ -27,7 +27,9 @@ pub unsafe fn rmsnorm(
     eps: f32,
     stream: AyakaStream,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_rmsnorm(out, input, weight, eps, stream) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_rmsnorm(out, input, weight, eps, stream) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// Fused residual-add + RMSNorm: `residual_out = input + residual`,
@@ -93,7 +95,9 @@ pub unsafe fn silu_and_mul(
     input: &AyakaTensorView,
     stream: AyakaStream,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_silu_and_mul(out, input, stream) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_silu_and_mul(out, input, stream) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// Dense GEMM via cuBLASLt: `out = op_a(a) @ op_b(b) (+ bias)` with f32

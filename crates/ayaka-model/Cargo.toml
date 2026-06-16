@@ -9,4 +9,26 @@ keywords.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# CUDA swaps the vanilla-Candle layer ops for ayaka's fused kernels.
+cuda = [
+    "candle-core/cuda",
+    "candle-nn/cuda",
+    "ayaka-loader/cuda",
+    "ayaka-memory/cuda",
+    "dep:ayaka-candle",
+    "ayaka-candle/cuda",
+]
+
 [dependencies]
+ayaka-loader = { path = "../ayaka-loader" }
+ayaka-registry = { path = "../ayaka-registry" }
+ayaka-memory = { path = "../ayaka-memory" }
+# Only needed for the CUDA fused-op path; the CPU path uses vanilla Candle.
+ayaka-candle = { path = "../ayaka-candle", optional = true }
+candle-core.workspace = true
+candle-nn.workspace = true
+half.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

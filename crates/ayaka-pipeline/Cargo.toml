@@ -8,4 +8,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+cuda = ["ayaka-loader/cuda", "candle-core/cuda"]
+
 [dependencies]
+ayaka-loader = { path = "../ayaka-loader" }
+candle-core.workspace = true

@@ -31,7 +31,9 @@ pub unsafe fn device_free(
     ptr: *mut c_void,
     device_ordinal: i32,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_mem_device_free(ptr, device_ordinal) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_mem_device_free(ptr, device_ordinal) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// # Safety
@@ -62,7 +64,9 @@ pub unsafe fn device_free_async(
     device_ordinal: i32,
     stream: AyakaStream,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_mem_device_free_async(ptr, device_ordinal, stream) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_mem_device_free_async(ptr, device_ordinal, stream) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// # Safety
@@ -81,7 +85,9 @@ pub unsafe fn host_pinned_alloc(bytes: usize) -> Result<*mut c_void, AyakaError>
 /// no asynchronous copy may still use it.
 #[cfg(feature = "cuda")]
 pub unsafe fn host_pinned_free(ptr: *mut c_void) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_mem_host_pinned_free(ptr) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_mem_host_pinned_free(ptr) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// # Safety
@@ -97,7 +103,9 @@ pub unsafe fn memcpy_async(
     kind: AyakaMemcpyKind,
     stream: AyakaStream,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_mem_memcpy_async(dst, src, bytes, kind, stream) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_mem_memcpy_async(dst, src, bytes, kind, stream) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 /// # Safety
@@ -111,7 +119,9 @@ pub unsafe fn memset_async(
     bytes: usize,
     stream: AyakaStream,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_mem_memset_async(dst, value, bytes, stream) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_mem_memset_async(dst, value, bytes, stream) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 #[cfg(feature = "cuda")]
@@ -130,7 +140,9 @@ pub fn get_info(device_ordinal: i32) -> Result<AyakaMemInfo, AyakaError> {
 #[cfg(feature = "cuda")]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn stream_synchronize(stream: AyakaStream) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_mem_stream_synchronize(stream) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_mem_stream_synchronize(stream) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
 
 #[cfg(feature = "cuda")]
@@ -145,5 +157,7 @@ pub fn pool_trim(
     min_bytes_to_keep: usize,
     device_ordinal: i32,
 ) -> Result<(), AyakaError> {
-    unsafe { ffi::ayaka_mem_pool_trim(min_bytes_to_keep, device_ordinal) }.into_result().map_err(AyakaError::from)
+    unsafe { ffi::ayaka_mem_pool_trim(min_bytes_to_keep, device_ordinal) }
+        .into_result()
+        .map_err(AyakaError::from)
 }
