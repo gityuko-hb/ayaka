@@ -1,6 +1,7 @@
 pub mod append_kv;
 pub mod fused_add_rmsnorm;
 pub mod gemm;
+pub mod paged_attention;
 pub mod rmsnorm;
 pub mod rope;
 pub mod silu_and_mul;
@@ -14,6 +15,12 @@ pub use fused_add_rmsnorm::{fused_add_rmsnorm, fused_add_rmsnorm_new};
 pub use gemm::gemm_ref;
 #[cfg(feature = "cuda")]
 pub use gemm::{gemm, gemm_new};
+#[cfg(feature = "cuda")]
+pub use paged_attention::{
+    paged_attention_decode, paged_attention_decode_auto, paged_attention_decode_new,
+    paged_attention_decode_v2, paged_attention_partition_size,
+};
+pub use paged_attention::{paged_attention_decode_partitioned_ref, paged_attention_decode_ref};
 pub use rmsnorm::rmsnorm_ref;
 #[cfg(feature = "cuda")]
 pub use rmsnorm::{rmsnorm, rmsnorm_new};
