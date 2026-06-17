@@ -20,6 +20,14 @@ pub use error::{LoaderError, Result};
 pub use estimate::{MemoryEstimate, MemoryEstimator};
 pub use metadata::{MlaConfig, ModelMetadata, MoeConfig};
 pub use sequential::SequentialStreamModel;
-pub use strategy::{StrategyKind, select_strategy};
+pub use strategy::{StrategyKind, peek_metadata, select_strategy};
 pub use traits::{LoadConfig, ModelLoaderFactory, NormalModel, StreamableModel};
-pub use weights::LoadedWeights;
+pub use weights::{LoadedWeights, MmapWeights};
+
+// CUDA-only surface: the isolated driver actor and the fallback orchestrator.
+#[cfg(all(feature = "cuda", feature = "async"))]
+pub use driver::driver_memory_info_async;
+#[cfg(feature = "cuda")]
+pub use driver::{CudaDriverActor, driver_memory_info, global_driver};
+#[cfg(feature = "cuda")]
+pub use strategy::gpu::load_with_fallback;

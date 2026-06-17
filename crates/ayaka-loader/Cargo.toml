@@ -10,6 +10,7 @@ homepage.workspace = true
 
 [features]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "ayaka-memory/cuda"]
+async = ["dep:tokio"]
 
 [dependencies]
 ayaka-core = { path = "../ayaka-core" }
@@ -22,10 +23,12 @@ safetensors.workspace = true
 memmap2.workspace = true
 bytemuck.workspace = true
 half.workspace = true
+crossbeam.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt"] }
 
 [dev-dependencies]
 tempfile.workspace = true
