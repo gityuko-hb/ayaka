@@ -127,6 +127,21 @@ unsafe extern "C" {
         stream: AyakaStream,
     ) -> AyakaStatus;
 
+    /// `ayaka_quant_gemm` in `native/include/ayaka/ops/quant_gemm.h`.
+    /// `b_mins` and `bias` are nullable.
+    pub fn ayaka_quant_gemm(
+        out: *const AyakaTensorView,
+        a: *const AyakaTensorView,
+        b_quant: *const AyakaTensorView,
+        b_scales: *const AyakaTensorView,
+        b_mins: *const AyakaTensorView,
+        bias: *const AyakaTensorView,
+        group_size: i32,
+        workspace: *mut c_void,
+        workspace_bytes: usize,
+        stream: AyakaStream,
+    ) -> AyakaStatus;
+
     /// `ayaka_mem_device_alloc` in `native/include/ayaka/memory.h`.
     pub fn ayaka_mem_device_alloc(
         out: *mut *mut c_void,

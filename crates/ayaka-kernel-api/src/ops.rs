@@ -143,3 +143,50 @@ pub unsafe fn gemm(
     .into_result()
     .map_err(AyakaError::from)
 }
+
+/// Quantized GEMM (W4A16): `out = a @ dequant(b_quant) (+ bias)` with f32
+/// accumulation. The kernel dequantizes 4-bit weights on-the-fly using
+/// per-group scales (and mins when provided).
+///
+/// # Safety
+///
+/// - `out`, `a`, `b_quant`, `b_scales` (and `b_mins`/`bias` when `Some`) must
+///   describe live CUDA allocations matching their metadata for the duration
+///   of the kernel execution.
+/// - `workspace` must be null with `workspace_bytes == 0`, or a live device
+///   allocation of at least `workspace_bytes`.
+/// - `stream` must be a valid CUDA stream on the views' device.
+/// - `out` must not alias any input or `workspace`.
+#[cfg(feature = "cuda")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn quant_gemm(
+    out: &AyakaTensorView,
+    a: &AyakaTensorView,
+    b_quant: &AyakaTensorView,
+    b_scales: &AyakaTensorView,
+    b_mins: Option<&AyakaTensorView>,
+    bias: Option<&AyakaTensorView>,
+    group_size: i32,
+    workspace: *mut core::ffi::c_void,
+    workspace_bytes: usize,
+    stream: AyakaStream,
+) -> Result<(), AyakaError> {
+    let b_mins_ptr = b_mins.map_or(core::ptr::null(), |v| v as *const AyakaTensorView);
+    let bias_ptr = bias.map_or(core::ptr::null(), |v| v as *const AyakaTensorView);
+    unsafe {
+        ffi::ayaka_quant_gemm(
+            out,
+            a,
+            b_quant,
+            b_scales,
+            b_mins_ptr,
+            bias_ptr,
+            group_size,
+            workspace,
+            workspace_bytes,
+            stream,
+        )
+    }
+    .into_result()
+    .map_err(AyakaError::from)
+}

@@ -23,6 +23,7 @@ set(AYAKA_CUDA_HOST_SOURCES
     src/ops/append_kv.cc
     src/ops/fused_add_rmsnorm.cc
     src/ops/gemm.cc
+    src/ops/quant_gemm.cc
     src/ops/rmsnorm.cc
     src/ops/rope.cc
     src/ops/silu_and_mul.cc
@@ -30,6 +31,7 @@ set(AYAKA_CUDA_HOST_SOURCES
 
 set(AYAKA_CUDA_SOURCES
     csrc/activation/swiglu.cu
+    csrc/gemm/w4a16_gemm.cu
     csrc/kv_cache/append_kv.cu
     csrc/norm/fused_add_rmsnorm.cu
     csrc/norm/rmsnorm.cu
@@ -66,6 +68,7 @@ set(AYAKA_OPS_HEADERS
     include/ayaka/ops/append_kv.h
     include/ayaka/ops/fused_add_rmsnorm.h
     include/ayaka/ops/gemm.h
+    include/ayaka/ops/quant_gemm.h
     include/ayaka/ops/rmsnorm.h
     include/ayaka/ops/rope.h
     include/ayaka/ops/silu_and_mul.h
@@ -92,6 +95,10 @@ if(AYAKA_ENABLE_CUDA)
     # library itself is linked by the Rust build (static archives do not
     # propagate link dependencies).
     target_link_libraries(ayaka-native PRIVATE CUDA::cublasLt)
+
+    # cutlass headers for GEMM kernels (Marlin/Machete future, not yet used)
+    target_include_directories(ayaka-native PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/cutlass/include)
 endif()
 
 set_target_properties(ayaka-native PROPERTIES POSITION_INDEPENDENT_CODE ON)

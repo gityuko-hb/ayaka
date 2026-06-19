@@ -26,6 +26,11 @@
     if ((a) < (b)) return ayaka_status_make(AYAKA_STATUS_SHAPE_ERROR, msg); \
   } while (0)
 
+#define AYAKA_CHECK_GT(a, b, msg)                                            \
+  do {                                                                       \
+    if ((a) <= (b)) return ayaka_status_make(AYAKA_STATUS_SHAPE_ERROR, msg); \
+  } while (0)
+
 #define AYAKA_CHECK_LE(a, b, msg)                                           \
   do {                                                                      \
     if ((a) > (b)) return ayaka_status_make(AYAKA_STATUS_SHAPE_ERROR, msg); \
