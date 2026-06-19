@@ -1,4 +1,4 @@
-//! Memory estimation weight footprint, KV-cache cost, and
+//! Memory estimation (design doc REQ1): weight footprint, KV-cache cost, and
 //! auto-fit of how many layers fit on the GPU.
 
 use ayaka_quant::QuantScheme;
@@ -259,6 +259,7 @@ mod tests {
             tie_word_embeddings: true,
             mla: None,
             moe: None,
+            quant_config: None,
         }
     }
 

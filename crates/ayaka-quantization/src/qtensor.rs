@@ -5,7 +5,7 @@
 //! uploaded to the GPU as a `DType::U8` tensor so CUDA kernels can dequantize
 //! on-the-fly during GEMM (Phase 1.1 goal).
 
-use crate::gguf_block::{GgufBlock, GgufDequantError};
+use crate::gguf_block::{GgufBlock, GgufDequantError, GgufDtype};
 use crate::scheme::QuantScheme;
 
 /// In-memory packed quantized tensor: raw block bytes + shape + scheme metadata.
@@ -36,7 +36,11 @@ impl QTensor {
         dims: Vec<usize>,
         scheme: QuantScheme,
     ) -> Result<Self, GgufDequantError> {
-        let dtype = scheme.to_gguf_dtype();
+        // QTensor holds GGUF-packed block bytes, so only GGUF schemes are
+        // constructable here. AWQ/GPTQ (no `GgufDtype`) are rejected.
+        let dtype = scheme
+            .try_to_gguf_dtype()
+            .ok_or(GgufDequantError::Unsupported(GgufDtype::F32))?;
         let block = dtype.block();
         let n_elements: usize = dims.iter().product();
         let n_blocks = n_elements.div_ceil(block.weights_per_block);

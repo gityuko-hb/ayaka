@@ -21,6 +21,12 @@ pub enum QuantScheme {
     Q6K,
     /// MXFP4: blocks of 32 with a shared E8M0 byte scale (17 bytes/block).
     MXFP4,
+    /// AWQ quantization (HuggingFace safetensors, int4 with per-group scales + zeros).
+    /// Canonical group_size = 128 → bytes_per_weight ≈ 0.53125.
+    AWQ,
+    /// GPTQ quantization (HuggingFace safetensors, int4 with per-group scales + zeros).
+    /// Canonical group_size = 128 → bytes_per_weight ≈ 0.53125.
+    GPTQ,
 }
 
 impl QuantScheme {
@@ -41,6 +47,9 @@ impl QuantScheme {
             QuantScheme::Q6K => 210.0 / 256.0,
             // 16 packed nibbles + 1 E8M0 byte scale = 17 bytes / 32 weights.
             QuantScheme::MXFP4 => 17.0 / 32.0,
+            // AWQ/GPTQ: 4-bit packed (0.5 bytes) + f16 scale + f16 zero per 128 weights.
+            // = 0.5 + 2*(2/128) = 0.53125
+            QuantScheme::AWQ | QuantScheme::GPTQ => 0.53125,
         }
     }
 
@@ -50,16 +59,21 @@ impl QuantScheme {
         matches!(self, QuantScheme::F16 | QuantScheme::BF16)
     }
 
-    /// Map this scheme to its corresponding [`GgufDtype`](crate::gguf_block::GgufDtype).
-    pub const fn to_gguf_dtype(self) -> crate::gguf_block::GgufDtype {
+    /// Map this scheme to its corresponding [`GgufDtype`](crate::gguf_block::GgufDtype),
+    /// if it has one.
+    ///
+    /// Returns `None` for non-GGUF schemes (AWQ, GPTQ), which come from
+    /// HuggingFace safetensors and have no `ggml` type id.
+    pub const fn try_to_gguf_dtype(self) -> Option<crate::gguf_block::GgufDtype> {
         match self {
-            QuantScheme::F16 => crate::gguf_block::GgufDtype::F16,
-            QuantScheme::BF16 => crate::gguf_block::GgufDtype::BF16,
-            QuantScheme::Q8_0 => crate::gguf_block::GgufDtype::Q8_0,
-            QuantScheme::Q4_0 => crate::gguf_block::GgufDtype::Q4_0,
-            QuantScheme::Q4K => crate::gguf_block::GgufDtype::Q4K,
-            QuantScheme::Q6K => crate::gguf_block::GgufDtype::Q6K,
-            QuantScheme::MXFP4 => crate::gguf_block::GgufDtype::MXFP4,
+            QuantScheme::F16 => Some(crate::gguf_block::GgufDtype::F16),
+            QuantScheme::BF16 => Some(crate::gguf_block::GgufDtype::BF16),
+            QuantScheme::Q8_0 => Some(crate::gguf_block::GgufDtype::Q8_0),
+            QuantScheme::Q4_0 => Some(crate::gguf_block::GgufDtype::Q4_0),
+            QuantScheme::Q4K => Some(crate::gguf_block::GgufDtype::Q4K),
+            QuantScheme::Q6K => Some(crate::gguf_block::GgufDtype::Q6K),
+            QuantScheme::MXFP4 => Some(crate::gguf_block::GgufDtype::MXFP4),
+            QuantScheme::AWQ | QuantScheme::GPTQ => None,
         }
     }
 }
@@ -94,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn to_gguf_dtype_round_trips_all_variants() {
+    fn try_to_gguf_dtype_round_trips_gguf_schemes() {
         for scheme in [
             QuantScheme::F16,
             QuantScheme::BF16,
@@ -104,8 +118,29 @@ mod tests {
             QuantScheme::Q6K,
             QuantScheme::MXFP4,
         ] {
-            let dtype = scheme.to_gguf_dtype();
+            let dtype = scheme.try_to_gguf_dtype().unwrap();
             assert_eq!(dtype.scheme(), scheme, "round-trip failed for {scheme:?}");
         }
+        // AWQ/GPTQ have no GGUF dtype.
+        assert_eq!(QuantScheme::AWQ.try_to_gguf_dtype(), None);
+        assert_eq!(QuantScheme::GPTQ.try_to_gguf_dtype(), None);
+    }
+
+    #[test]
+    fn awq_gptq_bytes_per_weight() {
+        assert_eq!(QuantScheme::AWQ.bytes_per_weight(), 0.53125);
+        assert_eq!(QuantScheme::GPTQ.bytes_per_weight(), 0.53125);
+    }
+
+    #[test]
+    fn awq_gptq_not_float() {
+        assert!(!QuantScheme::AWQ.is_float());
+        assert!(!QuantScheme::GPTQ.is_float());
+    }
+
+    #[test]
+    fn awq_gptq_have_no_gguf_dtype() {
+        assert_eq!(QuantScheme::AWQ.try_to_gguf_dtype(), None);
+        assert_eq!(QuantScheme::GPTQ.try_to_gguf_dtype(), None);
     }
 }

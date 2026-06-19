@@ -224,6 +224,7 @@ impl GgufFile {
             tie_word_embeddings: false,
             mla: None,
             moe: None,
+            quant_config: None,
         })
     }
 }
@@ -370,6 +371,7 @@ pub fn load_quantized(
         metadata,
         vb,
         qtensors,
+        HashMap::new(),
         weight_bytes,
     ))
 }

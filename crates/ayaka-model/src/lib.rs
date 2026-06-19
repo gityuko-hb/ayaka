@@ -65,8 +65,14 @@ impl ModelLoaderFactory for Qwen3QuantFactory {
         let cfg = Qwen3Config::from_metadata(&weights.metadata);
         let dtype = weights.vb.dtype();
         let device = device_map.device.clone();
-        let model =
-            Qwen3QuantModel::load_quantized(&weights.vb, &weights.qtensors, cfg, dtype, &device)?;
+        let model = Qwen3QuantModel::load_quantized(
+            &weights.vb,
+            &weights.qtensors,
+            &weights.repacked,
+            cfg,
+            dtype,
+            &device,
+        )?;
         Ok(Box::new(model))
     }
 }

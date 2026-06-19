@@ -18,7 +18,7 @@ pub mod profiler;
 pub use device_map::{DeviceMap, LayerPlacement};
 pub use error::{LoaderError, Result};
 pub use estimate::{MemoryEstimate, MemoryEstimator};
-pub use metadata::{MlaConfig, ModelMetadata, MoeConfig};
+pub use metadata::{MlaConfig, ModelMetadata, MoeConfig, QuantConfig};
 pub use sequential::SequentialStreamModel;
 pub use strategy::{StrategyKind, peek_metadata, select_strategy};
 pub use traits::{LoadConfig, ModelLoaderFactory, NormalModel, StreamableModel};

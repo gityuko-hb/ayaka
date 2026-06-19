@@ -40,7 +40,11 @@ impl WeightRepack for QTensor {
         match self.scheme {
             QuantScheme::Q4K => repack_q4k(self),
             QuantScheme::Q6K => Err(GgufDequantError::Unsupported(GgufDtype::Q6K)),
-            _ => Err(GgufDequantError::Unsupported(self.scheme.to_gguf_dtype())),
+            _ => Err(GgufDequantError::Unsupported(
+                self.scheme
+                    .try_to_gguf_dtype()
+                    .unwrap_or(GgufDtype::F32),
+            )),
         }
     }
 }
@@ -137,6 +141,141 @@ fn repack_q4k(qt: &QTensor) -> Result<RepackedWeights, GgufDequantError> {
     })
 }
 
+/// Input for AWQ/GPTQ repack: three separate tensors from HuggingFace safetensors.
+///
+/// HuggingFace AWQ/GPTQ stores quantized weights as three sibling tensors per
+/// linear layer: `qweight` (int32-packed int4 weights), `qzeros` (int32-packed
+/// zero-points, empty for symmetric), and `scales` (f16 per-group scales). This
+/// struct collects them plus the layer geometry and the source scheme.
+#[derive(Debug, Clone)]
+pub struct AwqGptqInput {
+    /// Packed int4 weights as int32 values, shape `[K/8, N]` (column-major).
+    /// Each int32 holds 8 int4 weights packed along the K dimension
+    /// (nibble `i` → K position `k_block*8 + i`).
+    pub qweight: Vec<u32>,
+    /// Packed int4 zero-points as int32 values, shape `[K/group/8, N]`.
+    /// Each int32 holds 8 zero-points. Empty for symmetric quantization
+    /// (in which case a default zero of 8 is used).
+    pub qzeros: Vec<u32>,
+    /// Per-group scales as f16, shape `[N, K/group]` (row-major).
+    pub scales: Vec<f16>,
+    /// Output feature dimension (N).
+    pub out_features: usize,
+    /// Input feature dimension (K).
+    pub in_features: usize,
+    /// Number of weights sharing one scale/zero.
+    pub group_size: usize,
+    /// Source quantization scheme (AWQ or GPTQ).
+    pub scheme: QuantScheme,
+}
+
+/// Repack AWQ/GPTQ weights into the kernel-friendly [`RepackedWeights`] format.
+///
+/// Converts from `[K/8, N]` int32-packed column-major to `[N, K/2]` U8-packed
+/// row-major. Computes `mins = -scale * zero` so the kernel's
+/// `scale * nibble + min` formula yields `scale * (nibble - zero)`, matching
+/// the HuggingFace dequant convention without changing the C ABI.
+///
+/// For symmetric quantization (`qzeros` empty), a default zero of 8 is used,
+/// which maps unsigned int4 nibbles to signed weights via `scale * (nibble - 8)`.
+pub fn repack_awq_gptq(input: &AwqGptqInput) -> Result<RepackedWeights, GgufDequantError> {
+    let n = input.out_features;
+    let k = input.in_features;
+    let group_size = input.group_size;
+
+    if k == 0 || n == 0 || group_size == 0 || !k.is_multiple_of(8) || !k.is_multiple_of(group_size)
+    {
+        return Err(GgufDequantError::Unsupported(
+            input
+                .scheme
+                .try_to_gguf_dtype()
+                .unwrap_or(GgufDtype::F32),
+        ));
+    }
+    let n_groups = k / group_size;
+
+    if input.qweight.len() != (k / 8) * n {
+        return Err(GgufDequantError::MalformedLength {
+            dtype: GgufDtype::F32,
+            raw_len: input.qweight.len() * 4,
+            expected: (k / 8) * n * 4,
+        });
+    }
+    if input.scales.len() != n * n_groups {
+        return Err(GgufDequantError::MalformedLength {
+            dtype: GgufDtype::F32,
+            raw_len: input.scales.len() * 2,
+            expected: n * n_groups * 2,
+        });
+    }
+
+    let has_zeros = !input.qzeros.is_empty();
+    if has_zeros && input.qzeros.len() != (n_groups / 8) * n {
+        return Err(GgufDequantError::MalformedLength {
+            dtype: GgufDtype::F32,
+            raw_len: input.qzeros.len() * 4,
+            expected: (n_groups / 8) * n * 4,
+        });
+    }
+    if has_zeros && !n_groups.is_multiple_of(8) {
+        return Err(GgufDequantError::Unsupported(
+            input
+                .scheme
+                .try_to_gguf_dtype()
+                .unwrap_or(GgufDtype::F32),
+        ));
+    }
+
+    let mut qs = vec![0u8; n * k / 2];
+    let mut scales_out = vec![f16::from_f32(0.0); n * n_groups];
+    let mut mins_out = vec![f16::from_f32(0.0); n * n_groups];
+
+    for col_n in 0..n {
+        for g in 0..n_groups {
+            let scale = input.scales[col_n * n_groups + g];
+            scales_out[col_n * n_groups + g] = scale;
+
+            // Zero-point for group g: qzeros[g/8, col_n], nibble (g % 8).
+            // Symmetric default is 8, mapping unsigned nibble to signed weight.
+            let zero = if has_zeros {
+                let qz_int32 = input.qzeros[(g / 8) * n + col_n];
+                let z_nibble = (qz_int32 >> ((g % 8) * 4)) & 0xF;
+                z_nibble as f32
+            } else {
+                8.0
+            };
+
+            // mins = -scale * zero → kernel's scale*nibble + min = scale*(nibble - zero).
+            mins_out[col_n * n_groups + g] = f16::from_f32(-scale.to_f32() * zero);
+        }
+
+        // Unpack qweight from [K/8, N] int32 to [N, K/2] U8.
+        // qweight[k_block, col_n] packs 8 nibbles for K = k_block*8 .. k_block*8+7.
+        // Output byte (k_block*4 + i) holds weight (2i) in low nibble and
+        // weight (2i+1) in high nibble, matching the kernel's row-major layout.
+        for k_block in 0..k / 8 {
+            let packed = input.qweight[k_block * n + col_n];
+            for i in 0..4 {
+                let nibble_lo = (packed >> (i * 8)) & 0xF;
+                let nibble_hi = (packed >> (i * 8 + 4)) & 0xF;
+                let byte = (nibble_lo as u8) | ((nibble_hi as u8) << 4);
+                let k_byte = k_block * 4 + i;
+                qs[col_n * (k / 2) + k_byte] = byte;
+            }
+        }
+    }
+
+    Ok(RepackedWeights {
+        qs,
+        scales: scales_out,
+        mins: mins_out,
+        out_features: n,
+        in_features: k,
+        group_size,
+        scheme: input.scheme,
+    })
+}
+
 /// Repack `RepackedWeights.qs` from `[N, K/2]` row-major into Marlin tile
 /// layout `[N/16, K/16, 16, 8]` for Tensor Core `mma.sync.m16n8k16` access.
 ///
@@ -153,7 +292,11 @@ pub fn repack_to_marlin(rw: &RepackedWeights) -> Result<RepackedWeights, GgufDeq
 
     // N and K must be multiples of 16 for tiling.
     if !n.is_multiple_of(16) || !k.is_multiple_of(16) {
-        return Err(GgufDequantError::Unsupported(rw.scheme.to_gguf_dtype()));
+        return Err(GgufDequantError::Unsupported(
+            rw.scheme
+                .try_to_gguf_dtype()
+                .unwrap_or(GgufDtype::F32),
+        ));
     }
 
     let n_tiles_n = n / 16;
@@ -490,7 +633,167 @@ mod tests {
         let err = repack_to_marlin(&rw).unwrap_err();
         assert_eq!(
             err,
-            GgufDequantError::Unsupported(QuantScheme::Q4K.to_gguf_dtype())
+            GgufDequantError::Unsupported(QuantScheme::Q4K.try_to_gguf_dtype().unwrap())
         );
+    }
+
+    /// Dequantize one row of a `RepackedWeights` using the kernel formula
+    /// `scale * nibble + min`. Reused for AWQ/GPTQ where `min = -scale * zero`.
+    fn awq_dequant_row(
+        rw: &RepackedWeights,
+        row: usize,
+    ) -> Vec<f32> {
+        let n_sub = rw.in_features / rw.group_size;
+        let mut out = vec![0f32; rw.in_features];
+        for sub in 0..n_sub {
+            let scale = rw.scales[row * n_sub + sub].to_f32();
+            let min = rw.mins[row * n_sub + sub].to_f32();
+            for w in 0..rw.group_size {
+                let bit_idx = (row * rw.in_features + sub * rw.group_size + w) / 2;
+                let byte = rw.qs[bit_idx];
+                let nibble = if w & 1 == 0 {
+                    byte & 0x0F
+                } else {
+                    (byte >> 4) & 0x0F
+                };
+                out[sub * rw.group_size + w] = scale * nibble as f32 + min;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn repack_awq_gptq_nibble_packing_is_correct() {
+        // N=1, K=8, group_size=8, n_groups=1. One int32 packs 8 nibbles 0..7.
+        // packed = 0x76543210 (nibble 0 = 0, ..., nibble 7 = 7).
+        let input = AwqGptqInput {
+            qweight: vec![0x76543210],
+            qzeros: vec![],
+            scales: vec![f16::from_f32(1.0)],
+            out_features: 1,
+            in_features: 8,
+            group_size: 8,
+            scheme: QuantScheme::AWQ,
+        };
+        let rw = repack_awq_gptq(&input).expect("repack should succeed");
+
+        // qs: [1, 4] = 4 bytes. byte i holds nibble(2i) low, nibble(2i+1) high.
+        assert_eq!(rw.qs.len(), 4);
+        assert_eq!(rw.qs[0], 0x10); // nibble 0 | nibble 1 << 4
+        assert_eq!(rw.qs[1], 0x32); // nibble 2 | nibble 3 << 4
+        assert_eq!(rw.qs[2], 0x54); // nibble 4 | nibble 5 << 4
+        assert_eq!(rw.qs[3], 0x76); // nibble 6 | nibble 7 << 4
+    }
+
+    #[test]
+    fn repack_awq_gptq_preserves_dequant_values_asymmetric() {
+        // N=2, K=32, group_size=4, n_groups=8.
+        // scales = 2.0, zeros = 5, nibbles = 3 → weight = 2*(3-5) = -4.0.
+        let n = 2;
+        let k = 32;
+        let group_size = 4;
+        let n_groups = k / group_size; // 8
+
+        let qweight = vec![0x33333333u32; (k / 8) * n]; // 8 int32s
+        // qzeros: [n_groups/8, N] = [1, 2] = 2 int32s, all nibbles = 5.
+        let qzeros = vec![0x55555555u32; (n_groups / 8) * n];
+        let scales = vec![f16::from_f32(2.0); n * n_groups];
+
+        let input = AwqGptqInput {
+            qweight,
+            qzeros,
+            scales,
+            out_features: n,
+            in_features: k,
+            group_size,
+            scheme: QuantScheme::GPTQ,
+        };
+        let rw = repack_awq_gptq(&input).expect("repack should succeed");
+
+        assert_eq!(rw.out_features, n);
+        assert_eq!(rw.in_features, k);
+        assert_eq!(rw.group_size, group_size);
+        assert_eq!(rw.scheme, QuantScheme::GPTQ);
+        assert_eq!(rw.qs.len(), n * k / 2);
+        assert_eq!(rw.scales.len(), n * n_groups);
+        assert_eq!(rw.mins.len(), n * n_groups);
+
+        // All scales = 2.0, all mins = -2.0 * 5 = -10.0.
+        assert!(rw.scales.iter().all(|s| s.to_f32() == 2.0));
+        assert!(rw.mins.iter().all(|m| m.to_f32() == -10.0));
+
+        // Dequant: 2.0 * 3 + (-10.0) = -4.0 for every weight.
+        for row in 0..n {
+            let deq = awq_dequant_row(&rw, row);
+            assert_eq!(deq.len(), k);
+            assert!(deq.iter().all(|v| (*v - (-4.0)).abs() < 1e-3), "row {row}");
+        }
+    }
+
+    #[test]
+    fn repack_awq_gptq_symmetric_uses_default_zero() {
+        // Symmetric: qzeros empty → zero defaults to 8.
+        // scale = 2.0, nibble = 3 → weight = 2*(3-8) = -10.0, min = -16.0.
+        let n = 1;
+        let k = 16;
+        let group_size = 8;
+        let n_groups = k / group_size; // 2
+
+        let input = AwqGptqInput {
+            qweight: vec![0x33333333u32; (k / 8) * n],
+            qzeros: vec![],
+            scales: vec![f16::from_f32(2.0); n * n_groups],
+            out_features: n,
+            in_features: k,
+            group_size,
+            scheme: QuantScheme::AWQ,
+        };
+        let rw = repack_awq_gptq(&input).expect("repack should succeed");
+
+        // mins = -2.0 * 8 = -16.0.
+        assert!(rw.mins.iter().all(|m| m.to_f32() == -16.0));
+
+        let deq = awq_dequant_row(&rw, 0);
+        // 2.0 * 3 + (-16.0) = -10.0.
+        assert!(deq.iter().all(|v| (*v - (-10.0)).abs() < 1e-3));
+    }
+
+    #[test]
+    fn repack_awq_gptq_rejects_bad_dimensions() {
+        // K not divisible by 8.
+        let input = AwqGptqInput {
+            qweight: vec![0u32; 2],
+            qzeros: vec![],
+            scales: vec![f16::from_f32(1.0); 2],
+            out_features: 2,
+            in_features: 12, // not % 8
+            group_size: 4,
+            scheme: QuantScheme::AWQ,
+        };
+        assert!(repack_awq_gptq(&input).is_err());
+
+        // Wrong qweight length.
+        let input = AwqGptqInput {
+            qweight: vec![0u32; 3], // expected (32/8)*2 = 8
+            qzeros: vec![],
+            scales: vec![f16::from_f32(1.0); 2 * 8],
+            out_features: 2,
+            in_features: 32,
+            group_size: 4,
+            scheme: QuantScheme::AWQ,
+        };
+        assert!(repack_awq_gptq(&input).is_err());
+
+        // Wrong scales length.
+        let input = AwqGptqInput {
+            qweight: vec![0u32; 8],
+            qzeros: vec![],
+            scales: vec![f16::from_f32(1.0); 10], // expected 16
+            out_features: 2,
+            in_features: 32,
+            group_size: 4,
+            scheme: QuantScheme::AWQ,
+        };
+        assert!(repack_awq_gptq(&input).is_err());
     }
 }

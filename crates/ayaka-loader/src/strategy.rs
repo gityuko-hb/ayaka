@@ -96,9 +96,14 @@ pub fn load_weights(
 /// A `.gguf` file with quantized tensors (Q4K, Q6K, etc.) uses
 /// [`crate::gguf::load_quantized`]; quantized weights stay as packed `QTensor`
 /// bytes instead of being dequantized to F16/BF16. Non-quantized tensors
-/// (F16/BF16/F32) are materialized as usual. Returns `None` if the format
-/// does not support quantized loading (e.g., safetensors — Task A5 will add
-/// this path) or if no tensor is actually quantized.
+/// (F16/BF16/F32) are materialized as usual.
+///
+/// A safetensors directory with `quantization_config` in `config.json` uses
+/// [`crate::safetensors::load_quantized`], which repacks AWQ/GPTQ weights into
+/// [`RepackedWeights`] and stores them in the `repacked` map.
+///
+/// Returns `None` if the format does not support quantized loading or if no
+/// tensor is actually quantized.
 pub fn try_load_quantized(
     path: &Path,
     dtype: DType,
@@ -126,8 +131,15 @@ pub fn try_load_quantized(
         } else {
             Ok(None)
         }
+    } else if path.is_dir() || path.extension().is_some() {
+        // Safetensors: peek config.json for quantization_config.
+        match peek_metadata(path) {
+            Ok(meta) if meta.quant_config.is_some() => Ok(Some(
+                crate::safetensors::load_quantized(path, dtype, device)?,
+            )),
+            _ => Ok(None),
+        }
     } else {
-        // Safetensors quantized path is Task A5; for now, no quantized loading.
         Ok(None)
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use candle_nn::VarBuilder;
 
-use ayaka_quant::QTensor;
+use ayaka_quant::{QTensor, RepackedWeights};
 
 use crate::metadata::ModelMetadata;
 
@@ -102,7 +102,12 @@ pub struct LoadedQuantWeights {
     /// Non-quantized tensors (F16/BF16) accessible by name.
     pub vb: VarBuilder<'static>,
     /// Quantized tensors (Q4K, Q6K, Q4_0, Q8_0) as packed `QTensor`.
+    /// Populated by the GGUF path; empty for AWQ/GPTQ (which uses `repacked`).
     pub qtensors: HashMap<String, QTensor>,
+    /// Pre-repacked weights (AWQ/GPTQ path). Empty for GGUF (which uses
+    /// `qtensors` and repacks inside the model factory). Keyed by the weight
+    /// prefix (e.g. `"model.layers.0.self_attn.q_proj"`).
+    pub repacked: HashMap<String, RepackedWeights>,
     /// Total resident weight bytes (quantized bytes for QTensor + materialized
     /// bytes for float tensors), for `MemoryLedger` accounting.
     pub weight_bytes: usize,
@@ -113,12 +118,14 @@ impl LoadedQuantWeights {
         metadata: ModelMetadata,
         vb: VarBuilder<'static>,
         qtensors: HashMap<String, QTensor>,
+        repacked: HashMap<String, RepackedWeights>,
         weight_bytes: usize,
     ) -> Self {
         Self {
             metadata,
             vb,
             qtensors,
+            repacked,
             weight_bytes,
         }
     }

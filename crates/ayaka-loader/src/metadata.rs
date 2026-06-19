@@ -30,6 +30,23 @@ pub struct ModelMetadata {
     /// MLA / MoE fields (DeepSeek-V3-style); absent for dense models.
     pub mla: Option<MlaConfig>,
     pub moe: Option<MoeConfig>,
+    /// Quantization config (AWQ/GPTQ); absent for dense models.
+    pub quant_config: Option<QuantConfig>,
+}
+
+/// Quantization configuration parsed from HuggingFace `config.json`'s
+/// `quantization_config` section. Present for AWQ/GPTQ models, absent for
+/// dense (F16/BF16) models.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantConfig {
+    /// Quantization method: "awq", "gptq", etc.
+    pub quant_method: String,
+    /// Number of bits per weight (typically 4).
+    pub bits: usize,
+    /// Group size for per-group scales (typically 64 or 128).
+    pub group_size: usize,
+    /// Whether the quantization is symmetric (no zero-point).
+    pub sym: bool,
 }
 
 /// Multi-head latent attention parameters (DeepSeek-V3).
@@ -114,6 +131,21 @@ struct RawConfig {
     n_shared_experts: usize,
     #[serde(default)]
     first_k_dense_replace: usize,
+
+    // AWQ / GPTQ
+    #[serde(default)]
+    quantization_config: Option<QuantConfigRaw>,
+}
+
+/// Raw `quantization_config` shape. `quant_method` is required to identify a
+/// quantized model; other fields default to common AWQ/GPTQ values when absent.
+#[derive(Debug, Deserialize)]
+struct QuantConfigRaw {
+    quant_method: Option<String>,
+    bits: Option<usize>,
+    group_size: Option<usize>,
+    #[serde(default)]
+    sym: bool,
 }
 
 fn default_eps() -> f64 {
@@ -167,6 +199,18 @@ impl RawConfig {
             _ => None,
         };
 
+        let quant_config = self.quantization_config.and_then(|qc| {
+            let method = qc.quant_method?;
+            let bits = qc.bits.unwrap_or(4);
+            let group_size = qc.group_size.unwrap_or(128);
+            Some(QuantConfig {
+                quant_method: method,
+                bits,
+                group_size,
+                sym: qc.sym,
+            })
+        });
+
         Ok(ModelMetadata {
             arch_id,
             hidden_size: require(self.hidden_size, "hidden_size")?,
@@ -182,6 +226,7 @@ impl RawConfig {
             tie_word_embeddings: self.tie_word_embeddings,
             mla,
             moe,
+            quant_config,
         })
     }
 }
@@ -276,5 +321,107 @@ mod tests {
         let json = r#"{ "model_type": "qwen3", "hidden_size": 1024 }"#;
         let err = ModelMetadata::from_config_json(json).unwrap_err();
         assert!(matches!(err, LoaderError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn parses_awq_quantization_config() {
+        let json = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "vocab_size": 151936,
+            "quantization_config": {
+                "quant_method": "awq",
+                "bits": 4,
+                "group_size": 128,
+                "sym": false
+            }
+        }"#;
+        let m = ModelMetadata::from_config_json(json).unwrap();
+        let qc = m.quant_config.unwrap();
+        assert_eq!(qc.quant_method, "awq");
+        assert_eq!(qc.bits, 4);
+        assert_eq!(qc.group_size, 128);
+        assert!(!qc.sym);
+    }
+
+    #[test]
+    fn parses_gptq_quantization_config() {
+        let json = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "vocab_size": 151936,
+            "quantization_config": {
+                "quant_method": "gptq",
+                "bits": 4,
+                "group_size": 128,
+                "sym": true
+            }
+        }"#;
+        let m = ModelMetadata::from_config_json(json).unwrap();
+        let qc = m.quant_config.unwrap();
+        assert_eq!(qc.quant_method, "gptq");
+        assert!(qc.sym);
+    }
+
+    #[test]
+    fn dense_model_has_no_quant_config() {
+        let json = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "vocab_size": 151936
+        }"#;
+        let m = ModelMetadata::from_config_json(json).unwrap();
+        assert!(m.quant_config.is_none());
+    }
+
+    #[test]
+    fn quant_config_without_method_is_ignored() {
+        // A quantization_config section missing quant_method is not a usable
+        // AWQ/GPTQ descriptor, so it is dropped to None rather than partially
+        // populated.
+        let json = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "vocab_size": 151936,
+            "quantization_config": {
+                "bits": 4,
+                "group_size": 128
+            }
+        }"#;
+        let m = ModelMetadata::from_config_json(json).unwrap();
+        assert!(m.quant_config.is_none());
+    }
+
+    #[test]
+    fn quant_config_applies_defaults_for_missing_numeric_fields() {
+        let json = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "vocab_size": 151936,
+            "quantization_config": {
+                "quant_method": "awq"
+            }
+        }"#;
+        let m = ModelMetadata::from_config_json(json).unwrap();
+        let qc = m.quant_config.unwrap();
+        assert_eq!(qc.quant_method, "awq");
+        assert_eq!(qc.bits, 4);
+        assert_eq!(qc.group_size, 128);
+        assert!(!qc.sym);
     }
 }

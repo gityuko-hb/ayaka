@@ -173,9 +173,10 @@ mod tests {
             tie_word_embeddings: false,
             mla: None,
             moe: None,
+            quant_config: None,
         };
         let vb = VarBuilder::from_tensors(HashMap::new(), candle_core::DType::F32, &Device::Cpu);
-        let weights = LoadedQuantWeights::new(meta, vb, HashMap::new(), 0);
+        let weights = LoadedQuantWeights::new(meta, vb, HashMap::new(), HashMap::new(), 0);
         let device_map = DeviceMap::all_gpu(Device::Cpu, 1);
         let result = factory.load_quantized(weights, &device_map);
         match result {

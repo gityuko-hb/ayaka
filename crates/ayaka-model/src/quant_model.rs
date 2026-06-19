@@ -14,7 +14,7 @@ use candle_nn::{RmsNorm, VarBuilder, rms_norm};
 use ayaka_candle::ops::QuantLinear;
 use ayaka_loader::{NormalModel, Result as LResult, StreamableModel};
 use ayaka_memory::{MemoryPurpose, global_ledger};
-use ayaka_quant::{QTensor, WeightRepack};
+use ayaka_quant::{QTensor, RepackedWeights, WeightRepack};
 
 use crate::config::Qwen3Config;
 use crate::model::{Qwen3Shared, apply_rope, repeat_kv};
@@ -54,11 +54,14 @@ impl QuantDecoderLayer {
     ///
     /// `vb` should be positioned at `model.layers.{i}` (for the float norms).
     /// `layer_prefix` is the full prefix `"model.layers.{i}"` used to look up
-    /// quantized weights in `qtensors`. `device` is where the packed quantized
-    /// weights are uploaded.
+    /// quantized weights. `device` is where the packed quantized weights are
+    /// uploaded. For AWQ/GPTQ (safetensors), `repacked` holds pre-repacked
+    /// weights keyed by prefix; for GGUF, `qtensors` holds packed `QTensor`
+    /// keyed by `"{prefix}.weight"`.
     pub fn load_quantized(
         vb: &VarBuilder<'static>,
         qtensors: &HashMap<String, QTensor>,
+        repacked: &HashMap<String, RepackedWeights>,
         cfg: &Qwen3Config,
         layer_prefix: &str,
         device: &Device,
@@ -69,6 +72,7 @@ impl QuantDecoderLayer {
 
         let q_proj = build_quant_linear(
             qtensors,
+            repacked,
             &format!("{attn_prefix}.q_proj"),
             cfg.hidden_size,
             cfg.num_heads * hd,
@@ -76,6 +80,7 @@ impl QuantDecoderLayer {
         )?;
         let k_proj = build_quant_linear(
             qtensors,
+            repacked,
             &format!("{attn_prefix}.k_proj"),
             cfg.hidden_size,
             cfg.num_kv_heads * hd,
@@ -83,6 +88,7 @@ impl QuantDecoderLayer {
         )?;
         let v_proj = build_quant_linear(
             qtensors,
+            repacked,
             &format!("{attn_prefix}.v_proj"),
             cfg.hidden_size,
             cfg.num_kv_heads * hd,
@@ -90,6 +96,7 @@ impl QuantDecoderLayer {
         )?;
         let o_proj = build_quant_linear(
             qtensors,
+            repacked,
             &format!("{attn_prefix}.o_proj"),
             cfg.num_heads * hd,
             cfg.hidden_size,
@@ -97,6 +104,7 @@ impl QuantDecoderLayer {
         )?;
         let gate = build_quant_linear(
             qtensors,
+            repacked,
             &format!("{mlp_prefix}.gate_proj"),
             cfg.hidden_size,
             cfg.intermediate_size,
@@ -104,6 +112,7 @@ impl QuantDecoderLayer {
         )?;
         let up = build_quant_linear(
             qtensors,
+            repacked,
             &format!("{mlp_prefix}.up_proj"),
             cfg.hidden_size,
             cfg.intermediate_size,
@@ -111,6 +120,7 @@ impl QuantDecoderLayer {
         )?;
         let down = build_quant_linear(
             qtensors,
+            repacked,
             &format!("{mlp_prefix}.down_proj"),
             cfg.intermediate_size,
             cfg.hidden_size,
@@ -142,6 +152,11 @@ impl QuantDecoderLayer {
         ]
         .iter()
         .map(|p| {
+            // AWQ/GPTQ: repacked weights are keyed by prefix (no ".weight").
+            if let Some(rw) = repacked.get(p) {
+                return rw.qs.len() + rw.scales.len() * 2 + rw.mins.len() * 2;
+            }
+            // GGUF: QTensor keyed by "{prefix}.weight".
             qtensors
                 .get(&format!("{p}.weight"))
                 .map(|qt| qt.stored_bytes())
@@ -243,33 +258,43 @@ impl QuantDecoderLayer {
     }
 }
 
-/// Build a [`QuantLinear`] from a quantized weight in `qtensors`.
+/// Build a [`QuantLinear`] from a quantized weight.
 ///
-/// `prefix` is the projection path (e.g. `"model.layers.0.self_attn.q_proj"`);
-/// the lookup key is `"{prefix}.weight"`. Validates that the repacked
-/// dimensions match `in_features` and `out_features`.
+/// For AWQ/GPTQ (safetensors path), `repacked` holds pre-repacked weights
+/// keyed by `prefix` (e.g. `"model.layers.0.self_attn.q_proj"`). If present,
+/// the `QuantLinear` is built directly from them.
+///
+/// For GGUF, `qtensors` holds packed `QTensor` keyed by `"{prefix}.weight"`;
+/// the weight is repacked via [`WeightRepack::repack`] before building.
+///
+/// Validates that the repacked dimensions match `in_features` and
+/// `out_features`.
 fn build_quant_linear(
     qtensors: &HashMap<String, QTensor>,
+    repacked: &HashMap<String, RepackedWeights>,
     prefix: &str,
     in_features: usize,
     out_features: usize,
     device: &Device,
 ) -> CResult<QuantLinear> {
-    let key = format!("{prefix}.weight");
-    let qt = qtensors
-        .get(&key)
-        .ok_or_else(|| candle_core::Error::Msg(format!("quantized weight not found: {key}")))?;
-    let rw = qt
-        .repack()
-        .map_err(|e| candle_core::Error::Msg(format!("repack failed for {key}: {e}")))?;
-    if rw.in_features != in_features || rw.out_features != out_features {
-        candle_core::bail!(
-            "quantized weight {key}: expected in={in_features} out={out_features} \
-             but got in={} out={}",
-            rw.in_features,
-            rw.out_features
-        );
-    }
+    let rw: RepackedWeights = if let Some(rw) = repacked.get(prefix) {
+        if rw.in_features != in_features || rw.out_features != out_features {
+            candle_core::bail!(
+                "quantized weight {prefix}: expected in={in_features} out={out_features} \
+                 but got in={} out={}",
+                rw.in_features,
+                rw.out_features
+            );
+        }
+        rw.clone()
+    } else {
+        let key = format!("{prefix}.weight");
+        let qt = qtensors
+            .get(&key)
+            .ok_or_else(|| candle_core::Error::Msg(format!("quantized weight not found: {key}")))?;
+        qt.repack()
+            .map_err(|e| candle_core::Error::Msg(format!("repack failed for {key}: {e}")))?
+    };
     QuantLinear::from_repacked(&rw, None, device)
 }
 
@@ -284,6 +309,7 @@ impl Qwen3QuantModel {
     pub fn load_quantized(
         vb: &VarBuilder<'static>,
         qtensors: &HashMap<String, QTensor>,
+        repacked: &HashMap<String, RepackedWeights>,
         cfg: Qwen3Config,
         dtype: DType,
         device: &Device,
@@ -294,6 +320,7 @@ impl Qwen3QuantModel {
             layers.push(QuantDecoderLayer::load_quantized(
                 &vb.pp(&prefix),
                 qtensors,
+                repacked,
                 &cfg,
                 &prefix,
                 device,
@@ -331,19 +358,25 @@ impl NormalModel for Qwen3QuantModel {
 pub struct Qwen3QuantStreamer {
     shared: Qwen3Shared,
     qtensors: HashMap<String, QTensor>,
+    repacked: HashMap<String, RepackedWeights>,
 }
 
 impl Qwen3QuantStreamer {
-    /// Load shared parts and take ownership of the quantized weight map.
+    /// Load shared parts and take ownership of the quantized weight maps.
     pub fn load_quantized(
         vb: &VarBuilder<'static>,
         qtensors: HashMap<String, QTensor>,
+        repacked: HashMap<String, RepackedWeights>,
         cfg: Qwen3Config,
         dtype: DType,
         device: &Device,
     ) -> LResult<Self> {
         let shared = Qwen3Shared::load(vb, cfg, dtype, device)?;
-        Ok(Self { shared, qtensors })
+        Ok(Self {
+            shared,
+            qtensors,
+            repacked,
+        })
     }
 }
 
@@ -361,9 +394,9 @@ impl StreamableModel for Qwen3QuantStreamer {
         self.shared.embed(input_ids)
     }
 
-    /// Build a quantized layer from the streamer's stored `qtensors` and the
-    /// shared `vb`. The float norms come from `vb`; the 7 projections come
-    /// from the stored packed quantized weights.
+    /// Build a quantized layer from the streamer's stored `qtensors`/`repacked`
+    /// and the shared `vb`. The float norms come from `vb`; the 7 projections
+    /// come from the stored packed quantized weights.
     fn load_layer(
         &self,
         vb: &VarBuilder<'static>,
@@ -373,6 +406,7 @@ impl StreamableModel for Qwen3QuantStreamer {
         Ok(QuantDecoderLayer::load_quantized(
             &vb.pp(&prefix),
             &self.qtensors,
+            &self.repacked,
             &self.shared.cfg,
             &prefix,
             &self.shared.device,
