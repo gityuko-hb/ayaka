@@ -22,7 +22,7 @@ pub use metadata::{MlaConfig, ModelMetadata, MoeConfig};
 pub use sequential::SequentialStreamModel;
 pub use strategy::{StrategyKind, peek_metadata, select_strategy};
 pub use traits::{LoadConfig, ModelLoaderFactory, NormalModel, StreamableModel};
-pub use weights::{LoadedWeights, MmapWeights};
+pub use weights::{LoadedQuantWeights, LoadedWeights, MmapWeights};
 
 // CUDA-only surface: the isolated driver actor and the fallback orchestrator.
 #[cfg(all(feature = "cuda", feature = "async"))]

@@ -1,9 +1,14 @@
 //! Custom GGUF binary parser (no external GGUF dependency).
 //!
 //! Parses the header, metadata key/value store, and tensor table, then loads
-//! tensors by dequantizing quant blocks to F16/BF16 (kernels never see quant
-//! layouts). GGUF stores tensor dims fastest-varying first; we reverse them so
-//! the resulting Candle tensors match Hugging Face `[out, in]` row-major shapes.
+//! tensors via one of two paths:
+//!   * `load()` — dequantizes every tensor to F16/BF16 (kernels never see quant
+//!     layouts);
+//!   * `load_quantized()` — keeps quantized weights packed as `QTensor` so
+//!     kernels CAN see quant layouts and dequantize on-the-fly (Phase 1.1).
+//!
+//! GGUF stores tensor dims fastest-varying first; we reverse them so the
+//! resulting Candle tensors match Hugging Face `[out, in]` row-major shapes.
 
 use std::collections::HashMap;
 use std::fs;
@@ -12,11 +17,11 @@ use std::path::Path;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 
-use ayaka_quant::GgufDtype;
+use ayaka_quant::{GgufDtype, QTensor};
 
 use crate::error::{LoaderError, Result};
 use crate::metadata::ModelMetadata;
-use crate::weights::LoadedWeights;
+use crate::weights::{LoadedQuantWeights, LoadedWeights};
 
 const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" little-endian
 const DEFAULT_ALIGNMENT: usize = 32;
@@ -266,6 +271,109 @@ pub fn load(
     Ok(LoadedWeights::new(metadata, vb, weight_bytes))
 }
 
+/// Owns a GGUF file's mmap and parsed header for safe zero-copy tensor slicing.
+///
+/// The `Mmap` stays alive for the lifetime of this struct, so `tensor_slice()`
+/// returns valid borrows of the file's data section. When loading quantized
+/// weights, we copy each tensor's packed bytes into a `QTensor` (owning),
+/// so the `GgufMmap` can be dropped after `load_quantized()` returns.
+pub struct GgufMmap {
+    _file: fs::File,
+    mmap: memmap2::Mmap,
+    gguf: GgufFile,
+}
+
+impl GgufMmap {
+    /// Open and mmap a `.gguf` file (read-only), parsing the header.
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = fs::File::open(path).map_err(|source| LoaderError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        // SAFETY: read-only mmap; file is not mutated while mapped.
+        let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|source| LoaderError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let gguf = GgufFile::parse(&mmap)?;
+        Ok(Self {
+            _file: file,
+            mmap,
+            gguf,
+        })
+    }
+
+    /// Borrow the parsed GGUF header/metadata/tensor table.
+    pub fn gguf(&self) -> &GgufFile {
+        &self.gguf
+    }
+
+    /// Borrow the raw bytes of tensor `info` from the mmap'd data section.
+    /// Returns `None` if the tensor runs past the end of the file.
+    pub fn tensor_slice(
+        &self,
+        info: &GgufTensorInfo,
+    ) -> Option<&[u8]> {
+        let start = self.gguf.data_offset + info.offset as usize;
+        let end = start + info.stored_bytes();
+        if end > self.mmap.len() {
+            return None;
+        }
+        Some(&self.mmap[start..end])
+    }
+}
+
+/// Load a `.gguf` file keeping quantized weights in their packed block format.
+///
+/// Quantized tensors (Q4K, Q6K, Q4_0, Q8_0) are stored as `QTensor` (raw packed
+/// bytes + metadata) without dequantizing. Non-quantized tensors (F16, BF16, F32)
+/// are materialized to `dtype` on `device` via a `VarBuilder`, exactly as `load()`
+/// does — they're small (embeddings, norms) and kernels consume them directly.
+///
+/// `weight_bytes` reports the **quantized** on-disk byte count (not the
+/// dequantized size), matching what actually resides in VRAM.
+pub fn load_quantized(
+    path: &Path,
+    dtype: DType,
+    device: &Device,
+) -> Result<LoadedQuantWeights> {
+    let mmap = GgufMmap::open(path)?;
+    let gguf = mmap.gguf();
+    let metadata = gguf.model_metadata()?;
+
+    let mut qtensors: HashMap<String, QTensor> = HashMap::new();
+    let mut float_tensors: HashMap<String, Tensor> = HashMap::new();
+    let mut weight_bytes = 0usize;
+
+    for info in &gguf.tensors {
+        let raw = mmap.tensor_slice(info).ok_or_else(|| {
+            LoaderError::Gguf(format!("tensor {} runs past end of file", info.name))
+        })?;
+
+        let scheme = info.dtype.scheme();
+        if scheme.is_float() {
+            // F16/BF16/F32: materialize to `dtype` on `device` (same as legacy load).
+            let f32_data = info.dtype.dequantize(raw, info.num_elements())?;
+            let tensor = Tensor::from_vec(f32_data, info.dims.clone(), device)?.to_dtype(dtype)?;
+            weight_bytes += info.num_elements() * dtype.size_in_bytes();
+            float_tensors.insert(info.name.clone(), tensor);
+        } else {
+            // Quantized: keep packed bytes as QTensor (no dequant, no GPU upload yet).
+            let qt = QTensor::from_raw(raw.to_vec(), info.dims.clone(), scheme)?;
+            weight_bytes += qt.stored_bytes();
+            qtensors.insert(info.name.clone(), qt);
+        }
+    }
+
+    let vb = VarBuilder::from_tensors(float_tensors, dtype, device);
+    Ok(LoadedQuantWeights::new(
+        metadata,
+        vb,
+        qtensors,
+        weight_bytes,
+    ))
+}
+
 /// Little-endian cursor over GGUF bytes.
 struct Reader<'a> {
     buf: &'a [u8],
@@ -362,6 +470,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ayaka_quant::QuantScheme;
 
     /// Hand-build a minimal v3 GGUF with metadata and one F32 tensor.
     fn build_gguf() -> Vec<u8> {
@@ -445,5 +554,208 @@ mod tests {
 
         let tensor = Tensor::from_vec(data, info.dims.clone(), &Device::Cpu).unwrap();
         assert_eq!(tensor.dims(), &[4, 8]);
+    }
+
+    /// Spec for building a test tensor entry in `build_complete_gguf`.
+    struct TensorSpec {
+        name: &'static str,
+        /// `(ne[0], ne[1])` in ggml fastest-varying-first order.
+        ne: [u64; 2],
+        /// ggml type id (0 = F32, 1 = F16, 12 = Q4K, ...).
+        ggml_type: u32,
+        /// Raw bytes to write for this tensor's data section.
+        data: Vec<u8>,
+    }
+
+    /// Build a complete v3 GGUF with all metadata required by
+    /// `GgufFile::model_metadata()` plus the given tensors. Tensors are laid out
+    /// back-to-back, each aligned to `DEFAULT_ALIGNMENT`.
+    fn build_complete_gguf(tensors: &[TensorSpec]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        b.extend_from_slice(&3u32.to_le_bytes()); // version
+        b.extend_from_slice(&(tensors.len() as u64).to_le_bytes()); // tensor_count
+        b.extend_from_slice(&6u64.to_le_bytes()); // kv_count
+
+        let push_str = |b: &mut Vec<u8>, s: &str| {
+            b.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            b.extend_from_slice(s.as_bytes());
+        };
+        let push_kv_u32 = |b: &mut Vec<u8>, k: &str, v: u32| {
+            push_str(b, k);
+            b.extend_from_slice(&4u32.to_le_bytes()); // type 4 = u32
+            b.extend_from_slice(&v.to_le_bytes());
+        };
+        let push_kv_str = |b: &mut Vec<u8>, k: &str, v: &str| {
+            push_str(b, k);
+            b.extend_from_slice(&8u32.to_le_bytes()); // type 8 = string
+            push_str(b, v);
+        };
+
+        // Required metadata for `model_metadata()`.
+        push_kv_str(&mut b, "general.architecture", "llama");
+        push_kv_u32(&mut b, "llama.embedding_length", 8);
+        push_kv_u32(&mut b, "llama.feed_forward_length", 16);
+        push_kv_u32(&mut b, "llama.block_count", 1);
+        push_kv_u32(&mut b, "llama.attention.head_count", 2);
+        push_kv_u32(&mut b, "llama.vocab_size", 4);
+
+        // Compute aligned offsets for each tensor relative to the data section.
+        let mut offset = 0usize;
+        let mut offsets = Vec::with_capacity(tensors.len());
+        for t in tensors {
+            offsets.push(offset);
+            offset = (offset + t.data.len()).next_multiple_of(DEFAULT_ALIGNMENT);
+        }
+
+        // Write tensor table entries.
+        for (t, &off) in tensors.iter().zip(&offsets) {
+            push_str(&mut b, t.name);
+            b.extend_from_slice(&2u32.to_le_bytes()); // ndims = 2
+            b.extend_from_slice(&t.ne[0].to_le_bytes());
+            b.extend_from_slice(&t.ne[1].to_le_bytes());
+            b.extend_from_slice(&t.ggml_type.to_le_bytes());
+            b.extend_from_slice(&(off as u64).to_le_bytes());
+        }
+
+        // Pad to alignment for the data section.
+        while b.len() % DEFAULT_ALIGNMENT != 0 {
+            b.push(0);
+        }
+        let data_section_start = b.len();
+
+        // Write tensor data with alignment padding between tensors.
+        for (i, t) in tensors.iter().enumerate() {
+            let expected = data_section_start + offsets[i];
+            while b.len() < expected {
+                b.push(0);
+            }
+            b.extend_from_slice(&t.data);
+        }
+        b
+    }
+
+    #[test]
+    fn gguf_mmap_open_and_slice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiny.gguf");
+        fs::write(&path, build_gguf()).unwrap();
+
+        let mmap = GgufMmap::open(&path).expect("open should parse header");
+        let gguf = mmap.gguf();
+        assert_eq!(gguf.architecture().unwrap(), "llama");
+        assert_eq!(gguf.tensors.len(), 1);
+
+        let info = &gguf.tensors[0];
+        let raw = mmap
+            .tensor_slice(info)
+            .expect("tensor slice should exist");
+        assert_eq!(raw.len(), info.stored_bytes());
+        // The first 4 bytes are the first f32 value (0.0).
+        let first = f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        assert_eq!(first, 0.0);
+        // The 6th value (index 5) should be 5.0.
+        let sixth = f32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
+        assert_eq!(sixth, 5.0);
+    }
+
+    #[test]
+    fn load_quantized_keeps_packed_bytes() {
+        // F32 tensor "embed": dims [4, 8] HF = [8, 4] ggml, 32 floats.
+        let embed_data: Vec<u8> = (0..32u32)
+            .flat_map(|i| (i as f32).to_le_bytes())
+            .collect();
+        // Q4K tensor "layer.q_proj.weight": dims [1, 256] HF = [256, 1] ggml,
+        // 1 super-block = 144 bytes (zeros — test only checks preservation).
+        let q4k_data = vec![0u8; 144];
+
+        let buf = build_complete_gguf(&[
+            TensorSpec {
+                name: "embed",
+                ne: [8, 4],
+                ggml_type: 0, // F32
+                data: embed_data,
+            },
+            TensorSpec {
+                name: "layer.q_proj.weight",
+                ne: [256, 1],
+                ggml_type: 12, // Q4K
+                data: q4k_data,
+            },
+        ]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.gguf");
+        fs::write(&path, &buf).unwrap();
+
+        let result =
+            load_quantized(&path, DType::F32, &Device::Cpu).expect("load_quantized should succeed");
+
+        // Q4K tensor stays packed as QTensor.
+        let qt = result
+            .qtensors
+            .get("layer.q_proj.weight")
+            .expect("Q4K tensor should be in qtensors");
+        assert_eq!(qt.scheme, QuantScheme::Q4K);
+        assert_eq!(qt.stored_bytes(), 144);
+        assert_eq!(qt.dims, vec![1, 256]);
+
+        // F32 tensor is materialized into the VarBuilder.
+        let embed = result
+            .vb
+            .get((4, 8), "embed")
+            .expect("embed should be in VarBuilder");
+        assert_eq!(embed.dims(), &[4, 8]);
+        assert_eq!(embed.dtype(), DType::F32);
+
+        // weight_bytes = 144 (Q4K packed) + 128 (32 * 4 bytes F32) = 272.
+        assert_eq!(result.weight_bytes, 272);
+    }
+
+    #[test]
+    fn load_quantized_mixed_dtypes() {
+        // F16 tensor "norm": dims [4, 8] HF = [8, 4] ggml, 32 f16 values.
+        let norm_data: Vec<u8> = (0..32u16)
+            .flat_map(|i| half::f16::from_f32(i as f32).to_le_bytes())
+            .collect();
+        // Q4K tensor "layer.q_proj.weight": dims [1, 256], 144 bytes.
+        let q4k_data = vec![0u8; 144];
+
+        let buf = build_complete_gguf(&[
+            TensorSpec {
+                name: "norm",
+                ne: [8, 4],
+                ggml_type: 1, // F16
+                data: norm_data,
+            },
+            TensorSpec {
+                name: "layer.q_proj.weight",
+                ne: [256, 1],
+                ggml_type: 12, // Q4K
+                data: q4k_data,
+            },
+        ]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f16_q4k.gguf");
+        fs::write(&path, &buf).unwrap();
+
+        let result =
+            load_quantized(&path, DType::F32, &Device::Cpu).expect("load_quantized should succeed");
+
+        // F16 tensor goes to VarBuilder (materialized to F32).
+        let norm = result
+            .vb
+            .get((4, 8), "norm")
+            .expect("F16 tensor should be in VarBuilder");
+        assert_eq!(norm.dims(), &[4, 8]);
+
+        // Q4K tensor goes to qtensors.
+        assert!(
+            result
+                .qtensors
+                .contains_key("layer.q_proj.weight")
+        );
+        assert!(!result.qtensors.contains_key("norm"));
     }
 }

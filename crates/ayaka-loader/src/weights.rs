@@ -1,8 +1,11 @@
 //! Loaded weights handed to a model factory.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use candle_nn::VarBuilder;
+
+use ayaka_quant::QTensor;
 
 use crate::metadata::ModelMetadata;
 
@@ -82,6 +85,42 @@ impl MmapWeights {
     #[inline]
     pub fn weight_bytes(&self) -> usize {
         self.weight_bytes
+    }
+}
+
+/// Loaded weights where quantized tensors stay in packed block format.
+///
+/// Quantized linear weights (Q4K, Q6K, etc.) are held as `QTensor` (raw packed
+/// bytes + block geometry) instead of being dequantized to F16/BF16. The model
+/// factory uploads these to the GPU as `DType::U8` tensors and builds
+/// `QuantLinear` layers that dequantize on-the-fly during GEMM.
+///
+/// Non-quantized tensors (embeddings, norms, lm_head) are materialized to `dtype`
+/// in the `VarBuilder` as usual — kernels consume them directly.
+pub struct LoadedQuantWeights {
+    pub metadata: ModelMetadata,
+    /// Non-quantized tensors (F16/BF16) accessible by name.
+    pub vb: VarBuilder<'static>,
+    /// Quantized tensors (Q4K, Q6K, Q4_0, Q8_0) as packed `QTensor`.
+    pub qtensors: HashMap<String, QTensor>,
+    /// Total resident weight bytes (quantized bytes for QTensor + materialized
+    /// bytes for float tensors), for `MemoryLedger` accounting.
+    pub weight_bytes: usize,
+}
+
+impl LoadedQuantWeights {
+    pub fn new(
+        metadata: ModelMetadata,
+        vb: VarBuilder<'static>,
+        qtensors: HashMap<String, QTensor>,
+        weight_bytes: usize,
+    ) -> Self {
+        Self {
+            metadata,
+            vb,
+            qtensors,
+            weight_bytes,
+        }
     }
 }
 
