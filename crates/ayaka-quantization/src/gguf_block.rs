@@ -132,7 +132,7 @@ impl GgufDtype {
 
     /// Dequantize `n_weights` scalars from `raw` block bytes into `f32`.
     ///
-    /// Implemented for F32/F16/BF16/Q4_0/Q8_0. The K-quants and MXFP4 return
+    /// Implemented for F32/F16/BF16/Q4_0/Q8_0/Q4_K/Q6_K. MXFP4 returns
     /// [`GgufDequantError::Unsupported`] (future work — keep-quantized and
     /// in-kernel dequant are out of scope).
     pub fn dequantize(
@@ -168,9 +168,9 @@ impl GgufDtype {
                 .collect()),
             GgufDtype::Q8_0 => Ok(dequantize_q8_0(raw, n_weights)),
             GgufDtype::Q4_0 => Ok(dequantize_q4_0(raw, n_weights)),
-            GgufDtype::Q4K | GgufDtype::Q6K | GgufDtype::MXFP4 => {
-                Err(GgufDequantError::Unsupported(self))
-            },
+            GgufDtype::Q4K => Ok(crate::kquants::dequantize_q4_k(raw, n_weights)?),
+            GgufDtype::Q6K => Ok(crate::kquants::dequantize_q6_k(raw, n_weights)?),
+            GgufDtype::MXFP4 => Err(GgufDequantError::Unsupported(self)),
         }
     }
 }
@@ -304,13 +304,26 @@ mod tests {
     }
 
     #[test]
-    fn kquants_unsupported_for_now() {
-        let raw = vec![0u8; 144];
-        let err = GgufDtype::Q4K.dequantize(&raw, 256).unwrap_err();
-        assert_eq!(err, GgufDequantError::Unsupported(GgufDtype::Q4K));
+    fn mxfp4_unsupported_for_now() {
+        let raw = vec![0u8; 17];
+        let err = GgufDtype::MXFP4.dequantize(&raw, 32).unwrap_err();
+        assert_eq!(err, GgufDequantError::Unsupported(GgufDtype::MXFP4));
+    }
 
-        let raw = vec![0u8; 210];
-        let err = GgufDtype::Q6K.dequantize(&raw, 256).unwrap_err();
-        assert_eq!(err, GgufDequantError::Unsupported(GgufDtype::Q6K));
+    #[test]
+    fn dequant_dispatches_q4k_and_q6k() {
+        // Zero-filled Q4_K super-block: d = dmin = 0 -> all weights 0.0.
+        let q4k = GgufDtype::Q4K
+            .dequantize(&[0u8; 144], 256)
+            .unwrap();
+        assert_eq!(q4k.len(), 256);
+        assert!(q4k.iter().all(|&v| v == 0.0));
+
+        // Zero-filled Q6_K super-block: d = 0 -> all weights 0.0.
+        let q6k = GgufDtype::Q6K
+            .dequantize(&[0u8; 210], 256)
+            .unwrap();
+        assert_eq!(q6k.len(), 256);
+        assert!(q6k.iter().all(|&v| v == 0.0));
     }
 }

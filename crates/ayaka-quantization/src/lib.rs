@@ -6,6 +6,7 @@
 //! tensors to F16/BF16 before they reach any kernel.
 
 pub mod gguf_block;
+pub mod kquants;
 pub mod scheme;
 
 pub use gguf_block::{GgufBlock, GgufDequantError, GgufDtype};
