@@ -1,4 +1,4 @@
-//! Memory estimation (design doc REQ1): weight footprint, KV-cache cost, and
+//! Memory estimation weight footprint, KV-cache cost, and
 //! auto-fit of how many layers fit on the GPU.
 
 use ayaka_quant::QuantScheme;
@@ -160,6 +160,82 @@ impl<'a> MemoryEstimator<'a> {
         }
         (usable / est.per_layer_bytes).min(self.metadata.num_hidden_layers)
     }
+
+    /// vLLM formula: maximum number of KV cache blocks that fit in the
+    /// remaining VRAM after weights and activations.
+    ///
+    /// `num_gpu_blocks = (usable - weight_bytes - activation_peak) / block_bytes`
+    ///
+    /// Where `block_bytes = kv_bytes_per_token * block_size` (2 K/V tensors
+    /// per layer × layers × per-token-per-layer × block_size).
+    pub fn num_gpu_blocks(
+        &self,
+        usable_bytes: usize,
+        weight_bytes: usize,
+        activation_peak_bytes: usize,
+        block_bytes: usize,
+    ) -> usize {
+        if block_bytes == 0 {
+            return 0;
+        }
+        usable_bytes
+            .saturating_sub(weight_bytes)
+            .saturating_sub(activation_peak_bytes)
+            / block_bytes
+    }
+
+    /// Bytes occupied by one KV cache block (all layers, both K and V).
+    ///
+    /// GQA: `2 * layers * num_kv_heads * head_dim * dtype * block_size`
+    /// MLA: `(kv_lora_rank + qk_rope_head_dim) * layers * dtype * block_size`
+    pub fn kv_block_bytes(
+        &self,
+        block_size: usize,
+    ) -> usize {
+        self.kv_bytes_per_token() * block_size
+    }
+}
+
+/// End-to-end computation of the maximum number of KV cache blocks that fit
+/// in GPU memory, using the vLLM formula with Phase 1.2 activation reserve.
+///
+/// This is the convenience wrapper that ties together:
+/// - [`MemoryEstimator::kv_block_bytes`] (block size -> bytes, MLA-aware)
+/// - [`MemoryEstimator::num_gpu_blocks`] (vLLM formula)
+/// - The static activation reserve from `max_num_batched_tokens`
+///
+/// Returns `(num_blocks, activation_reserve_bytes, block_bytes)` so callers
+/// can log the breakdown.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_num_gpu_blocks(
+    metadata: &ModelMetadata,
+    weight_bytes: usize,
+    free_bytes: usize,
+    total_bytes: usize,
+    gpu_memory_utilization: f64,
+    max_num_batched_tokens: usize,
+    kv_dtype_bytes: usize,
+    block_size: usize,
+) -> (usize, usize, usize) {
+    let est = MemoryEstimator::new(
+        metadata,
+        QuantScheme::F16,
+        kv_dtype_bytes,
+        gpu_memory_utilization,
+    );
+
+    // Static activation reserve: max_tokens x hidden x dtype x 2
+    let activation_reserve = max_num_batched_tokens * metadata.hidden_size * kv_dtype_bytes * 2;
+
+    let block_bytes = est.kv_block_bytes(block_size);
+
+    // Usable = free - headroom (1 - util) x total
+    let headroom = ((1.0 - gpu_memory_utilization) * total_bytes as f64) as usize;
+    let usable = free_bytes.saturating_sub(headroom);
+
+    let num_blocks = est.num_gpu_blocks(usable, weight_bytes, activation_reserve, block_bytes);
+
+    (num_blocks, activation_reserve, block_bytes)
 }
 
 #[cfg(test)]
@@ -239,5 +315,81 @@ mod tests {
         let small_free = headroom + e.fixed_bytes + e.per_layer_bytes * 3 + e.per_layer_bytes / 2;
         let n2 = est.fit_gpu_layers(small_free, total, 0);
         assert_eq!(n2, 3);
+    }
+
+    #[test]
+    fn num_gpu_blocks_vllm_formula() {
+        let m = qwen3_0_6b();
+        let est = MemoryEstimator::new(&m, QuantScheme::F16, 2, 0.9);
+        // usable=80GB, weights=14GB, activation=2GB, block_bytes=8MB
+        // -> (80-14-2)GB / 8MB = 64GB / 8MB = 8192 blocks
+        let usable = 80 * 1024 * 1024 * 1024;
+        let weights = 14 * 1024 * 1024 * 1024;
+        let activation = 2 * 1024 * 1024 * 1024;
+        let block_bytes = 8 * 1024 * 1024;
+        assert_eq!(
+            est.num_gpu_blocks(usable, weights, activation, block_bytes),
+            8192
+        );
+    }
+
+    #[test]
+    fn num_gpu_blocks_zero_block_bytes_returns_zero() {
+        let m = qwen3_0_6b();
+        let est = MemoryEstimator::new(&m, QuantScheme::F16, 2, 0.9);
+        assert_eq!(est.num_gpu_blocks(1_000_000, 0, 0, 0), 0);
+    }
+
+    #[test]
+    fn num_gpu_blocks_saturates_when_insufficient() {
+        let m = qwen3_0_6b();
+        let est = MemoryEstimator::new(&m, QuantScheme::F16, 2, 0.9);
+        // weights + activation > usable -> 0 blocks
+        assert_eq!(est.num_gpu_blocks(1000, 2000, 2000, 16), 0);
+    }
+
+    #[test]
+    fn kv_block_bytes_matches_per_token_formula() {
+        let m = qwen3_0_6b();
+        let est = MemoryEstimator::new(&m, QuantScheme::F16, 2, 0.9);
+        let per_token = est.kv_bytes_per_token();
+        // block_size = 16 (default)
+        assert_eq!(est.kv_block_bytes(16), per_token * 16);
+    }
+
+    #[test]
+    fn kv_block_bytes_mla_uses_compressed_latent() {
+        let mut m = qwen3_0_6b();
+        m.mla = Some(MlaConfig {
+            kv_lora_rank: 512,
+            qk_rope_head_dim: 64,
+            qk_nope_head_dim: 128,
+            q_lora_rank: Some(1536),
+        });
+        let est = MemoryEstimator::new(&m, QuantScheme::F16, 2, 0.9);
+        // MLA: (512+64) * 28 * 2 bytes * 16 tokens
+        assert_eq!(est.kv_block_bytes(16), (512 + 64) * 28 * 2 * 16);
+    }
+
+    #[test]
+    fn compute_num_gpu_blocks_end_to_end() {
+        let m = qwen3_0_6b();
+        // usable=72GB (80GB free - 8GB headroom), weights=14GB,
+        // activation~8MB, block_bytes=1.75MB
+        // -> (72-14-0.008)GB / 1.75MB ~= 33933 blocks
+        let (blocks, reserve, block_bytes) = compute_num_gpu_blocks(
+            &m,
+            14 * 1024 * 1024 * 1024, // 14 GB weights
+            80 * 1024 * 1024 * 1024, // 80 GB free
+            80 * 1024 * 1024 * 1024, // 80 GB total
+            0.9,                     // utilization
+            2048,                    // max_tokens
+            2,                       // F16 dtype bytes
+            16,                      // block_size
+        );
+        assert!(blocks > 0);
+        assert_eq!(reserve, 2048 * 1024 * 2 * 2); // 8 MB
+        // kv_block_bytes = 2 * 28 * 8 * 128 * 2 * 16 = 1,835,008
+        assert_eq!(block_bytes, 2 * 28 * 8 * 128 * 2 * 16);
     }
 }

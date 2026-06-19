@@ -17,7 +17,7 @@ use candle_core::{DType, Device};
 
 use crate::error::{LoaderError, Result};
 use crate::metadata::ModelMetadata;
-use crate::weights::LoadedWeights;
+use crate::weights::{LoadedQuantWeights, LoadedWeights};
 
 /// Which hardware strategy to use for a load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +91,47 @@ pub fn load_weights(
     }
 }
 
+/// Detect the on-disk format and load weights, keeping quantized tensors packed.
+///
+/// A `.gguf` file with quantized tensors (Q4K, Q6K, etc.) uses
+/// [`crate::gguf::load_quantized`]; quantized weights stay as packed `QTensor`
+/// bytes instead of being dequantized to F16/BF16. Non-quantized tensors
+/// (F16/BF16/F32) are materialized as usual. Returns `None` if the format
+/// does not support quantized loading (e.g., safetensors — Task A5 will add
+/// this path) or if no tensor is actually quantized.
+pub fn try_load_quantized(
+    path: &Path,
+    dtype: DType,
+    device: &Device,
+) -> Result<Option<LoadedQuantWeights>> {
+    if is_gguf(path) {
+        // Peek the tensor table to check whether any tensor is quantized.
+        let file = fs::File::open(path).map_err(|source| LoaderError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        // SAFETY: read-only mmap; file is not mutated while mapped.
+        let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|source| LoaderError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let gguf = crate::gguf::GgufFile::parse(&mmap)?;
+
+        let has_quant = gguf
+            .tensors
+            .iter()
+            .any(|t| !t.dtype.scheme().is_float());
+        if has_quant {
+            Ok(Some(crate::gguf::load_quantized(path, dtype, device)?))
+        } else {
+            Ok(None)
+        }
+    } else {
+        // Safetensors quantized path is Task A5; for now, no quantized loading.
+        Ok(None)
+    }
+}
+
 /// Parse just the [`ModelMetadata`] without materializing any weights, so the
 /// orchestrator can estimate footprint cheaply before committing to a load.
 ///
@@ -154,6 +195,22 @@ pub mod gpu {
             })
     }
 
+    /// Like [`finish_load`] but for quantized weights — calls
+    /// `factory.load_quantized` instead of `factory.load`.
+    fn finish_quant_load(
+        weights: LoadedQuantWeights,
+        device_map: DeviceMap,
+        resident_bytes: usize,
+        factory: &dyn ModelLoaderFactory,
+    ) -> Result<Box<dyn NormalModel>> {
+        global_ledger().register(MemoryPurpose::Weights, resident_bytes);
+        factory
+            .load_quantized(weights, &device_map)
+            .inspect_err(|_| {
+                let _ = global_ledger().deregister(MemoryPurpose::Weights, resident_bytes);
+            })
+    }
+
     /// Fractions of total weight bytes attributable to the fixed tensors and to
     /// one dense decoder layer. These ratios are dtype-independent, so we use an
     /// `F16` scheme purely to count parameters and then scale by the *actual*
@@ -174,6 +231,14 @@ pub mod gpu {
         factory: &dyn ModelLoaderFactory,
         config: &LoadConfig,
     ) -> Result<Box<dyn NormalModel>> {
+        if let Some(quant_weights) = try_load_quantized(path, config.dtype, &config.device)? {
+            let resident = quant_weights.weight_bytes;
+            let num_layers = quant_weights.metadata.num_hidden_layers;
+            let device_map = DeviceMap::all_gpu(config.device.clone(), num_layers);
+            return finish_quant_load(quant_weights, device_map, resident, factory);
+        }
+
+        // Fallback: dense (float) loading path.
         let weights = load_weights(path, config.dtype, &config.device)?;
         let resident = weights.weight_bytes;
         let num_layers = weights.metadata.num_hidden_layers;
@@ -189,11 +254,58 @@ pub mod gpu {
         factory: &dyn ModelLoaderFactory,
         config: &LoadConfig,
     ) -> Result<Box<dyn NormalModel>> {
+        if let Some(quant_weights) = try_load_quantized(path, config.dtype, &config.device)? {
+            let num_layers = quant_weights.metadata.num_hidden_layers;
+
+            // Phase 1.2: reserve VRAM for activation memory using a static
+            // estimate based on max_num_batched_tokens. This prevents over-fitting
+            // layers and causing runtime OOM during prefill.
+            let activation_reserve = config.max_num_batched_tokens
+                * quant_weights.metadata.hidden_size
+                * config.dtype.size_in_bytes()
+                * 2;
+
+            let info = crate::driver::driver_memory_info(&config.device)?;
+            let n_gpu = {
+                let est = MemoryEstimator::new(
+                    &quant_weights.metadata,
+                    QuantScheme::F16,
+                    config.dtype.size_in_bytes(),
+                    config.gpu_memory_utilization,
+                );
+                est.fit_gpu_layers(info.free_bytes, info.total_bytes, activation_reserve)
+            };
+
+            tracing::info!(
+                activation_reserve_mb = activation_reserve / (1024 * 1024),
+                n_gpu_layers = n_gpu,
+                total_layers = num_layers,
+                "partial_offload(quant): fitted GPU layers with activation reserve"
+            );
+
+            let (fixed_frac, per_layer_frac) = weight_fractions(&quant_weights.metadata);
+            let resident = (quant_weights.weight_bytes as f64
+                * (fixed_frac + per_layer_frac * n_gpu as f64)) as usize;
+
+            let device_map = DeviceMap::partial(config.device.clone(), num_layers, n_gpu);
+            return finish_quant_load(quant_weights, device_map, resident, factory);
+        }
+
+        // Fallback: dense (float) loading path.
         let weights = load_weights(path, config.dtype, &config.device)?;
         let num_layers = weights.metadata.num_hidden_layers;
 
-        // Auto-fit the GPU-resident layer count from live VRAM. `reserve = 0`
-        // here; Phase 1.2 will pass the profiled KV + activation reservation.
+        // Phase 1.2: reserve VRAM for activation memory using a static
+        // estimate based on max_num_batched_tokens. This prevents over-fitting
+        // layers and causing runtime OOM during prefill.
+        //
+        // Formula: max_tokens × hidden_size × dtype_bytes × 2
+        // (factor 2: attention + FFN intermediate activations)
+        let activation_reserve = config.max_num_batched_tokens
+            * weights.metadata.hidden_size
+            * config.dtype.size_in_bytes()
+            * 2;
+
         let info = crate::driver::driver_memory_info(&config.device)?;
         let n_gpu = {
             let est = MemoryEstimator::new(
@@ -202,8 +314,15 @@ pub mod gpu {
                 config.dtype.size_in_bytes(),
                 config.gpu_memory_utilization,
             );
-            est.fit_gpu_layers(info.free_bytes, info.total_bytes, 0)
+            est.fit_gpu_layers(info.free_bytes, info.total_bytes, activation_reserve)
         };
+
+        tracing::info!(
+            activation_reserve_mb = activation_reserve / (1024 * 1024),
+            n_gpu_layers = n_gpu,
+            total_layers = num_layers,
+            "partial_offload: fitted GPU layers with activation reserve"
+        );
 
         let (fixed_frac, per_layer_frac) = weight_fractions(&weights.metadata);
         let resident =
@@ -220,6 +339,16 @@ pub mod gpu {
         factory: &dyn ModelLoaderFactory,
         config: &LoadConfig,
     ) -> Result<Box<dyn NormalModel>> {
+        if let Some(quant_weights) = try_load_quantized(path, config.dtype, &config.device)? {
+            let num_layers = quant_weights.metadata.num_hidden_layers;
+            let (fixed_frac, per_layer_frac) = weight_fractions(&quant_weights.metadata);
+            let resident =
+                (quant_weights.weight_bytes as f64 * (fixed_frac + per_layer_frac)) as usize;
+            let device_map = DeviceMap::streamed(config.device.clone(), num_layers);
+            return finish_quant_load(quant_weights, device_map, resident, factory);
+        }
+
+        // Fallback: dense (float) loading path.
         let weights = load_weights(path, config.dtype, &config.device)?;
         let num_layers = weights.metadata.num_hidden_layers;
 
@@ -347,5 +476,13 @@ mod tests {
             Some(StrategyKind::SequentialStream)
         );
         assert_eq!(StrategyKind::SequentialStream.degrade(), None);
+    }
+
+    #[test]
+    fn activation_reserve_formula() {
+        // max_tokens=2048, hidden=1024, dtype=F16 (2 bytes)
+        // reserve = 2048 * 1024 * 2 * 2 = 8,388,608 bytes = 8 MB
+        let reserve = 2048usize * 1024 * 2 * 2;
+        assert_eq!(reserve, 8_388_608);
     }
 }
