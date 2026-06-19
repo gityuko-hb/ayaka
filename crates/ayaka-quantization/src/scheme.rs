@@ -49,6 +49,19 @@ impl QuantScheme {
     pub const fn is_float(self) -> bool {
         matches!(self, QuantScheme::F16 | QuantScheme::BF16)
     }
+
+    /// Map this scheme to its corresponding [`GgufDtype`](crate::gguf_block::GgufDtype).
+    pub const fn to_gguf_dtype(self) -> crate::gguf_block::GgufDtype {
+        match self {
+            QuantScheme::F16 => crate::gguf_block::GgufDtype::F16,
+            QuantScheme::BF16 => crate::gguf_block::GgufDtype::BF16,
+            QuantScheme::Q8_0 => crate::gguf_block::GgufDtype::Q8_0,
+            QuantScheme::Q4_0 => crate::gguf_block::GgufDtype::Q4_0,
+            QuantScheme::Q4K => crate::gguf_block::GgufDtype::Q4K,
+            QuantScheme::Q6K => crate::gguf_block::GgufDtype::Q6K,
+            QuantScheme::MXFP4 => crate::gguf_block::GgufDtype::MXFP4,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +91,21 @@ mod tests {
         assert!(!QuantScheme::Q8_0.is_float());
         assert!(!QuantScheme::Q4_0.is_float());
         assert!(!QuantScheme::MXFP4.is_float());
+    }
+
+    #[test]
+    fn to_gguf_dtype_round_trips_all_variants() {
+        for scheme in [
+            QuantScheme::F16,
+            QuantScheme::BF16,
+            QuantScheme::Q8_0,
+            QuantScheme::Q4_0,
+            QuantScheme::Q4K,
+            QuantScheme::Q6K,
+            QuantScheme::MXFP4,
+        ] {
+            let dtype = scheme.to_gguf_dtype();
+            assert_eq!(dtype.scheme(), scheme, "round-trip failed for {scheme:?}");
+        }
     }
 }

@@ -7,7 +7,9 @@
 
 pub mod gguf_block;
 pub mod kquants;
+pub mod qtensor;
 pub mod scheme;
 
 pub use gguf_block::{GgufBlock, GgufDequantError, GgufDtype};
+pub use qtensor::QTensor;
 pub use scheme::QuantScheme;
