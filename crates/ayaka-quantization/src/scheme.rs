@@ -17,6 +17,8 @@ pub enum QuantScheme {
     Q4_0,
     /// GGUF Q4_K: super-blocks of 256 (144 bytes/super-block).
     Q4K,
+    /// GGUF Q6_K: super-blocks of 256 (210 bytes/super-block).
+    Q6K,
     /// MXFP4: blocks of 32 with a shared E8M0 byte scale (17 bytes/block).
     MXFP4,
 }
@@ -35,6 +37,8 @@ impl QuantScheme {
             QuantScheme::Q4_0 => 18.0 / 32.0,
             // 144-byte super-block / 256 weights = 4.5 bits/weight.
             QuantScheme::Q4K => 144.0 / 256.0,
+            // 210-byte super-block / 256 weights = 6.5 bits/weight.
+            QuantScheme::Q6K => 210.0 / 256.0,
             // 16 packed nibbles + 1 E8M0 byte scale = 17 bytes / 32 weights.
             QuantScheme::MXFP4 => 17.0 / 32.0,
         }
@@ -58,7 +62,13 @@ mod tests {
         assert_eq!(QuantScheme::Q8_0.bytes_per_weight(), 1.0625);
         assert_eq!(QuantScheme::Q4_0.bytes_per_weight(), 0.5625);
         assert_eq!(QuantScheme::Q4K.bytes_per_weight(), 0.5625);
+        assert_eq!(QuantScheme::Q6K.bytes_per_weight(), 210.0 / 256.0);
         assert_eq!(QuantScheme::MXFP4.bytes_per_weight(), 0.53125);
+    }
+
+    #[test]
+    fn q6k_scheme_bytes_per_weight() {
+        assert_eq!(QuantScheme::Q6K.bytes_per_weight(), 210.0 / 256.0);
     }
 
     #[test]

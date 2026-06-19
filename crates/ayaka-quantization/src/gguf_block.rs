@@ -17,6 +17,7 @@ pub enum GgufDtype {
     Q4_0,
     Q8_0,
     Q4K,
+    Q6K,
     MXFP4,
 }
 
@@ -75,6 +76,7 @@ impl GgufDtype {
             2 => Some(GgufDtype::Q4_0),
             8 => Some(GgufDtype::Q8_0),
             12 => Some(GgufDtype::Q4K),
+            14 => Some(GgufDtype::Q6K),
             30 => Some(GgufDtype::BF16),
             39 => Some(GgufDtype::MXFP4),
             _ => None,
@@ -104,6 +106,10 @@ impl GgufDtype {
                 weights_per_block: 256,
                 bytes_per_block: 144,
             },
+            GgufDtype::Q6K => GgufBlock {
+                weights_per_block: 256,
+                bytes_per_block: 210,
+            },
             GgufDtype::MXFP4 => GgufBlock {
                 weights_per_block: 32,
                 bytes_per_block: 17,
@@ -119,6 +125,7 @@ impl GgufDtype {
             GgufDtype::Q4_0 => QuantScheme::Q4_0,
             GgufDtype::Q8_0 => QuantScheme::Q8_0,
             GgufDtype::Q4K => QuantScheme::Q4K,
+            GgufDtype::Q6K => QuantScheme::Q6K,
             GgufDtype::MXFP4 => QuantScheme::MXFP4,
         }
     }
@@ -161,7 +168,9 @@ impl GgufDtype {
                 .collect()),
             GgufDtype::Q8_0 => Ok(dequantize_q8_0(raw, n_weights)),
             GgufDtype::Q4_0 => Ok(dequantize_q4_0(raw, n_weights)),
-            GgufDtype::Q4K | GgufDtype::MXFP4 => Err(GgufDequantError::Unsupported(self)),
+            GgufDtype::Q4K | GgufDtype::Q6K | GgufDtype::MXFP4 => {
+                Err(GgufDequantError::Unsupported(self))
+            },
         }
     }
 }
@@ -217,8 +226,30 @@ mod tests {
         assert_eq!(GgufDtype::from_ggml_id(0), Some(GgufDtype::F32));
         assert_eq!(GgufDtype::from_ggml_id(2), Some(GgufDtype::Q4_0));
         assert_eq!(GgufDtype::from_ggml_id(8), Some(GgufDtype::Q8_0));
+        assert_eq!(GgufDtype::from_ggml_id(14), Some(GgufDtype::Q6K));
         assert_eq!(GgufDtype::from_ggml_id(30), Some(GgufDtype::BF16));
         assert_eq!(GgufDtype::from_ggml_id(999), None);
+    }
+
+    #[test]
+    fn q6k_block_geometry() {
+        assert_eq!(
+            GgufDtype::Q6K.block(),
+            GgufBlock {
+                weights_per_block: 256,
+                bytes_per_block: 210,
+            }
+        );
+    }
+
+    #[test]
+    fn q6k_ggml_id_round_trip() {
+        assert_eq!(GgufDtype::from_ggml_id(14), Some(GgufDtype::Q6K));
+    }
+
+    #[test]
+    fn q6k_scheme_mapping() {
+        assert_eq!(GgufDtype::Q6K.scheme(), QuantScheme::Q6K);
     }
 
     #[test]
@@ -277,5 +308,9 @@ mod tests {
         let raw = vec![0u8; 144];
         let err = GgufDtype::Q4K.dequantize(&raw, 256).unwrap_err();
         assert_eq!(err, GgufDequantError::Unsupported(GgufDtype::Q4K));
+
+        let raw = vec![0u8; 210];
+        let err = GgufDtype::Q6K.dequantize(&raw, 256).unwrap_err();
+        assert_eq!(err, GgufDequantError::Unsupported(GgufDtype::Q6K));
     }
 }
