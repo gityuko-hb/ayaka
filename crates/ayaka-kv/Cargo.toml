@@ -10,3 +10,4 @@ homepage.workspace = true
 
 [dependencies]
 ayaka-core = { path = "../ayaka-core" }
+ayaka-utils = { path = "../ayaka-utils" }

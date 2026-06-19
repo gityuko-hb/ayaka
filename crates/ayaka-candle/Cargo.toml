@@ -14,6 +14,7 @@ cuda = ["candle-core/cuda", "ayaka-kernel-api/cuda"]
 [dependencies]
 ayaka-core = { path = "../ayaka-core" }
 ayaka-kernel-api = { path = "../ayaka-kernel-api" }
+ayaka-quant = { path = "../ayaka-quantization" }
 candle-core.workspace = true
 half.workspace = true
 

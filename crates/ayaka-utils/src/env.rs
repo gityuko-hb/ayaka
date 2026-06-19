@@ -62,6 +62,11 @@ pub struct EnvConfig {
     /// Override: ENGINE_KV_BLOCK_SIZE=32
     pub kv_block_size: usize,
 
+    // --- Scheduling ---
+    /// Max tokens per batch iteration (prefill worst-case). Default: 2048
+    /// Override: ENGINE_MAX_NUM_BATCHED_TOKENS=4096
+    pub max_num_batched_tokens: usize,
+
     // --- Profiling ---
     /// Enable CUDA/Metal profiler markers.
     /// Override: ENGINE_PROFILE=1
@@ -118,6 +123,7 @@ impl EnvConfig {
             max_seq_len = ?self.max_seq_len,
             seed        = ?self.seed,
             kv_block_sz = self.kv_block_size,
+            max_batched_tokens = self.max_num_batched_tokens,
             profiling   = self.profiling_enabled,
             metrics_interval = self.metrics_interval_secs,
             "Engine environment config"
@@ -165,6 +171,10 @@ impl EnvConfig {
             max_seq_len: env_opt_usize(ENV_MAX_SEQ_LEN),
             seed: env_opt_u64(ENV_SEED),
             kv_block_size: env_usize(ENV_KV_BLOCK_SIZE, DEFAULT_KV_BLOCK_SIZE),
+            max_num_batched_tokens: env_usize(
+                crate::constants::ENV_MAX_NUM_BATCHED_TOKENS,
+                crate::constants::DEFAULT_MAX_NUM_BATCHED_TOKENS,
+            ),
             profiling_enabled: env_bool(ENV_PROFILE, false),
             metrics_interval_secs: env_u64(ENV_METRICS_INTERVAL, DEFAULT_METRICS_INTERVAL_SECS),
         }
@@ -178,6 +188,12 @@ impl EnvConfig {
             "ENGINE_KV_BLOCK_SIZE={} must be a power of 2 >= {}",
             self.kv_block_size,
             crate::constants::KV_BLOCK_SIZE_MIN,
+        );
+        // max_num_batched_tokens must be positive
+        assert!(
+            self.max_num_batched_tokens > 0,
+            "ENGINE_MAX_NUM_BATCHED_TOKENS={} must be > 0",
+            self.max_num_batched_tokens,
         );
         // Load_threads should not exceed the number of logical CPUs by too much.
         let cpus = num_cpus_approx();
@@ -351,5 +367,13 @@ mod tests {
     fn test_kv_block_size_power_of_two() {
         let cfg = EnvConfig::with_overrides(|c| c.kv_block_size = 16);
         assert_eq!(cfg.kv_block_size, 16);
+    }
+
+    #[test]
+    fn test_max_num_batched_tokens_default() {
+        let cfg = EnvConfig::with_overrides(|c| {
+            c.max_num_batched_tokens = 4096;
+        });
+        assert_eq!(cfg.max_num_batched_tokens, 4096);
     }
 }

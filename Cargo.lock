@@ -90,6 +90,7 @@ version = "0.1.0"
 dependencies = [
  "ayaka-core",
  "ayaka-kernel-api",
+ "ayaka-quant",
  "candle-core",
  "criterion",
  "half",
@@ -162,6 +163,7 @@ name = "ayaka-kv"
 version = "0.1.0"
 dependencies = [
  "ayaka-core",
+ "ayaka-utils",
 ]
 
 [[package]]

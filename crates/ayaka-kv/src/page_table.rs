@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use ayaka_core::id::{PageId, SequenceId};
 
 /// Tokens per page; the FlashInfer/vLLM default. Configurable per table.
-pub const DEFAULT_BLOCK_SIZE: usize = 16;
+/// Re-exported from `ayaka_utils::constants::DEFAULT_KV_BLOCK_SIZE` for
+/// single source of truth.
+pub use ayaka_utils::constants::DEFAULT_KV_BLOCK_SIZE as DEFAULT_BLOCK_SIZE;
 
 /// Ordered physical pages per sequence.
 #[derive(Debug)]

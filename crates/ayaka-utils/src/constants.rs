@@ -40,6 +40,8 @@ pub const DEFAULT_KV_BLOCK_SIZE: usize = 16;
 pub const DEFAULT_METRICS_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_RESERVED_FRACTION: f64 = 0.05;
 pub const DEFAULT_CPU_COUNT_FALLBACK: usize = 4;
+/// Default max tokens per batch iteration (prefill worst-case). Default: 2048
+pub const DEFAULT_MAX_NUM_BATCHED_TOKENS: usize = 2048;
 
 // ═══════════════════════════════════════════════
 // Validation Bounds
@@ -69,6 +71,7 @@ pub const ENV_MAX_BATCH_SIZE: &str = "ENGINE_MAX_BATCH_SIZE";
 pub const ENV_MAX_SEQ_LEN: &str = "ENGINE_MAX_SEQ_LEN";
 pub const ENV_SEED: &str = "ENGINE_SEED";
 pub const ENV_KV_BLOCK_SIZE: &str = "ENGINE_KV_BLOCK_SIZE";
+pub const ENV_MAX_NUM_BATCHED_TOKENS: &str = "ENGINE_MAX_NUM_BATCHED_TOKENS";
 pub const ENV_PROFILE: &str = "ENGINE_PROFILE";
 pub const ENV_METRICS_INTERVAL: &str = "ENGINE_METRICS_INTERVAL";
 pub const ENV_LOG_PREFIX: &str = "ENGINE_LOG_";
