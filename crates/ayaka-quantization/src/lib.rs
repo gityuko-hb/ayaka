@@ -13,5 +13,5 @@ pub mod scheme;
 
 pub use gguf_block::{GgufBlock, GgufDequantError, GgufDtype};
 pub use qtensor::QTensor;
-pub use repack::{RepackedWeights, WeightRepack};
+pub use repack::{RepackedWeights, WeightRepack, repack_to_marlin};
 pub use scheme::QuantScheme;

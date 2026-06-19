@@ -32,6 +32,7 @@ set(AYAKA_CUDA_HOST_SOURCES
 set(AYAKA_CUDA_SOURCES
     csrc/activation/swiglu.cu
     csrc/gemm/w4a16_gemm.cu
+    csrc/gemm/w4a16_gemm_marlin.cu
     csrc/kv_cache/append_kv.cu
     csrc/norm/fused_add_rmsnorm.cu
     csrc/norm/rmsnorm.cu

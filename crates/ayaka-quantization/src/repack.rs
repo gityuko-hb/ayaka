@@ -137,6 +137,57 @@ fn repack_q4k(qt: &QTensor) -> Result<RepackedWeights, GgufDequantError> {
     })
 }
 
+/// Repack `RepackedWeights.qs` from `[N, K/2]` row-major into Marlin tile
+/// layout `[N/16, K/16, 16, 8]` for Tensor Core `mma.sync.m16n8k16` access.
+///
+/// Each 16x16 weight tile is stored as 16 rows of 8 bytes (16 nibbles per
+/// row). Scales and mins are passed through unchanged because the kernel
+/// indexes them by group, not by tile. Only `qs` is shuffled.
+///
+/// `out_features` (N) and `in_features` (K) must both be multiples of 16;
+/// otherwise the layout cannot be tiled and [`GgufDequantError::Unsupported`]
+/// is returned.
+pub fn repack_to_marlin(rw: &RepackedWeights) -> Result<RepackedWeights, GgufDequantError> {
+    let n = rw.out_features;
+    let k = rw.in_features;
+
+    // N and K must be multiples of 16 for tiling.
+    if !n.is_multiple_of(16) || !k.is_multiple_of(16) {
+        return Err(GgufDequantError::Unsupported(rw.scheme.to_gguf_dtype()));
+    }
+
+    let n_tiles_n = n / 16;
+    let n_tiles_k = k / 16;
+    let mut shuffled = vec![0u8; rw.qs.len()]; // same total size
+
+    for tile_n in 0..n_tiles_n {
+        for tile_k in 0..n_tiles_k {
+            // Copy 16 rows x 8 bytes (16 nibbles per row = 16 weights per row).
+            for row in 0..16 {
+                let src_n = tile_n * 16 + row;
+                let src_k_byte = tile_k * 8; // 16 weights = 8 bytes
+                let src_offset = src_n * (k / 2) + src_k_byte;
+
+                let dst_tile = tile_n * n_tiles_k + tile_k;
+                let dst_offset = dst_tile * 16 * 8 + row * 8;
+
+                shuffled[dst_offset..dst_offset + 8]
+                    .copy_from_slice(&rw.qs[src_offset..src_offset + 8]);
+            }
+        }
+    }
+
+    Ok(RepackedWeights {
+        qs: shuffled,
+        scales: rw.scales.clone(),
+        mins: rw.mins.clone(),
+        out_features: n,
+        in_features: k,
+        group_size: rw.group_size,
+        scheme: rw.scheme,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +393,104 @@ mod tests {
             .expect("Q6K single super-block should construct");
         let err = qt.repack().unwrap_err();
         assert_eq!(err, GgufDequantError::Unsupported(GgufDtype::Q6K));
+    }
+
+    /// Dequantize a single row reading directly from a Marlin-shuffled
+    /// `RepackedWeights` (layout `[N/16, K/16, 16, 8]`). This mirrors the
+    /// kernel's intended tile access pattern, so it tests that the shuffle is
+    /// consumable as designed rather than merely a size-preserving copy.
+    fn marlin_dequant_row(
+        rw: &RepackedWeights,
+        row: usize,
+    ) -> Vec<f32> {
+        assert!(row < rw.out_features);
+        let k = rw.in_features;
+        let n_tiles_k = k / 16;
+        let n_sub = k / rw.group_size;
+        let mut out = vec![0f32; k];
+        let tile_n = row / 16;
+        let row_in_tile = row % 16;
+        for tk in 0..n_tiles_k {
+            let dst_tile = tile_n * n_tiles_k + tk;
+            let tile_base = dst_tile * 16 * 8; // 128 bytes per 16x16 tile
+            for k_in in 0..16 {
+                let k_global = tk * 16 + k_in;
+                let byte = rw.qs[tile_base + row_in_tile * 8 + k_in / 2];
+                let nibble = if k_in & 1 == 0 {
+                    byte & 0x0F
+                } else {
+                    (byte >> 4) & 0x0F
+                };
+                let group_idx = k_global / rw.group_size;
+                let scale = rw.scales[row * n_sub + group_idx].to_f32();
+                let min = rw.mins[row * n_sub + group_idx].to_f32();
+                out[k_global] = scale * nibble as f32 + min;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn repack_to_marlin_preserves_dequant_values() {
+        // 16 rows x 256 cols: one N-tile, 16 K-tiles. Each row carries a
+        // unique (scale, min, nibble) signature so any shuffle permutation
+        // error (row/column/tile mixup) changes the dequant values.
+        let mut bytes = Vec::with_capacity(16 * 144);
+        for row in 0..16u8 {
+            let raw = build_q4k_superblock(
+                f16::from_f32(1.0),
+                f16::from_f32(1.0),
+                [2 * row + 1; 8], // 1,3,5,...,31 (all <= 63)
+                [row + 1; 8],     // 1..16 (all <= 63)
+                row,              // nibble == row index (0..15)
+            );
+            bytes.extend_from_slice(&raw);
+        }
+        let qt = QTensor::from_raw(bytes, vec![16, 256], QuantScheme::Q4K)
+            .expect("Q4K 16-row tensor should construct");
+        let rw = qt.repack().expect("Q4K repack should succeed");
+
+        // Reference dequant from the unshuffled [N, K/2] layout.
+        let reference: Vec<Vec<f32>> = (0..16)
+            .map(|r| manual_dequant_row(&rw, r))
+            .collect();
+
+        // Shuffle to Marlin tile layout.
+        let marlin = repack_to_marlin(&rw).expect("marlin repack should succeed");
+
+        // Size preserved; scales/mins passed through unchanged.
+        assert_eq!(marlin.qs.len(), rw.qs.len());
+        assert_eq!(marlin.scales, rw.scales);
+        assert_eq!(marlin.mins, rw.mins);
+        assert_eq!(marlin.out_features, 16);
+        assert_eq!(marlin.in_features, 256);
+
+        // Dequant reading through the Marlin access pattern must match.
+        for (r, expected) in reference.iter().enumerate() {
+            let got = marlin_dequant_row(&marlin, r);
+            assert_eq!(
+                got, *expected,
+                "row {r} dequant mismatch after marlin shuffle"
+            );
+        }
+    }
+
+    #[test]
+    fn repack_to_marlin_rejects_non_tile_aligned_shape() {
+        // N=8 is not a multiple of 16 -> tiling is impossible.
+        let rw = RepackedWeights {
+            qs: vec![0u8; 8 * 16 / 2],
+            scales: vec![f16::from_f32(1.0); 8],
+            mins: vec![f16::from_f32(0.0); 8],
+            out_features: 8,
+            in_features: 16,
+            group_size: 16,
+            scheme: QuantScheme::Q4K,
+        };
+        let err = repack_to_marlin(&rw).unwrap_err();
+        assert_eq!(
+            err,
+            GgufDequantError::Unsupported(QuantScheme::Q4K.to_gguf_dtype())
+        );
     }
 }
