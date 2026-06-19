@@ -762,6 +762,7 @@ fn list_local_dir(dir: &str) -> HubResult<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     fn test_client() -> (TempDir, HubClient) {
@@ -830,8 +831,12 @@ mod tests {
     }
 
     #[test]
+    #[serial(hub_env)]
     fn builder_default_retry_is_zero() {
         let dir = TempDir::new().unwrap();
+        // Make sure no env var leaks in from another test / shell.
+        unsafe { std::env::remove_var(crate::path::HUB_RETRY_MAX_ENV) };
+        unsafe { std::env::remove_var(crate::path::HUB_RETRY_BASE_DELAY_ENV) };
         let client = HubClient::builder()
             .with_cache_dir(dir.path().to_path_buf())
             .build()
@@ -841,6 +846,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(hub_env)]
     fn builder_with_max_retries_wins() {
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var(crate::path::HUB_RETRY_MAX_ENV, "7") };
@@ -855,6 +861,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(hub_env)]
     fn env_var_used_when_builder_omits() {
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var(crate::path::HUB_RETRY_MAX_ENV, "5") };
@@ -867,6 +874,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(hub_env)]
     fn invalid_env_falls_back_to_default() {
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var(crate::path::HUB_RETRY_MAX_ENV, "garbage") };
@@ -879,6 +887,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(hub_env)]
     fn base_delay_resolution_priority() {
         let dir = TempDir::new().unwrap();
         unsafe {

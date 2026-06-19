@@ -82,37 +82,50 @@ pub fn read_token() -> Option<String> {
 
 // ── Retry env resolution ───────────────────────────────────────────────────────
 
-/// Read `AYAKA_HUB_MAX_RETRIES` (default: `None` ⇒ builder default 0).
+/// Parse the value of `AYAKA_HUB_MAX_RETRIES` (default: `None` ⇒ builder
+/// default 0).
 ///
-/// Invalid values are logged as warnings and treated as unset so a typo never
-/// silently changes behavior.
-pub fn read_retry_max_env() -> Option<u32> {
-    let raw = env::var(HUB_RETRY_MAX_ENV)
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    match raw.parse::<u32>() {
+/// `None` or an empty / whitespace string yields `None`.  Invalid values are
+/// logged as warnings and treated as unset so a typo never silently changes
+/// behavior.
+pub fn parse_retry_max(raw: Option<&str>) -> Option<u32> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    match s.parse::<u32>() {
         Ok(n) => Some(n),
         Err(e) => {
-            warn!("{HUB_RETRY_MAX_ENV}={raw:?} is not a valid u32 ({e}); ignoring");
+            warn!("{HUB_RETRY_MAX_ENV}={s:?} is not a valid u32 ({e}); ignoring");
+            None
+        },
+    }
+}
+
+/// Read `AYAKA_HUB_MAX_RETRIES` (default: `None` ⇒ builder default 0).
+pub fn read_retry_max_env() -> Option<u32> {
+    parse_retry_max(env::var(HUB_RETRY_MAX_ENV).ok().as_deref())
+}
+
+/// Parse the value of `AYAKA_HUB_RETRY_BASE_DELAY_MS` (default: `None` ⇒
+/// builder default 100).
+pub fn parse_retry_base_delay(raw: Option<&str>) -> Option<u64> {
+    let s = raw?.trim();
+    if s.is_empty() {
+        return None;
+    }
+    match s.parse::<u64>() {
+        Ok(n) => Some(n),
+        Err(e) => {
+            warn!("{HUB_RETRY_BASE_DELAY_ENV}={s:?} is not a valid u64 ({e}); ignoring");
             None
         },
     }
 }
 
 /// Read `AYAKA_HUB_RETRY_BASE_DELAY_MS` (default: `None` ⇒ builder default 100).
-///
-/// Invalid values are logged as warnings and treated as unset.
 pub fn read_retry_base_delay_env() -> Option<u64> {
-    let raw = env::var(HUB_RETRY_BASE_DELAY_ENV)
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    match raw.parse::<u64>() {
-        Ok(n) => Some(n),
-        Err(e) => {
-            warn!("{HUB_RETRY_BASE_DELAY_ENV}={raw:?} is not a valid u64 ({e}); ignoring");
-            None
-        },
-    }
+    parse_retry_base_delay(env::var(HUB_RETRY_BASE_DELAY_ENV).ok().as_deref())
 }
 
 // ── Snapshot resolution ────────────────────────────────────────────────────────
@@ -228,72 +241,98 @@ pub fn offline_snapshot_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use serial_test::serial;
     use tempfile::TempDir;
 
+    // ── is_offline: reads HUB_OFFLINE_ENV, so all these tests race on
+    // the same process-global variable.  Marked `#[serial]` so they
+    // run one at a time and never see each other's values.
     #[test]
+    #[serial]
     fn is_offline_truthy_values() {
         for val in ["1", "true", "True", "TRUE", "yes", "on"] {
-            unsafe { env::set_var(HUB_OFFLINE_ENV, val) };
+            unsafe { std::env::set_var(HUB_OFFLINE_ENV, val) };
             assert!(is_offline(), "`{val}` should be truthy");
         }
-        unsafe { env::remove_var(HUB_OFFLINE_ENV) };
+        unsafe { std::env::remove_var(HUB_OFFLINE_ENV) };
     }
 
     #[test]
+    #[serial]
     fn is_offline_falsy_values() {
         for val in ["0", "false", "no", "off", ""] {
-            unsafe { env::set_var(HUB_OFFLINE_ENV, val) };
+            unsafe { std::env::set_var(HUB_OFFLINE_ENV, val) };
             assert!(!is_offline(), "`{val}` should be falsy");
         }
-        unsafe { env::remove_var(HUB_OFFLINE_ENV) };
+        unsafe { std::env::remove_var(HUB_OFFLINE_ENV) };
     }
 
     #[test]
+    #[serial]
     fn is_offline_unset_is_online() {
-        unsafe { env::remove_var(HUB_OFFLINE_ENV) };
+        unsafe { std::env::remove_var(HUB_OFFLINE_ENV) };
         assert!(!is_offline());
     }
 
+    // ── parse_retry_max: pure function, no env mutation needed. ─────
     #[test]
-    fn retry_max_env_parses_valid_value() {
-        unsafe { env::set_var(HUB_RETRY_MAX_ENV, "3") };
-        assert_eq!(read_retry_max_env(), Some(3));
-        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
+    fn parse_retry_max_parses_valid_value() {
+        assert_eq!(parse_retry_max(Some("3")), Some(3));
     }
 
     #[test]
-    fn retry_max_env_returns_none_when_unset() {
-        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
-        assert_eq!(read_retry_max_env(), None);
+    fn parse_retry_max_returns_none_when_unset() {
+        assert_eq!(parse_retry_max(None), None);
     }
 
     #[test]
-    fn retry_max_env_ignores_invalid_value() {
-        unsafe { env::set_var(HUB_RETRY_MAX_ENV, "not-a-number") };
-        assert_eq!(read_retry_max_env(), None);
-        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
+    fn parse_retry_max_ignores_invalid_value() {
+        assert_eq!(parse_retry_max(Some("not-a-number")), None);
     }
 
     #[test]
-    fn retry_max_env_ignores_empty_value() {
-        unsafe { env::set_var(HUB_RETRY_MAX_ENV, "") };
-        assert_eq!(read_retry_max_env(), None);
-        unsafe { env::remove_var(HUB_RETRY_MAX_ENV) };
+    fn parse_retry_max_ignores_empty_value() {
+        assert_eq!(parse_retry_max(Some("")), None);
     }
 
     #[test]
-    fn retry_base_delay_env_parses_valid_value() {
-        unsafe { env::set_var(HUB_RETRY_BASE_DELAY_ENV, "250") };
+    fn parse_retry_max_trims_whitespace() {
+        assert_eq!(parse_retry_max(Some("  7  ")), Some(7));
+    }
+
+    // ── parse_retry_base_delay: pure function, no env mutation. ────
+    #[test]
+    fn parse_retry_base_delay_parses_valid_value() {
+        assert_eq!(parse_retry_base_delay(Some("250")), Some(250));
+    }
+
+    #[test]
+    fn parse_retry_base_delay_ignores_invalid_value() {
+        assert_eq!(parse_retry_base_delay(Some("abc")), None);
+    }
+
+    #[test]
+    fn parse_retry_base_delay_trims_whitespace() {
+        assert_eq!(parse_retry_base_delay(Some("  42\n")), Some(42));
+    }
+
+    // ── Env→read wiring: a single serial test per variable verifies
+    // that read_*_env() reads the correct env-var name.  These are
+    // the only tests that actually need to touch the process env.
+    #[test]
+    #[serial]
+    fn read_retry_max_env_reads_ayaka_hub_max_retries() {
+        unsafe { std::env::set_var(HUB_RETRY_MAX_ENV, "4") };
+        assert_eq!(read_retry_max_env(), Some(4));
+        unsafe { std::env::remove_var(HUB_RETRY_MAX_ENV) };
+    }
+
+    #[test]
+    #[serial]
+    fn read_retry_base_delay_env_reads_ayaka_hub_retry_base_delay_ms() {
+        unsafe { std::env::set_var(HUB_RETRY_BASE_DELAY_ENV, "250") };
         assert_eq!(read_retry_base_delay_env(), Some(250));
-        unsafe { env::remove_var(HUB_RETRY_BASE_DELAY_ENV) };
-    }
-
-    #[test]
-    fn retry_base_delay_env_ignores_invalid_value() {
-        unsafe { env::set_var(HUB_RETRY_BASE_DELAY_ENV, "abc") };
-        assert_eq!(read_retry_base_delay_env(), None);
-        unsafe { env::remove_var(HUB_RETRY_BASE_DELAY_ENV) };
+        unsafe { std::env::remove_var(HUB_RETRY_BASE_DELAY_ENV) };
     }
 
     #[test]
