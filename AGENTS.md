@@ -114,7 +114,7 @@ Rules:
 ## Rust Rules
 
 Use:
-- Rust 2021 edition unless workspace config says otherwise.
+- Rust 2024 edition unless workspace config says otherwise.
 - `serde` only behind feature flags for metadata.
 - `bitflags` for flag sets.
 - `static_assertions` for ABI/layout checks when useful.

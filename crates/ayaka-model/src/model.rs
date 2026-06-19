@@ -21,9 +21,9 @@ pub struct Qwen3Shared {
     /// RoPE caches, shape `[max_pos, head_dim]`.
     cos: Tensor,
     sin: Tensor,
-    cfg: Qwen3Config,
-    device: Device,
-    dtype: DType,
+    pub(crate) cfg: Qwen3Config,
+    pub(crate) device: Device,
+    pub(crate) dtype: DType,
 }
 
 impl Qwen3Shared {
@@ -54,14 +54,14 @@ impl Qwen3Shared {
         })
     }
 
-    fn embed(
+    pub(crate) fn embed(
         &self,
         input_ids: &Tensor,
     ) -> CResult<Tensor> {
         self.embed.forward(input_ids)
     }
 
-    fn norm_and_head(
+    pub(crate) fn norm_and_head(
         &self,
         hidden: &Tensor,
     ) -> CResult<Tensor> {
@@ -69,7 +69,7 @@ impl Qwen3Shared {
     }
 
     /// `(cos, sin)` slices for positions `offset..offset+seq`, shaped `[seq, head_dim]`.
-    fn rope_slice(
+    pub(crate) fn rope_slice(
         &self,
         offset: usize,
         seq: usize,
@@ -80,7 +80,7 @@ impl Qwen3Shared {
     }
 
     /// Causal mask `[seq, seq]` (0 on/below diagonal, -inf above) in model dtype.
-    fn causal_mask(
+    pub(crate) fn causal_mask(
         &self,
         seq: usize,
     ) -> CResult<Tensor> {
@@ -127,7 +127,7 @@ fn rotate_half(x: &Tensor) -> CResult<Tensor> {
 
 /// Apply RoPE to `x` of shape `[b, heads, seq, head_dim]` given `cos`/`sin`
 /// of shape `[seq, head_dim]`.
-fn apply_rope(
+pub(crate) fn apply_rope(
     x: &Tensor,
     cos: &Tensor,
     sin: &Tensor,
@@ -273,7 +273,7 @@ impl DecoderLayer {
 }
 
 /// Expand `[b, kv_heads, s, d]` to `[b, kv_heads * n_rep, s, d]`.
-fn repeat_kv(
+pub(crate) fn repeat_kv(
     x: &Tensor,
     n_rep: usize,
 ) -> CResult<Tensor> {

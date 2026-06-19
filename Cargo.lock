@@ -206,6 +206,7 @@ dependencies = [
  "ayaka-candle",
  "ayaka-loader",
  "ayaka-memory",
+ "ayaka-quant",
  "ayaka-registry",
  "candle-core",
  "candle-nn",
