@@ -128,7 +128,7 @@ pub fn dequantize_q6_k(
 /// The 16 six-bit values are laid out little-endian across the 96-bit field:
 /// value `i` starts at bit `i * 6`. Values `0..8` are the sub-block scales and
 /// `8..16` are the sub-block mins.
-fn unpack_s6(
+pub(crate) fn unpack_s6(
     scales: &[u8],
     i: usize,
 ) -> u8 {
