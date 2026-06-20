@@ -137,6 +137,25 @@ fn snapshot_folder(model_id: &str) -> String {
     format!("models--{}", model_id.replace('/', "--"))
 }
 
+/// Resolve the on-disk path of a file inside an HF snapshot directory.
+///
+/// Layout: `<cache_dir>/<folder>/snapshots/<commit>/<file>` where
+/// `<folder>` is `models--{org}--{repo}` (see [`snapshot_folder`]). This is
+/// the same layout [`offline_get`] reads, so any file written via this path
+/// is immediately visible to the offline-walk resolver without re-listing.
+pub(crate) fn snapshot_path(
+    cache_dir: &Path,
+    model_id: &str,
+    commit: &str,
+    file: &str,
+) -> PathBuf {
+    cache_dir
+        .join(snapshot_folder(model_id))
+        .join("snapshots")
+        .join(commit)
+        .join(file)
+}
+
 /// Resolve the commit hash for `revision` from the refs file, falling back to
 /// treating `revision` itself as a commit hash when the file is absent.
 ///
@@ -341,6 +360,33 @@ mod tests {
         assert_eq!(
             snapshot_folder("meta-llama/Llama-3-8B"),
             "models--meta-llama--Llama-3-8B"
+        );
+    }
+
+    #[test]
+    fn snapshot_path_uses_hf_layout() {
+        let dir = Path::new("/tmp/hf-cache");
+        let p = snapshot_path(dir, "org/model", "abc123", "config.json");
+        assert_eq!(
+            p,
+            PathBuf::from("/tmp/hf-cache/models--org--model/snapshots/abc123/config.json")
+        );
+    }
+
+    #[test]
+    fn snapshot_path_nested_org() {
+        let dir = Path::new("/tmp/hf-cache");
+        let p = snapshot_path(
+            dir,
+            "meta-llama/Llama-3-8B",
+            "deadbeef",
+            "model.safetensors",
+        );
+        assert_eq!(
+            p,
+            PathBuf::from(
+                "/tmp/hf-cache/models--meta-llama--Llama-3-8B/snapshots/deadbeef/model.safetensors"
+            )
         );
     }
 

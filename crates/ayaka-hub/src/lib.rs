@@ -17,10 +17,10 @@
 //! println!("shards    : {}", paths.weights.len());
 //! # Ok::<_, ayaka_hub::HubError>(())
 //! # });
-//! ```
 
 pub mod cache;
 pub mod client;
+pub mod download;
 pub mod error;
 pub mod path;
 pub mod resolver;

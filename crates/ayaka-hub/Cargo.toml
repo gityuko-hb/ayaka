@@ -11,7 +11,9 @@ homepage.workspace = true
 
 [dependencies]
 hf-hub.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+reqwest = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["rt", "fs"] }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

@@ -32,6 +32,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloca"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5a7d05ea6aea7e9e64d25b9156ba2fee3fdd659e34e41063cd2fc7cd020d7f4"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -132,9 +141,11 @@ dependencies = [
  "dirs",
  "fd-lock",
  "futures",
+ "futures-util",
  "hf-hub",
  "indicatif",
  "memmap2",
+ "reqwest",
  "safetensors 0.8.0",
  "serde",
  "serde_json",
@@ -204,14 +215,17 @@ name = "ayaka-model"
 version = "0.1.0"
 dependencies = [
  "ayaka-candle",
+ "ayaka-hub",
  "ayaka-loader",
  "ayaka-memory",
  "ayaka-quant",
  "ayaka-registry",
+ "ayaka-tokenizer",
  "candle-core",
  "candle-nn",
  "half",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -258,6 +272,7 @@ name = "ayaka-sampling"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ayaka-hub",
  "candle-core",
  "candle-nn",
  "rand 0.10.1",
@@ -268,6 +283,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokenizers 0.23.1",
+ "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -295,6 +312,7 @@ version = "0.1.0"
 name = "ayaka-tokenizer"
 version = "0.1.0"
 dependencies = [
+ "ayaka-hub",
  "base64 0.22.1",
  "dirs",
  "hf-hub",
@@ -744,10 +762,11 @@ dependencies = [
 
 [[package]]
 name = "criterion"
-version = "0.7.0"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1c047a62b0cc3e145fa84415a3191f628e980b194c2755aa12300a4e6cbd928"
+checksum = "950046b2aa2492f9a536f5f4f9a3de7b9e2476e575e05bd6c333371add4d98f3"
 dependencies = [
+ "alloca",
  "anes",
  "cast",
  "ciborium",
@@ -756,6 +775,7 @@ dependencies = [
  "itertools 0.13.0",
  "num-traits",
  "oorandom",
+ "page_size",
  "plotters",
  "rayon",
  "regex",
@@ -767,9 +787,9 @@ dependencies = [
 
 [[package]]
 name = "criterion-plot"
-version = "0.6.0"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b1bcc0dc7dfae599d84ad0b1a55f80cde8af3725da8313b528da95ef783e338"
+checksum = "d8d80a2f4f5b554395e47b5d8305bc3d27813bacb73493eb1001e8f76dae29ea"
 dependencies = [
  "cast",
  "itertools 0.13.0",
@@ -2519,6 +2539,16 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "page_size"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30d5b2194ed13191c1999ae0704b7839fb18384fa22e49b57eeaa97d79ce40da"
+dependencies = [
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "parking_lot"

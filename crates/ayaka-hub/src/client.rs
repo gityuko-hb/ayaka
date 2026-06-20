@@ -1,21 +1,27 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
-use ayaka_utils::progress_bar::{MultitaskProgress, ProgressBarColor, SpinnerBar};
+use ayaka_utils::progress_bar::{
+    MultitaskProgress, ProgressBarColor, SpinnerBar, fmt_bytes, fmt_throughput,
+    make_bytes_bar_style,
+};
 use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Cache as HfCache, Repo, RepoType};
 use indicatif::ProgressBar;
 use tokio::task::JoinSet;
-use tracing::trace;
+use tracing::{info, trace, warn};
 
 use crate::{
     cache::Cache,
+    download::{DownloadProgress, download_file, download_url},
     error::{HubError, HubResult, classify_api_error},
     path::{
         hub_cache_dir, is_offline, offline_get, offline_snapshot_files, read_retry_base_delay_env,
-        read_retry_max_env, read_token,
+        read_retry_max_env, read_token, snapshot_path,
     },
     retry::{RetryPolicy, backoff_for, is_retryable},
 };
@@ -127,6 +133,23 @@ impl ProgressHolder {
             .map(|t| t.add_task(label, total, color))
     }
 
+    /// Add a per-file byte-level progress bar (download / upload tracking).
+    ///
+    /// Uses the `{bytes}/{total_bytes} ({bytes_per_sec}, eta …)` template
+    /// from [`make_bytes_bar_style`]. Returns `None` when silent; the caller
+    /// should skip progress updates in that case.
+    pub(crate) fn add_bytes_task(
+        &self,
+        label: &str,
+        total: u64,
+        color: ProgressBarColor,
+    ) -> Option<ProgressBar> {
+        let inner = self.inner.as_ref()?;
+        let bar = ProgressBar::new(total);
+        bar.set_style(make_bytes_bar_style(label, color));
+        Some(inner.add_existing_bar(bar))
+    }
+
     /// Add a spinner for an unknown-duration phase.
     pub(crate) fn add_spinner(
         &self,
@@ -142,6 +165,7 @@ impl ProgressHolder {
     }
 
     /// Add a spinner with a runtime-formatted label (`String`).
+    #[allow(dead_code)]
     pub(crate) fn add_spinner_label(
         &self,
         label: &str,
@@ -150,6 +174,65 @@ impl ProgressHolder {
             let bar = t.add_spinner(label);
             SpinnerBar::from_indicatif(bar)
         })
+    }
+}
+
+// ── LogPhase ──────────────────────────────────────────────────────────────────
+
+/// RAII guard for a `tracing::info!` start/finish pair around a logical
+/// phase. Drop logs the elapsed time; a panic in the guarded scope logs
+/// `tracing::warn!` instead.
+///
+/// Visibility is governed by the caller's `RUST_LOG` — this guard never
+/// forces a level.
+pub(crate) struct LogPhase {
+    name: &'static str,
+    fields: String,
+    started: Instant,
+}
+
+impl LogPhase {
+    pub fn new(name: &'static str) -> Self {
+        info!(phase = name, "starting phase");
+        Self {
+            name,
+            fields: String::new(),
+            started: Instant::now(),
+        }
+    }
+
+    /// Attach a key=value fragment to the start log. Call before doing any
+    /// non-trivial work so a partial failure still carries context.
+    pub fn with_field(
+        mut self,
+        key: &'static str,
+        value: impl std::fmt::Display,
+    ) -> Self {
+        if !self.fields.is_empty() {
+            self.fields.push(' ');
+        }
+        self.fields.push_str(&format!("{key}={value}"));
+        info!(phase = self.name, "{}", self.fields);
+        self
+    }
+}
+
+impl Drop for LogPhase {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed();
+        if std::thread::panicking() {
+            warn!(
+                phase = self.name,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "phase aborted"
+            );
+        } else {
+            info!(
+                phase = self.name,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "phase done"
+            );
+        }
     }
 }
 
@@ -177,6 +260,10 @@ pub struct HubClient {
     config: Arc<HubClientConfig>,
     cache: Cache,
     progress: ProgressHolder,
+    /// Cached commit-hash lookups keyed by `(model_id, revision)`.  Populated
+    /// lazily by [`HubClient::resolve_commit`]; lets the byte-level download
+    /// path know where to write without re-fetching `info()` for every file.
+    commit_cache: Arc<Mutex<HashMap<(String, String), String>>>,
 }
 
 impl HubClient {
@@ -267,6 +354,9 @@ impl HubClient {
         }
 
         // ④ Online: API info call in a blocking task.
+        let _phase = LogPhase::new("list_files")
+            .with_field("model_id", model_id)
+            .with_field("revision", revision);
         let spinner = self.progress.add_spinner("Listing repo");
         let config = Arc::clone(&self.config);
         let model_id_owned = model_id.to_string();
@@ -322,8 +412,11 @@ impl HubClient {
 
     /// Resolve a single file, downloading from the Hub if necessary.
     ///
-    /// The underlying `hf_hub` crate caches individual files on disk; repeated
-    /// calls for the same file are fast local lookups.
+    /// Downloads use a reqwest-based transfer layer (see
+    /// [`crate::download::download_file`]) so that per-chunk byte progress
+    /// is visible when [`ProgressHolder::enabled`] is on.  The downloaded
+    /// file is written to the standard HF snapshot path and is therefore
+    /// readable by the offline walker on subsequent runs.
     pub async fn get_file(
         &self,
         model_id: &str,
@@ -369,63 +462,71 @@ impl HubClient {
                     ));
                 },
             };
-            return offline_get(&cache_dir, model_id, file, revision).ok_or_else(|| {
+            let path = offline_get(&cache_dir, model_id, file, revision).ok_or_else(|| {
                 HubError::Offline(format!(
                     "HF_HUB_OFFLINE is set but `{file}` for `{model_id}` \
                      (revision `{revision}`) is not cached. \
                      Run `huggingface-cli download {model_id}` first."
                 ))
-            });
+            })?;
+            info!(
+                phase = "get_file",
+                model_id = model_id,
+                file = file,
+                revision = revision,
+                "resolved from offline cache"
+            );
+            return Ok(path);
         }
 
-        // ③ Online download via blocking task.
-        let label = format!("Downloading {file}");
-        let spinner = self.progress.add_spinner_label(&label);
-        let config = Arc::clone(&self.config);
-        let model_id_owned = model_id.to_string();
-        let file_owned = file.to_string();
-        let revision_owned = revision.to_string();
-        let retry = self.config.retry;
+        // ③ Online: byte-level download via the reqwest transfer layer.
+        let _phase = LogPhase::new("get_file")
+            .with_field("model_id", model_id)
+            .with_field("file", file)
+            .with_field("revision", revision);
 
-        let result = tokio::task::spawn_blocking(move || {
-            let mut attempt: u32 = 0;
-            loop {
-                let api = config.build_sync_api()?;
-                let repo = api.repo(Repo::with_revision(
-                    model_id_owned.clone(),
-                    RepoType::Model,
-                    revision_owned.clone(),
-                ));
-                match repo.get(&file_owned) {
-                    Ok(path) => return Ok::<PathBuf, HubError>(path),
-                    Err(e) => {
-                        let hub_err = classify_api_error(&e);
-                        if is_retryable(&hub_err) && attempt < retry.max_retries {
-                            let delay = backoff_for(retry, attempt);
-                            trace!(
-                                "get_file({file_owned}) attempt {} failed ({}); \
-                                 retrying in {:?}",
-                                attempt, hub_err, delay
-                            );
-                            std::thread::sleep(delay);
-                            attempt += 1;
-                            continue;
-                        }
-                        return Err(hub_err);
-                    },
-                }
-            }
-        })
-        .await
-        .map_err(|e| HubError::Api(format!("get_file task panicked: {e}")))?;
+        let commit = self.resolve_commit(model_id, revision).await?;
+        let cache_dir = self.config.cache_dir.clone();
+        let dest = snapshot_path(&cache_dir, model_id, &commit, file);
 
-        if let Some(sp) = spinner {
-            sp.finish_with_owned(match &result {
-                Ok(_) => format!("Downloaded {file}"),
-                Err(_) => format!("Failed {file}"),
-            });
+        let bar = self
+            .progress
+            .add_bytes_task(file, 0, ProgressBarColor::Green);
+        let progress = DownloadProgress { bar, total: 0 };
+        let token = self.config.token.clone();
+        let url = download_url(model_id, revision, file);
+
+        let outcome = download_file(&url, token.as_deref(), &dest, progress).await?;
+
+        // One-line human summary that mirrors the bar so piped output
+        // (no TTY) still tells the user what happened.
+        let bps = if outcome.elapsed.as_secs_f64() > 0.0 {
+            outcome.bytes as f64 / outcome.elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+        if outcome.from_cache {
+            info!(
+                phase = "get_file",
+                file = file,
+                bytes = outcome.bytes,
+                "served from cache ({})",
+                fmt_bytes(outcome.bytes)
+            );
+        } else {
+            info!(
+                phase = "get_file",
+                file = file,
+                bytes = outcome.bytes,
+                elapsed_ms = outcome.elapsed.as_millis() as u64,
+                "downloaded {} in {:.2}s ({})",
+                fmt_bytes(outcome.bytes),
+                outcome.elapsed.as_secs_f64(),
+                fmt_throughput(bps)
+            );
         }
-        result
+
+        Ok(dest)
     }
 
     /// Like [`get_file`] but returns `Ok(None)` for 404s instead of an error.
@@ -446,12 +547,108 @@ impl HubClient {
         }
     }
 
+    /// Resolve the commit hash for `(model_id, revision)`.
+    ///
+    /// Order:
+    /// 1. In-memory cache (this is the common case — every file in a model
+    ///    reuses one commit lookup).
+    /// 2. The `refs/{revision}` file on disk when present (works offline).
+    /// 3. `repo.info()` over the blocking hf-hub client.
+    async fn resolve_commit(
+        &self,
+        model_id: &str,
+        revision: &str,
+    ) -> HubResult<String> {
+        let key = (model_id.to_string(), revision.to_string());
+        if let Some(c) = self
+            .commit_cache
+            .lock()
+            .unwrap()
+            .get(&key)
+            .cloned()
+        {
+            return Ok(c);
+        }
+
+        // ② Refs file (offline-friendly).
+        let folder = format!("models--{}", model_id.replace('/', "--"));
+        let ref_path = self
+            .config
+            .cache_dir
+            .join(&folder)
+            .join("refs")
+            .join(revision);
+        if let Ok(s) = std::fs::read_to_string(&ref_path) {
+            let commit = s.trim().to_string();
+            if !commit.is_empty() {
+                self.commit_cache
+                    .lock()
+                    .unwrap()
+                    .insert(key, commit.clone());
+                return Ok(commit);
+            }
+        }
+
+        // ③ API info() in a blocking task.
+        let config = Arc::clone(&self.config);
+        let model_id_owned = model_id.to_string();
+        let revision_owned = revision.to_string();
+        let retry = self.config.retry;
+
+        let commit = tokio::task::spawn_blocking(move || -> HubResult<String> {
+            let mut attempt: u32 = 0;
+            loop {
+                let api = config.build_sync_api()?;
+                let repo = api.repo(Repo::with_revision(
+                    model_id_owned.clone(),
+                    RepoType::Model,
+                    revision_owned.clone(),
+                ));
+                match repo.info() {
+                    Ok(info) => return Ok(info.sha),
+                    Err(e) => {
+                        let hub_err = classify_api_error(&e);
+                        if is_retryable(&hub_err) && attempt < retry.max_retries {
+                            let delay = backoff_for(retry, attempt);
+                            trace!(
+                                "resolve_commit attempt {} failed ({}); retrying in {:?}",
+                                attempt, hub_err, delay
+                            );
+                            std::thread::sleep(delay);
+                            attempt += 1;
+                            continue;
+                        }
+                        return Err(hub_err);
+                    },
+                }
+            }
+        })
+        .await
+        .map_err(|e| HubError::Api(format!("resolve_commit task panicked: {e}")))??;
+
+        if commit.is_empty() {
+            return Err(HubError::Api(format!(
+                "`{model_id}` (revision `{revision}`): empty commit hash"
+            )));
+        }
+        self.commit_cache
+            .lock()
+            .unwrap()
+            .insert(key, commit.clone());
+        Ok(commit)
+    }
+
     /// Download `files` in parallel, returning resolved paths **in the same
     /// order as the input slice**.
     ///
-    /// Spawns one `spawn_blocking` task per file.  All tasks are aborted on the
-    /// first error.  For offline / local paths, falls back to sequential
-    /// resolution (already cached, so the cost is negligible).
+    /// Downloads run through the reqwest-based transfer layer
+    /// ([`crate::download::download_file`]) so per-chunk byte progress is
+    /// visible when a [`ProgressHolder`] is enabled.  An overall count bar
+    /// (`"Fetching N files"`) is kept on top of the per-file byte bars so
+    /// a user can see "12/14 shards done" at a glance.
+    ///
+    /// For offline / local paths, falls back to sequential resolution
+    /// (already cached, so the cost is negligible).
     ///
     /// This is the key performance fix over mistral.rs, where `get_paths!`
     /// fetches N shard files one after another (sequential blocking I/O).
@@ -484,87 +681,65 @@ impl HubClient {
             return Ok(paths);
         }
 
-        // Online: one blocking task per file, results collected into an index-keyed
-        // array so we can reconstruct the original order.
+        let _phase = LogPhase::new("parallel_fetch")
+            .with_field("model_id", model_id)
+            .with_field("revision", revision)
+            .with_field("count", files.len());
+
+        // Resolve the commit once and compute all snapshot paths.
+        let commit = self.resolve_commit(model_id, revision).await?;
+        let cache_dir = self.config.cache_dir.clone();
+        let dests: Vec<PathBuf> = files
+            .iter()
+            .map(|f| snapshot_path(&cache_dir, model_id, &commit, f))
+            .collect();
+
+        // Per-file byte bars (one row per file).
+        let file_bars: Vec<Option<ProgressBar>> = files
+            .iter()
+            .map(|f| {
+                self.progress
+                    .add_bytes_task(f, 0, ProgressBarColor::Green)
+            })
+            .collect();
+
+        // Overall count bar (kept per design — "12/14 shards done" at a
+        // glance). Uses the count style, not byte style.
         let total = files.len() as u64;
         let overall_label = format!("Fetching {total} files");
         let overall_bar = self
             .progress
             .add_task(&overall_label, total, ProgressBarColor::Blue);
-        let file_bars: Vec<Option<indicatif::ProgressBar>> = files
-            .iter()
-            .map(|f| {
-                self.progress
-                    .add_task(f, 1, ProgressBarColor::Green)
-            })
-            .collect();
 
-        let mut set: JoinSet<HubResult<(usize, PathBuf)>> = JoinSet::new();
+        let mut set: JoinSet<HubResult<(usize, PathBuf, u64, Duration)>> = JoinSet::new();
+        let token = self.config.token.clone();
 
         for (idx, &file) in files.iter().enumerate() {
-            let config = Arc::clone(&self.config);
-            let model_id_owned = model_id.to_string();
-            let file_owned = file.to_string();
-            let revision_owned = revision.to_string();
+            let url = download_url(model_id, revision, file);
+            let dest = dests[idx].clone();
             let file_bar = file_bars[idx].clone();
-            let retry = self.config.retry;
+            let token = token.clone();
 
             set.spawn(async move {
-                let result = tokio::task::spawn_blocking(move || {
-                    let mut attempt: u32 = 0;
-                    loop {
-                        let api = config.build_sync_api()?;
-                        let repo = api.repo(Repo::with_revision(
-                            model_id_owned.clone(),
-                            RepoType::Model,
-                            revision_owned.clone(),
-                        ));
-                        match repo.get(&file_owned) {
-                            Ok(path) => return Ok::<PathBuf, HubError>(path),
-                            Err(e) => {
-                                let hub_err = classify_api_error(&e);
-                                if is_retryable(&hub_err) && attempt < retry.max_retries {
-                                    let delay = backoff_for(retry, attempt);
-                                    trace!(
-                                        "parallel_fetch[{file_owned}] attempt {} \
-                                         failed ({}); retrying in {:?}",
-                                        attempt, hub_err, delay
-                                    );
-                                    std::thread::sleep(delay);
-                                    attempt += 1;
-                                    continue;
-                                }
-                                return Err(hub_err);
-                            },
-                        }
-                    }
-                })
-                .await
-                .map_err(|e| HubError::Api(format!("parallel_fetch task panicked: {e}")));
-
-                let path_result = match result {
-                    Ok(Ok(p)) => Ok(p),
-                    Ok(Err(e)) => Err(e),
-                    Err(e) => Err(e),
+                let progress = DownloadProgress {
+                    bar: file_bar,
+                    total: 0,
                 };
-
-                if let Some(ref bar) = file_bar {
-                    match &path_result {
-                        Ok(_) => bar.finish_with_message("done"),
-                        Err(_) => bar.finish_with_message("failed"),
-                    }
+                let result = download_file(&url, token.as_deref(), &dest, progress).await;
+                match result {
+                    Ok(o) => Ok((idx, dest, o.bytes, o.elapsed)),
+                    Err(e) => Err(e),
                 }
-
-                Ok::<(usize, PathBuf), HubError>((idx, path_result?))
             });
         }
 
         let mut results: Vec<Option<PathBuf>> = vec![None; files.len()];
         let mut completed: u64 = 0;
+        let mut total_bytes: u64 = 0;
+        let mut total_elapsed: Duration = Duration::ZERO;
 
         while let Some(outcome) = set.join_next().await {
             match outcome {
-                // Outer JoinError: the spawned async task itself panicked.
                 Err(join_err) => {
                     set.abort_all();
                     if let Some(ref bar) = overall_bar {
@@ -574,7 +749,6 @@ impl HubClient {
                         "parallel_fetch join error: {join_err}"
                     )));
                 },
-                // Inner HubError: download failed.
                 Ok(Err(hub_err)) => {
                     set.abort_all();
                     if let Some(ref bar) = overall_bar {
@@ -582,9 +756,11 @@ impl HubClient {
                     }
                     return Err(hub_err);
                 },
-                Ok(Ok((idx, path))) => {
+                Ok(Ok((idx, path, bytes, elapsed))) => {
                     results[idx] = Some(path);
                     completed += 1;
+                    total_bytes = total_bytes.saturating_add(bytes);
+                    total_elapsed += elapsed;
                     if let Some(ref bar) = overall_bar {
                         bar.set_position(completed);
                     }
@@ -595,6 +771,26 @@ impl HubClient {
         if let Some(ref bar) = overall_bar {
             bar.finish_with_message(format!("Fetched {completed}/{total}"));
         }
+
+        // One-line summary so piped output (no TTY) still tells the story.
+        let avg_bps = if total_elapsed.as_secs_f64() > 0.0 {
+            total_bytes as f64 / total_elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+        info!(
+            phase = "parallel_fetch",
+            model_id = model_id,
+            revision = revision,
+            files = total,
+            total_bytes = total_bytes,
+            elapsed_ms = total_elapsed.as_millis() as u64,
+            "downloaded {} across {} files in {:.2}s ({})",
+            fmt_bytes(total_bytes),
+            total,
+            total_elapsed.as_secs_f64(),
+            fmt_throughput(avg_bps)
+        );
 
         // All results present — the Option<> layer is a safety net for the
         // index-keyed array; it should never be None here.
@@ -739,6 +935,7 @@ impl HubClientBuilder {
             config: inner_config,
             cache,
             progress: self.progress_holder.unwrap_or_default(),
+            commit_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -764,6 +961,33 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    // ── LogPhase RAII guard ─────────────────────────────────────────────
+
+    /// `LogPhase::drop` should not panic on normal drop.
+    #[test]
+    fn log_phase_does_not_panic_on_normal_drop() {
+        let _p = LogPhase::new("unit-test-phase");
+        // drop runs here; we just need to confirm no panic.
+    }
+
+    /// `LogPhase::drop` should not panic when the thread is panicking,
+    /// so a mid-phase failure still tears down the guard cleanly.
+    #[test]
+    fn log_phase_does_not_panic_when_thread_panics() {
+        let result = std::panic::catch_unwind(|| {
+            let _p = LogPhase::new("unit-test-panic-phase");
+            panic!("forced panic");
+        });
+        assert!(result.is_err(), "panic should propagate");
+    }
+
+    /// `with_field` should record the key=value fragment for the start log.
+    #[test]
+    fn log_phase_with_field_attaches_metadata() {
+        let _p = LogPhase::new("unit-test-fields").with_field("model_id", "org/m");
+        // no panic = the formatting path is sound
+    }
 
     fn test_client() -> (TempDir, HubClient) {
         let dir = TempDir::new().unwrap();

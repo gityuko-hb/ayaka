@@ -34,3 +34,8 @@ half.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+ayaka-tokenizer = { path = "../ayaka-tokenizer", default-features = false, features = [
+    "backend-hf",
+] }
+ayaka-hub = { path = "../ayaka-hub" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -413,6 +413,17 @@ impl MultitaskProgress {
         self.mp.add(bar)
     }
 
+    /// Wrap an externally-built `ProgressBar` (e.g. one whose style was set
+    /// via `make_bytes_bar_style`) and attach it to the shared
+    /// `MultiProgress`. Used by callers that need a non-default style.
+    pub fn add_existing_bar(
+        &self,
+        bar: ProgressBar,
+    ) -> ProgressBar {
+        configure_bar(&bar);
+        self.mp.add(bar)
+    }
+
     pub fn add_spinner(
         &self,
         label: &str,
@@ -540,5 +551,15 @@ mod tests {
     #[test]
     fn make_bytes_bar_style_is_valid() {
         let _ = make_bytes_bar_style("test", ProgressBarColor::Blue);
+    }
+
+    #[test]
+    fn add_existing_bar_attaches_to_multi_progress() {
+        let tracker = MultitaskProgress::new();
+        let bar = ProgressBar::new(100);
+        bar.set_style(make_bytes_bar_style("bytes", ProgressBarColor::Green));
+        let attached = tracker.add_existing_bar(bar.clone());
+        attached.inc(50);
+        assert_eq!(attached.position(), 50);
     }
 }
