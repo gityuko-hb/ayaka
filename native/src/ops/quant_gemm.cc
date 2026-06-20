@@ -4,6 +4,7 @@
 
 #include "ayaka/check.h"
 #include "gemm/w4a16_gemm.h"
+#include "gemm/w4a16_gemm_marlin.h"
 #include "ops/common.h"
 
 namespace {
@@ -149,4 +150,25 @@ extern "C" AYAKA_API ayaka_status_t inline ayaka_quant_gemm(
   return ayaka::w4a16_gemm_naive(*out, *a, *b_quant, *b_scales, b_mins, bias,
                                  group_size, workspace, workspace_bytes,
                                  stream);
+}
+
+extern "C" AYAKA_API ayaka_status_t ayaka_quant_gemm_marlin(
+    const ayaka_tensor_view_t* out, const ayaka_tensor_view_t* a,
+    const ayaka_tensor_view_t* b_quant, const ayaka_tensor_view_t* b_scales,
+    const ayaka_tensor_view_t* b_mins, const ayaka_tensor_view_t* bias,
+    int32_t group_size, void* workspace, size_t workspace_bytes,
+    ayaka_stream_t stream) {
+  AYAKA_RETURN_IF_ERROR(
+      validate_quant_gemm(out, a, b_quant, b_scales, b_mins, bias, group_size));
+  AYAKA_CHECK(workspace != NULL || workspace_bytes == 0,
+              "quant_gemm_marlin: non-zero workspace_bytes requires a "
+              "workspace pointer");
+  if (ayaka::view_numel(out) == 0) {
+    return ayaka_status_ok();
+  }
+  // w4a16_gemm_marlin enforces SM80+ and the 16-alignment requirements and
+  // returns AYAKA_STATUS_UNSUPPORTED when they are not met.
+  return ayaka::w4a16_gemm_marlin(*out, *a, *b_quant, *b_scales, b_mins, bias,
+                                  group_size, workspace, workspace_bytes,
+                                  stream);
 }

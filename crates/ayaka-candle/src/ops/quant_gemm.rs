@@ -8,7 +8,7 @@
 //! `scale * nibble + min` (when `mins` is present) or `scale * (nibble - 8)`
 //! (symmetric, Q4_0 style).
 
-use candle_core::{Device, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 
 /// Dequantize packed 4-bit weights to a `[N, K]` f32 tensor.
 ///
@@ -109,18 +109,21 @@ pub fn quant_gemm_ref(
     }
 
     let b_quant_f32 = dequantize_weights_ref(b_quant, b_scales, b_mins, n, k, group_size)?;
-    let b = b_quant_f32.to_dtype(a.dtype())?;
-    let mut out = a.matmul(&b.t()?)?;
+    let a_f32 = a.to_dtype(DType::F32)?;
+    let mut out = a_f32.matmul(&b_quant_f32.t()?)?;
     if let Some(bias) = bias {
-        out = out.broadcast_add(&bias.to_dtype(a.dtype())?)?;
+        out = out.broadcast_add(&bias.to_dtype(DType::F32)?)?;
     }
-    Ok(out)
+    out.to_dtype(a.dtype())
 }
 
 /// Quantized linear layer: stores weights as packed 4-bit quants + scales,
 /// dequantizes on-the-fly during GEMM via the W4A16 kernel.
 pub struct QuantLinear {
     /// Packed 4-bit quants `[out_features, in_features/2]` as U8 tensor.
+    /// In cuda builds with 16-aligned shapes this is the Marlin tile layout
+    /// (`ayaka_quant::repack_to_marlin`); otherwise the deinterleaved
+    /// `[N, K/2]` form.
     qweight: Tensor,
     /// Per-group scales `[out_features, in_features/group_size]` as F16 tensor.
     scales: Tensor,
@@ -132,6 +135,10 @@ pub struct QuantLinear {
     in_features: usize,
     out_features: usize,
     group_size: usize,
+    /// When true (cuda build, 16-aligned shapes) `qweight` is in Marlin tile
+    /// layout and `forward` dispatches to the Marlin W4A16 kernel.
+    #[allow(dead_code)]
+    use_marlin: bool,
 }
 
 impl QuantLinear {
@@ -149,8 +156,20 @@ impl QuantLinear {
                 rw.group_size
             );
         }
-        let qweight =
-            Tensor::from_vec(rw.qs.clone(), (rw.out_features, rw.in_features / 2), device)?;
+        #[cfg(feature = "cuda")]
+        let tile_aligned = rw.out_features.is_multiple_of(16) && rw.in_features.is_multiple_of(16);
+        #[cfg(feature = "cuda")]
+        let (qbytes, use_marlin) = if tile_aligned {
+            let marlin = ayaka_quant::repack_to_marlin(rw)
+                .map_err(|e| candle_core::Error::Msg(format!("repack_to_marlin: {e:?}")))?;
+            (marlin.qs, true)
+        } else {
+            (rw.qs.clone(), false)
+        };
+        #[cfg(not(feature = "cuda"))]
+        let (qbytes, use_marlin) = (rw.qs.clone(), false);
+
+        let qweight = Tensor::from_vec(qbytes, (rw.out_features, rw.in_features / 2), device)?;
         let scales = Tensor::from_vec(
             rw.scales.clone(),
             (rw.out_features, rw.in_features / rw.group_size),
@@ -173,6 +192,7 @@ impl QuantLinear {
             in_features: rw.in_features,
             out_features: rw.out_features,
             group_size: rw.group_size,
+            use_marlin,
         })
     }
 
@@ -186,15 +206,27 @@ impl QuantLinear {
         let a = x.reshape((b * s, self.in_features))?;
         #[cfg(feature = "cuda")]
         {
-            let out = quant_gemm_new(
-                &a,
-                &self.qweight,
-                &self.scales,
-                self.mins.as_ref(),
-                self.bias.as_ref(),
-                self.group_size,
-                None,
-            )?;
+            let out = if self.use_marlin {
+                quant_gemm_marlin_new(
+                    &a,
+                    &self.qweight,
+                    &self.scales,
+                    self.mins.as_ref(),
+                    self.bias.as_ref(),
+                    self.group_size,
+                    None,
+                )?
+            } else {
+                quant_gemm_new(
+                    &a,
+                    &self.qweight,
+                    &self.scales,
+                    self.mins.as_ref(),
+                    self.bias.as_ref(),
+                    self.group_size,
+                    None,
+                )?
+            };
             return out.reshape((b, s, self.out_features));
         }
         #[cfg(not(feature = "cuda"))]
@@ -213,7 +245,7 @@ impl QuantLinear {
 }
 
 #[cfg(feature = "cuda")]
-pub use cuda::quant_gemm;
+pub use cuda::{quant_gemm, quant_gemm_marlin};
 
 /// Allocate the `[M, N]` output and run the native W4A16 kernel.
 #[cfg(feature = "cuda")]
@@ -231,6 +263,28 @@ pub fn quant_gemm_new(
     let (n, _k_half) = b_quant.dims2()?;
     let out = Tensor::zeros((m, n), a.dtype(), a.device())?;
     quant_gemm(
+        &out, a, b_quant, b_scales, b_mins, bias, group_size, workspace,
+    )?;
+    Ok(out)
+}
+
+/// Allocate the `[M, N]` output and run the Marlin W4A16 kernel. `b_quant`
+/// must be in Marlin tile layout (`ayaka_quant::repack_to_marlin`).
+#[cfg(feature = "cuda")]
+#[allow(clippy::too_many_arguments)]
+pub fn quant_gemm_marlin_new(
+    a: &Tensor,
+    b_quant: &Tensor,
+    b_scales: &Tensor,
+    b_mins: Option<&Tensor>,
+    bias: Option<&Tensor>,
+    group_size: usize,
+    workspace: Option<&Tensor>,
+) -> Result<Tensor> {
+    let (m, _k) = a.dims2()?;
+    let (n, _k_half) = b_quant.dims2()?;
+    let out = Tensor::zeros((m, n), a.dtype(), a.device())?;
+    cuda::quant_gemm_marlin(
         &out, a, b_quant, b_scales, b_mins, bias, group_size, workspace,
     )?;
     Ok(out)
@@ -254,7 +308,7 @@ mod cuda {
     /// `bias [N]` optional, and `workspace` optional U8 must be contiguous
     /// CUDA tensors on the same device. `out` must not alias any input.
     #[allow(clippy::too_many_arguments)]
-    pub fn quant_gemm(
+    fn check_args(
         out: &Tensor,
         a: &Tensor,
         b_quant: &Tensor,
@@ -263,7 +317,7 @@ mod cuda {
         bias: Option<&Tensor>,
         group_size: usize,
         workspace: Option<&Tensor>,
-    ) -> Result<()> {
+    ) -> Result<DType> {
         let dtype = a.dtype();
         if out.dtype() != dtype {
             candle_core::bail!(
@@ -353,9 +407,46 @@ mod cuda {
                 candle_core::bail!("quant_gemm: workspace must be on a's device");
             }
         }
+        Ok(dtype)
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn quant_gemm(
+        out: &Tensor,
+        a: &Tensor,
+        b_quant: &Tensor,
+        b_scales: &Tensor,
+        b_mins: Option<&Tensor>,
+        bias: Option<&Tensor>,
+        group_size: usize,
+        workspace: Option<&Tensor>,
+    ) -> Result<()> {
+        let dtype = check_args(
+            out, a, b_quant, b_scales, b_mins, bias, group_size, workspace,
+        )?;
         dispatch_float_dtype!(dtype, "quant_gemm", T => launch::<T>(
-            out, a, b_quant, b_scales, b_mins, bias, group_size, workspace
+            out, a, b_quant, b_scales, b_mins, bias, group_size, workspace, false
+        ))
+    }
+
+    /// Marlin-layout W4A16 GEMM: `b_quant` must be in Marlin tile layout
+    /// (`ayaka_quant::repack_to_marlin`); otherwise identical to [`quant_gemm`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn quant_gemm_marlin(
+        out: &Tensor,
+        a: &Tensor,
+        b_quant: &Tensor,
+        b_scales: &Tensor,
+        b_mins: Option<&Tensor>,
+        bias: Option<&Tensor>,
+        group_size: usize,
+        workspace: Option<&Tensor>,
+    ) -> Result<()> {
+        let dtype = check_args(
+            out, a, b_quant, b_scales, b_mins, bias, group_size, workspace,
+        )?;
+        dispatch_float_dtype!(dtype, "quant_gemm_marlin", T => launch::<T>(
+            out, a, b_quant, b_scales, b_mins, bias, group_size, workspace, true
         ))
     }
 
@@ -369,6 +460,7 @@ mod cuda {
         bias: Option<&Tensor>,
         group_size: usize,
         workspace: Option<&Tensor>,
+        marlin: bool,
     ) -> Result<()> {
         let device = a.device();
         let stream = extract::cuda_stream(device)?;
@@ -384,12 +476,12 @@ mod cuda {
         // b_quant is U8, not the float T, so extract it manually with the
         // U8 ayaka dtype (the macro assumes a single typed slice).
         let (bq_storage, bq_layout) = b_quant.storage_and_layout();
-        extract::require_contiguous(&bq_layout, "quant_gemm b_quant")?;
+        extract::require_contiguous(bq_layout, "quant_gemm b_quant")?;
         let bq_slice = extract::cuda_storage(&bq_storage, "quant_gemm b_quant")?
             .as_cuda_slice::<u8>()?
             .slice(bq_layout.start_offset()..);
         let (bq_ptr, _bq_guard) = bq_slice.device_ptr(&stream);
-        let b_quant_view = extract::contiguous_view(&bq_layout, AyakaDType::U8, ordinal, bq_ptr);
+        let b_quant_view = extract::contiguous_view(bq_layout, AyakaDType::U8, ordinal, bq_ptr);
 
         // Optional b_mins (float T).
         let b_mins_bind = b_mins.map(|t| t.storage_and_layout());
@@ -448,21 +540,38 @@ mod cuda {
         // workspace) describes a live, contiguous CUDA allocation whose
         // storage read-guards are held across the call; the launch goes on
         // candle's stream for this device, ordering it after pending work.
-        unsafe {
-            ayaka_kernel_api::quant_gemm(
-                &out_view,
-                &a_view,
-                &b_quant_view,
-                &b_scales_view,
-                b_mins_view.as_ref(),
-                bias_view.as_ref(),
-                group_size as i32,
-                ws_ptr,
-                ws_bytes,
-                raw_stream,
-            )
-        }
-        .map_err(candle_core::Error::wrap)?;
+        let res = if marlin {
+            unsafe {
+                ayaka_kernel_api::quant_gemm_marlin(
+                    &out_view,
+                    &a_view,
+                    &b_quant_view,
+                    &b_scales_view,
+                    b_mins_view.as_ref(),
+                    bias_view.as_ref(),
+                    group_size as i32,
+                    ws_ptr,
+                    ws_bytes,
+                    raw_stream,
+                )
+            }
+        } else {
+            unsafe {
+                ayaka_kernel_api::quant_gemm(
+                    &out_view,
+                    &a_view,
+                    &b_quant_view,
+                    &b_scales_view,
+                    b_mins_view.as_ref(),
+                    bias_view.as_ref(),
+                    group_size as i32,
+                    ws_ptr,
+                    ws_bytes,
+                    raw_stream,
+                )
+            }
+        };
+        res.map_err(candle_core::Error::wrap)?;
         Ok(())
     }
 }

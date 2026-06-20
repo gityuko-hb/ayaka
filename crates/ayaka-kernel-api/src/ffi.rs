@@ -142,6 +142,56 @@ unsafe extern "C" {
         stream: AyakaStream,
     ) -> AyakaStatus;
 
+    /// `ayaka_quant_gemm_marlin` in `native/include/ayaka/ops/quant_gemm.h`.
+    /// `b_quant` is Marlin tile layout. `b_mins` and `bias` are nullable.
+    pub fn ayaka_quant_gemm_marlin(
+        out: *const AyakaTensorView,
+        a: *const AyakaTensorView,
+        b_quant: *const AyakaTensorView,
+        b_scales: *const AyakaTensorView,
+        b_mins: *const AyakaTensorView,
+        bias: *const AyakaTensorView,
+        group_size: i32,
+        workspace: *mut c_void,
+        workspace_bytes: usize,
+        stream: AyakaStream,
+    ) -> AyakaStatus;
+
+    /// `ayaka_paged_attention_decode` in `native/include/ayaka/ops/paged_attention.h`.
+    /// `layout` is an `ayaka_core::layout::KvLayout` discriminant.
+    pub fn ayaka_paged_attention_decode(
+        out: *const AyakaTensorView,
+        query: *const AyakaTensorView,
+        kv_cache: *const AyakaTensorView,
+        block_tables: *const AyakaTensorView,
+        seq_lens: *const AyakaTensorView,
+        scale: f32,
+        layout: i32,
+        stream: AyakaStream,
+    ) -> AyakaStatus;
+
+    /// `ayaka_paged_attention_decode_v2` in
+    /// `native/include/ayaka/ops/paged_attention.h`. `layout` is an
+    /// `ayaka_core::layout::KvLayout` discriminant.
+    pub fn ayaka_paged_attention_decode_v2(
+        out: *const AyakaTensorView,
+        query: *const AyakaTensorView,
+        kv_cache: *const AyakaTensorView,
+        block_tables: *const AyakaTensorView,
+        seq_lens: *const AyakaTensorView,
+        exp_sums: *const AyakaTensorView,
+        max_logits: *const AyakaTensorView,
+        tmp_out: *const AyakaTensorView,
+        scale: f32,
+        layout: i32,
+        stream: AyakaStream,
+    ) -> AyakaStatus;
+
+    /// `ayaka_paged_attention_partition_size` in
+    /// `native/include/ayaka/ops/paged_attention.h`. Tokens per split-KV
+    /// partition (a native constant); returns >= 1.
+    pub fn ayaka_paged_attention_partition_size() -> i32;
+
     /// `ayaka_mem_device_alloc` in `native/include/ayaka/memory.h`.
     pub fn ayaka_mem_device_alloc(
         out: *mut *mut c_void,

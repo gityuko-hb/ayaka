@@ -24,7 +24,7 @@ pub use paged_attention::{
 pub use paged_attention::{paged_attention_decode_partitioned_ref, paged_attention_decode_ref};
 pub use quant_gemm::{QuantLinear, quant_gemm_ref};
 #[cfg(feature = "cuda")]
-pub use quant_gemm::{quant_gemm, quant_gemm_new};
+pub use quant_gemm::{quant_gemm, quant_gemm_marlin, quant_gemm_marlin_new, quant_gemm_new};
 pub use rmsnorm::rmsnorm_ref;
 #[cfg(feature = "cuda")]
 pub use rmsnorm::{rmsnorm, rmsnorm_new};

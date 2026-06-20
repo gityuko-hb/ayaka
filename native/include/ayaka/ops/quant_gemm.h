@@ -48,6 +48,19 @@ AYAKA_EXTERN_C AYAKA_API AYAKA_NODISCARD ayaka_status_t ayaka_quant_gemm(
     int32_t group_size, void* workspace, size_t workspace_bytes,
     ayaka_stream_t stream);
 
+/*
+ * Marlin-layout W4A16 GEMM: identical contract to ayaka_quant_gemm, except
+ * `b_quant` holds the Marlin tile layout [N/16, K/16, 16, 8] (uploaded as a
+ * [N, K/2] U8 tensor). Requires SM80+, N and K multiples of 16, and
+ * group_size a multiple of 16; returns AYAKA_STATUS_UNSUPPORTED otherwise.
+ */
+AYAKA_EXTERN_C AYAKA_API AYAKA_NODISCARD ayaka_status_t ayaka_quant_gemm_marlin(
+    const ayaka_tensor_view_t* out, const ayaka_tensor_view_t* a,
+    const ayaka_tensor_view_t* b_quant, const ayaka_tensor_view_t* b_scales,
+    const ayaka_tensor_view_t* b_mins, const ayaka_tensor_view_t* bias,
+    int32_t group_size, void* workspace, size_t workspace_bytes,
+    ayaka_stream_t stream);
+
 #ifdef __cplusplus
 }
 #endif

@@ -251,7 +251,6 @@ mod cuda {
     /// `[num_seqs, max_num_blocks]` and `seq_lens` is i64 `[num_seqs]`, all on
     /// the same CUDA device. `num_heads` must be a multiple of `H_kv`. Only NHD
     /// layout is implemented.
-
     #[allow(clippy::too_many_arguments)]
     pub fn paged_attention_decode(
         out: &Tensor,

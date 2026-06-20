@@ -23,6 +23,7 @@ set(AYAKA_CUDA_HOST_SOURCES
     src/ops/append_kv.cc
     src/ops/fused_add_rmsnorm.cc
     src/ops/gemm.cc
+    src/ops/paged_attention.cc
     src/ops/quant_gemm.cc
     src/ops/rmsnorm.cc
     src/ops/rope.cc
@@ -31,6 +32,8 @@ set(AYAKA_CUDA_HOST_SOURCES
 
 set(AYAKA_CUDA_SOURCES
     csrc/activation/swiglu.cu
+    csrc/attention/paged_attention.cu
+    csrc/attention/paged_attention_v2.cu
     csrc/gemm/w4a16_gemm.cu
     csrc/gemm/w4a16_gemm_marlin.cu
     csrc/kv_cache/append_kv.cu
@@ -69,6 +72,7 @@ set(AYAKA_OPS_HEADERS
     include/ayaka/ops/append_kv.h
     include/ayaka/ops/fused_add_rmsnorm.h
     include/ayaka/ops/gemm.h
+    include/ayaka/ops/paged_attention.h
     include/ayaka/ops/quant_gemm.h
     include/ayaka/ops/rmsnorm.h
     include/ayaka/ops/rope.h
