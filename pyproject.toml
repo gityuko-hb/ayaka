@@ -1,0 +1,131 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ayaka"
+dynamic = ["version"]  # single source of truth: python/ayaka/__version__.py
+description = "High-performance LLM inference engine with CUDA/C++ native extensions"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { file = "./LICENSE" }
+dependencies = []
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/gityuko-hb/ayaka"
+Issues = "https://github.com/gityuko-hb/ayaka/issues"
+
+[project.optional-dependencies]
+# PyTorch ships one build per accelerator on separate indexes, so the accelerator is an extra:
+#   uv sync --extra cpu     CPU build (CI, machines without a GPU, macOS)
+#   uv sync --extra cu130   CUDA 13.0 build (Linux and Windows with an NVIDIA GPU)
+# `uv sync` with no extra installs no torch at all, which keeps the lint/build jobs light.
+# The upper bound keeps both extras on the same torch version; widen it on purpose, not by accident.
+cpu = ["torch>=2.14,<2.15"]
+cu130 = ["torch>=2.14,<2.15"]
+
+[tool.hatch.version]
+path = "python/ayaka/__version__.py"
+
+[tool.hatch.build.targets.wheel]
+# The package lives in python/ayaka. Mapping a differently named folder to "ayaka" breaks editable installs.
+packages = ["python/ayaka"]
+
+[tool.ruff]
+line-length = 100
+src = ["python", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "N",       # pep8-naming
+    "UP",      # pyupgrade
+    "B",       # bugbear
+    "A",       # shadowed builtins
+    "C4",      # comprehensions
+    "SIM",     # simplify
+    "PT",      # pytest style
+    "PTH",     # pathlib
+    "RUF",     # ruff-specific
+    "S",       # bandit
+    "TC",      # type-checking imports
+    "ASYNC",   # async pitfalls
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is how pytest tests are written
+
+[tool.pyright]
+include = ["python", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+strict = ["python"]
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+xfail_strict = true
+filterwarnings = ["error"]
+markers = [
+    "unit: fast and isolated; no network, no real filesystem beyond tmp_path",
+    "integration: touches the filesystem, network or other processes",
+    "gpu: needs a CUDA GPU; hosted CI skips it with -m 'not gpu'",
+]
+
+[tool.coverage.run]
+source = ["ayaka"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[dependency-groups]
+dev = [
+    { include-group = "lint" },
+    { include-group = "test" },
+    "pre-commit>=4.7.0",
+]
+lint = [
+    "pyright>=1.1.414",
+    "ruff>=0.17.4",
+]
+test = [
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.uv]
+# An environment gets one torch build, never both.
+conflicts = [[{ extra = "cpu" }, { extra = "cu130" }]]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+
+# explicit = true: these indexes are used only for the packages pinned to them above.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

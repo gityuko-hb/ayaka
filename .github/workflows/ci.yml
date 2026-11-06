@@ -1,0 +1,128 @@
+name: CI
+
+# Hosted runners have no GPU: GPU tests are marked `gpu` and skipped here (-m "not gpu").
+# Run them on your own machine and report them under "Validation" in the pull request.
+#
+# Caching: only the uv cache is cached (keyed on uv.lock). Pyright ships bundled in its wheel and uses the
+# runner's Node.js, and ruff runs in milliseconds, so neither needs a cache of its own.
+#
+# PyTorch: lint and test install the CPU build (`--extra cpu`); hosted runners have no GPU, and the CPU wheel
+# avoids the ~15 nvidia-* packages the default Linux build pulls in. build and workflows install no torch.
+# The uv cache is not pruned in those two jobs: pruning drops prebuilt wheels, so torch would be downloaded
+# from download.pytorch.org on every run. This is a reasoned default, not a measurement: compare the
+# "Install" step time with prune-cache true/false on a real run before keeping it.
+# Actions are pinned to a full commit SHA; dependabot keeps the SHA and the version comment up to date.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded runs on a PR, but never cancel a run on main.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_LOCKED: "1"  # fail if uv.lock is out of date instead of silently re-resolving
+  UV_NO_PROGRESS: "1"
+  FORCE_COLOR: "1"
+  PYTEST_ADDOPTS: "--color=yes"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock  # not pyproject.toml: editing tool settings must not bust the cache
+          cache-suffix: lint
+          prune-cache: false  # keep the prebuilt torch wheel; see the note at the top
+          # PRs restore the cache that main saved but do not save their own, which keeps the 10 GB repo quota free.
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+      - run: uv sync --extra cpu
+      - run: uv run ruff check . --output-format=github
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: test
+          prune-cache: false  # keep the prebuilt torch wheel; see the note at the top
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+      - run: uv sync --extra cpu
+      - run: uv run pytest -m "not gpu" --cov --cov-report=term-missing
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          # This job produces the artifacts that will become releases: never restore a cache into it.
+          enable-cache: false
+      - run: uv build
+
+  # Lints the workflows themselves (syntax, expressions, and security issues such as template injection).
+  workflows:
+    name: workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - run: uvx --from actionlint-py==1.7.12.25 actionlint
+      - run: uvx zizmor@1.32.0 --offline --color never .github
+
+  # One stable name for branch protection. Require only "CI OK": adding or renaming a matrix entry above then
+  # never needs a settings change, and a skipped or cancelled job cannot be mistaken for a pass.
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [lint, test, build, workflows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check the results of the required jobs
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::A required job finished as '$result', not 'success'."
+              exit 1
+            fi
+          done
