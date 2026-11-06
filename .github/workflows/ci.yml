@@ -55,14 +55,12 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pyright
 
+  # Ubuntu only for now. Add windows-latest / macos-latest back as a matrix once there is code that behaves
+  # differently per OS (paths, native builds); they cost minutes and cache space for no signal today.
   test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: test
+    runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -32,7 +32,7 @@ uv run pytest -m "not gpu"     # what CI runs
 uv build                       # build the sdist and wheel
 ```
 
-CI runs the same commands on Ubuntu, Windows and macOS. All of them must pass before review.
+CI runs the same commands on Ubuntu only for now. All of them must pass before review.
 
 ## Conventions
 
