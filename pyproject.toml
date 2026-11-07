@@ -104,7 +104,7 @@ xfail_strict = true
 filterwarnings = ["error"]
 markers = [
     "unit: fast and isolated; no network, no real filesystem beyond tmp_path",
-    "integration: touches the filesystem, network or other processes",
+    "integration: touches the filesystem, network or other processes; the tokenizer ones also need the hf and tiktoken extras (CI job adapters)",
     "gpu: needs a CUDA GPU; hosted CI skips it with -m 'not gpu'",
 ]
 

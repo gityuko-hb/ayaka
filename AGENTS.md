@@ -29,7 +29,8 @@ uv sync --extra cpu --extra hf --extra tiktoken   # add the tokenizer adapters (
 uv run ruff check .            # lint
 uv run ruff format .           # format
 uv run pyright                 # types: strict in python/, standard in tests/
-uv run pytest -m "not gpu"     # what CI runs
+uv run pytest -m "not gpu and not integration"   # the unit tests: what the `test` job runs
+uv run pytest -m integration  # real tokenizers + worker processes; needs the hf and tiktoken extras (CI job `adapters`)
 uv build                       # build the sdist and wheel
 ```
 

@@ -48,7 +48,8 @@ Placeholders below are not results: replace them with what you observed, or writ
 - [ ] I read my full diff, including generated files, and can explain every changed line.
 - [ ] `uv run ruff check .` and `uv run ruff format --check .` pass.
 - [ ] `uv run pyright` passes.
-- [ ] `uv run pytest -m "not gpu"` passes, and I added a test that fails without this change.
+- [ ] `uv run pytest -m "not gpu and not integration"` passes, and I added a test that fails without this change.
+- [ ] If the change touches the tokenizer adapters, the process pool or CI: `uv sync --extra hf --extra tiktoken`, then `uv run pytest -m integration` passes.
 - [ ] I updated the documentation where it changes what a user or developer needs to know.
 
 ## Limits
