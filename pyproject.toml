@@ -9,7 +9,9 @@ description = "High-performance LLM inference engine with CUDA/C++ native extens
 readme = "README.md"
 requires-python = ">=3.13"
 license = { file = "./LICENSE" }
-dependencies = []
+dependencies = [
+    "numpy>=2.5.4",
+]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: GPU :: NVIDIA CUDA",
