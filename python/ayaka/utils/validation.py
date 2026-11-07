@@ -4,6 +4,8 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import cast
 
+__all__ = ["require_frozen", "require_int", "require_text"]
+
 
 def require_int(value: int, name: str, *, minimum: int = 0) -> None:
     """Reject booleans, non-integers and values below the inclusive minimum."""

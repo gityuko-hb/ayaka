@@ -74,6 +74,7 @@ jobs:
           save-cache: ${{ github.ref == 'refs/heads/main' }}
       - run: uv sync --extra cpu
       - run: uv run pytest -m "not gpu" --cov --cov-report=term-missing
+      - run: uv run pytest --doctest-modules python/ayaka
 
   build:
     name: build
