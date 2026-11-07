@@ -3,6 +3,10 @@ name: CI
 # Hosted runners have no GPU: GPU tests are marked `gpu` and skipped here (-m "not gpu").
 # Run them on your own machine and report them under "Validation" in the pull request.
 #
+# Two test jobs: `test` runs the unit tests with the CPU torch build; `adapters` runs the integration tests
+# (real HuggingFace and tiktoken tokenizers, spawned worker processes) with the optional extras and no torch.
+# Keep them apart: the integration tests need packages that the unit tests must work without.
+#
 # Caching: only the uv cache is cached (keyed on uv.lock). Pyright ships bundled in its wheel and uses the
 # runner's Node.js, and ruff runs in milliseconds, so neither needs a cache of its own.
 #
@@ -73,8 +77,27 @@ jobs:
           prune-cache: false  # keep the prebuilt torch wheel; see the note at the top
           save-cache: ${{ github.ref == 'refs/heads/main' }}
       - run: uv sync --extra cpu
-      - run: uv run pytest -m "not gpu" --cov --cov-report=term-missing
+      - run: uv run pytest -m "not gpu and not integration" --cov --cov-report=term-missing
       - run: uv run pytest --doctest-modules python/ayaka
+
+  # Integration tests: they load real tokenizers built from scratch (no download) and spawn worker processes.
+  # No torch is installed, so this job is light; the extras come from uv.lock like everything else.
+  adapters:
+    name: adapters
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: adapters
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+      - run: uv sync --extra hf --extra tiktoken
+      - run: uv run pytest -m integration
 
   build:
     name: build
@@ -110,7 +133,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [lint, test, build, workflows]
+    needs: [lint, test, adapters, build, workflows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
