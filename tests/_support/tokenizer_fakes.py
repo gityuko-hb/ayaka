@@ -13,8 +13,10 @@ from __future__ import annotations
 import codecs
 from typing import TYPE_CHECKING, Any
 
+from ayaka.configs.tokenizer import TokenizerConfig
 from ayaka.tokenizers.contracts import LoadedTokenizer, TokenizerCapabilities
 from ayaka.tokenizers.decoding.byte import verify_byte_table
+from ayaka.tokenizers.service import TokenizerService
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -211,3 +213,26 @@ def loaded_for(
             byte_decode=byte,
         ),
     )
+
+
+def _service(tokenizer: FakeTokenizer) -> TokenizerService:
+    return TokenizerService(
+        TokenizerConfig("fake", mode="hf"),
+        max_model_len=64,
+        model_vocab_size=MODEL_VOCAB,
+        loaded=loaded_for(tokenizer),
+    )
+
+
+# Zero-argument factories for ProcessTokenizerPool: a spawned child imports them by name,
+# so they must stay importable module-level functions.
+
+
+def make_service() -> TokenizerService:
+    """A service over the plain fake (the stream decoding path)."""
+    return _service(FakeTokenizer())
+
+
+def make_rendered_service() -> TokenizerService:
+    """A service whose tokenizer also turns control tokens in rendered prompts into ids."""
+    return _service(RenderedFake())
