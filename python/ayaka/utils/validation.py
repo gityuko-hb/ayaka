@@ -4,7 +4,13 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from typing import cast
 
-__all__ = ["require_frozen", "require_int", "require_text"]
+__all__ = ["require_bool", "require_frozen", "require_int", "require_text"]
+
+
+def require_bool(value: bool, name: str) -> None:
+    """Reject truthy substitutes at public boundaries."""
+    if type(value) is not bool:
+        raise TypeError(f"{name} must be bool")
 
 
 def require_int(value: int, name: str, *, minimum: int = 0) -> None:

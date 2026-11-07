@@ -34,6 +34,20 @@ Issues = "https://github.com/gityuko-hb/ayaka/issues"
 # The upper bound keeps both extras on the same torch version; widen it on purpose, not by accident.
 cpu = ["torch>=2.14,<2.15"]
 cu130 = ["torch>=2.14,<2.15"]
+# Tokenizer adapters. Both are imported lazily, so `import ayaka` and the tests need neither;
+# loading an adapter without its extra raises a CapabilityError that names the missing package.
+#   uv sync --extra hf        HuggingFace tokenizers (ayaka.tokenizers.adapters.hf)
+#   uv sync --extra tiktoken  tiktoken vocabularies + sandboxed Jinja chat templates
+# transformers is capped below 6 because it was only verified on 5.x; widen it on purpose.
+hf = [
+    "huggingface-hub>=2.4.0",
+    "tokenizers>=0.23.3",
+    "transformers>=5.22,<6",
+]
+tiktoken = [
+    "jinja2>=3.1.6",
+    "tiktoken>=0.14.0",
+]
 
 [tool.hatch.version]
 path = "python/ayaka/__version__.py"
@@ -44,7 +58,7 @@ packages = ["python/ayaka"]
 
 [tool.ruff]
 line-length = 100
-src = ["python", "tests"]
+src = ["python", "tests", "tests/_support"]
 
 [tool.ruff.lint]
 select = [
@@ -66,7 +80,11 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert is how pytest tests are written
+"tests/**" = [
+    "S101",  # assert is how pytest tests are written
+    "S105",  # "password" false positives on names like special_token_policy
+    "S106",
+]
 
 [tool.pyright]
 include = ["python", "tests"]
@@ -75,10 +93,12 @@ typeCheckingMode = "standard"
 strict = ["python"]
 venvPath = "."
 venv = ".venv"
+extraPaths = ["tests/_support"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+pythonpath = ["tests/_support"]  # shared test doubles, importable as plain modules
 addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
 xfail_strict = true
 filterwarnings = ["error"]
