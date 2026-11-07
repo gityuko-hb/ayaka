@@ -31,6 +31,7 @@ from ayaka.tokenizers.decoding.incremental import (
 from ayaka.tokenizers.errors import SpecialTokenInContent
 from ayaka.tokenizers.factory import DefaultTokenizerFactory
 from ayaka.tokenizers.service import TokenizerService
+from ayaka.utils.hf_utils import optional_file
 from real_tokenizers import CHAT_TEMPLATE, CHATML_PREFIX, FORGED, hf_config
 
 if TYPE_CHECKING:
@@ -110,13 +111,51 @@ class TestLoading:
         rendered = tok.apply_chat_template([{"role": "user", "content": "hi"}])
         assert rendered.startswith(CHATML_PREFIX)
 
-    def test_offline_never_reaches_the_network(self, network_attempts: list[str]) -> None:
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("cold_hub_cache")
+class TestOffline:
+    """``offline=True`` must not touch the network, even when the Hub's own cache is cold."""
+
+    def test_loading_an_uncached_repo_makes_no_request(self, network_attempts: list[str]) -> None:
         config = hf_config("definitely-not/cached-anywhere")
 
         with pytest.raises(OSError):  # noqa: PT011  # the library's own "not found" error
             DefaultTokenizerFactory.from_config(config)
 
         assert network_attempts == []
+
+    def test_looking_up_a_sidecar_file_makes_no_request(self, network_attempts: list[str]) -> None:
+        found = optional_file(
+            "definitely-not/cached-anywhere",
+            "tokenizer.json",
+            revision=None,
+            cache_dir=None,
+            offline=True,
+        )
+
+        assert found is None
+        assert network_attempts == []
+
+    def test_control_the_same_load_online_does_try_the_network(
+        self, network_attempts: list[str]
+    ) -> None:
+        # If this ever fails, the cold-cache setup no longer provokes a request and the
+        # offline tests above prove nothing.
+        config = TokenizerConfig("definitely-not/cached-anywhere", mode="hf")
+
+        with pytest.raises(OSError):  # noqa: PT011
+            DefaultTokenizerFactory.from_config(config)
+
+        assert any("huggingface.co" in attempt for attempt in network_attempts)
+
+    def test_the_hub_flag_is_put_back(self, hf_dir: Path) -> None:
+        constants = import_module("huggingface_hub.constants")
+        before = constants.HF_HUB_OFFLINE
+
+        HfTokenizer.from_config(hf_config(hf_dir))
+
+        assert before == constants.HF_HUB_OFFLINE
 
 
 @pytest.mark.integration

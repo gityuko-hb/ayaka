@@ -8,6 +8,7 @@ never reach the network, which an autouse fixture enforces.
 from __future__ import annotations
 
 import socket
+from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -50,6 +51,23 @@ def network_attempts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
     return attempts
+
+
+@pytest.fixture
+def cold_hub_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Make huggingface_hub behave as if it had never run on this machine.
+
+    It caches an "agent registry" fetched from the Hub for a day on disk and for the life
+    of the process. On a developer machine that cache is usually warm, so an offline load
+    that still tried to reach the Hub passed unnoticed there and failed only on fresh CI
+    runners. Tests about network use must start from a cold cache to mean anything.
+    """
+    constants = import_module("huggingface_hub.constants")
+    detect_agent = import_module("huggingface_hub.utils._detect_agent")
+    monkeypatch.setattr(
+        constants, "AGENT_HARNESSES_PATH", str(tmp_path / "agents.json"), raising=False
+    )
+    monkeypatch.setattr(detect_agent, "_registry", None, raising=False)
 
 
 @pytest.fixture(scope="session")
