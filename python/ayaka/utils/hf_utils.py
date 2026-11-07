@@ -13,23 +13,90 @@ corrupt JSON) as something to report, not to hide::
 Lookup is local-first: a directory is read in place; a hub id goes through
 ``huggingface_hub`` and honours ``revision``, ``cache_dir`` and ``offline``.
 ``huggingface_hub`` is imported lazily, so importing this module needs no extras.
+
+"Offline" has to be enforced with :func:`hub_offline`, not only with the
+``local_files_only`` argument: ``hf_hub_download`` builds its request headers before it
+looks at that argument, and building them can fetch an agent registry from the Hub.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Generator, Mapping
 
-__all__ = ["optional_file", "parse_eos_token_ids", "read_json"]
+__all__ = ["hub_offline", "optional_file", "parse_eos_token_ids", "read_json"]
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _OfflineGate:
+    """Counts overlapping :func:`hub_offline` blocks so the flag is restored exactly once."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._depth = 0
+        self._previous = False
+
+    def enter(self, constants: Any) -> None:
+        with self._lock:
+            if self._depth == 0:
+                self._previous = bool(constants.HF_HUB_OFFLINE)
+                constants.HF_HUB_OFFLINE = True
+            self._depth += 1
+
+    def exit(self, constants: Any) -> None:
+        with self._lock:
+            self._depth -= 1
+            if self._depth == 0:
+                constants.HF_HUB_OFFLINE = self._previous
+
+
+_GATE = _OfflineGate()
+
+
+@contextmanager
+def hub_offline(enabled: bool = True) -> Generator[None]:
+    """Make ``huggingface_hub`` (and ``transformers`` through it) offline inside the block.
+
+    Passing ``local_files_only=True`` is not enough: before ``hf_hub_download`` checks it,
+    it builds request headers, and that can fetch an agent registry from the Hub (at most
+    once a day, cached on disk). On a machine without that cache, such as CI or a fresh
+    container, an "offline" load therefore tried to resolve ``huggingface.co``. The Hub's
+    own offline switch, ``constants.HF_HUB_OFFLINE``, is the one that stops every request,
+    so this flips it for the duration of the block and puts it back afterwards.
+
+    The flag is process-wide: while a block runs, other threads in this process also see
+    the Hub as offline. Blocks may nest and overlap; the flag is restored when the last
+    one ends. Setting the environment variable ``HF_HUB_OFFLINE=1`` before the process
+    starts is the stronger, global alternative.
+
+    Args:
+        enabled: With ``False`` the block runs unchanged and ``huggingface_hub`` is not
+            imported, so callers can pass their ``offline`` setting straight through.
+
+    Raises:
+        CapabilityError: If ``enabled`` and ``huggingface_hub`` is not installed.
+    """
+    if not enabled:
+        yield
+        return
+    constants: Any = require_module(
+        "huggingface_hub.constants", capability="tokenizer.hf", remedy="pip install huggingface_hub"
+    )
+    _GATE.enter(constants)
+    try:
+        yield
+    finally:
+        _GATE.exit(constants)
 
 
 def optional_file(
@@ -47,7 +114,8 @@ def optional_file(
         filename: File name inside the directory or repository.
         revision: Hub revision; ignored for a local directory.
         cache_dir: Hub download directory; ignored for a local directory.
-        offline: Never touch the network; use only what is already cached.
+        offline: Never touch the network; use only what is already cached. Enforced with
+            :func:`hub_offline`, so it holds even when the Hub's own cache is cold.
 
     Returns:
         The path of the file, or ``None`` when it is absent (or, offline, uncached).
@@ -65,9 +133,10 @@ def optional_file(
     )
     errors = require_module("huggingface_hub.errors", capability="tokenizer.hf")
     try:
-        found = hub.hf_hub_download(
-            source, filename, revision=revision, cache_dir=cache_dir, local_files_only=offline
-        )
+        with hub_offline(offline):
+            found = hub.hf_hub_download(
+                source, filename, revision=revision, cache_dir=cache_dir, local_files_only=offline
+            )
     except (errors.EntryNotFoundError, errors.LocalEntryNotFoundError):
         return None
     return Path(cast("str", found))

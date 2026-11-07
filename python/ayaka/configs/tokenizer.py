@@ -90,7 +90,10 @@ class TokenizerConfig(ConfigMixin):
         revision: Hub branch, tag or commit to load, or ``None`` for the default.
         trust_remote_code: Allow Python code shipped with the tokenizer to run.
         download_dir: Hub download directory, or ``None`` for the default cache.
-        offline: Never touch the network; resolve from the local cache only.
+        offline: Never touch the network; resolve from the local cache only. The HF adapter
+            enforces this with :func:`ayaka.utils.hf_utils.hub_offline`, because passing
+            ``local_files_only`` alone still let ``huggingface_hub`` request an agent
+            registry from the Hub on a machine with a cold cache.
         truncation_side: Which end of an over-long prompt is dropped.
         special_token_policy: How chat content that contains a literal special token
             is handled, for every adapter. Defaults to ``"reject"``. See

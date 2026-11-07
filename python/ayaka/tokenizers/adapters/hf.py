@@ -30,7 +30,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Any, cast
 
 from ayaka.tokenizers.decoding.byte import verify_byte_table
-from ayaka.utils.hf_utils import optional_file, parse_eos_token_ids, read_json
+from ayaka.utils.hf_utils import hub_offline, optional_file, parse_eos_token_ids, read_json
 from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
@@ -184,6 +184,9 @@ class HfTokenizer:
         ``tokenizer_config.json``, a chat template stored in ``chat_template.json``
         and extra stop ids from ``generation_config.json``.
 
+        With ``config.offline`` the load makes no network request at all, even on a machine
+        whose Hub cache is empty (see :func:`ayaka.utils.hf_utils.hub_offline`).
+
         Raises:
             ValueError: For token-ID-only mode or a mode this adapter does not handle,
                 or if ``hf`` was requested and only a slow tokenizer exists.
@@ -197,14 +200,17 @@ class HfTokenizer:
             "transformers", capability="tokenizer.hf", remedy="pip install transformers"
         )
         source = str(config.tokenizer)
-        tok = transformers.AutoTokenizer.from_pretrained(
-            source,
-            revision=config.revision,
-            trust_remote_code=config.trust_remote_code,
-            cache_dir=config.download_dir,
-            use_fast=config.mode != "slow",
-            local_files_only=config.offline,
-        )
+        # ``local_files_only`` alone still lets huggingface_hub fetch an agent registry from the
+        # Hub on a machine without its cache; ``hub_offline`` stops every request.
+        with hub_offline(config.offline):
+            tok = transformers.AutoTokenizer.from_pretrained(
+                source,
+                revision=config.revision,
+                trust_remote_code=config.trust_remote_code,
+                cache_dir=config.download_dir,
+                use_fast=config.mode != "slow",
+                local_files_only=config.offline,
+            )
 
         def find(filename: str) -> Any:
             return optional_file(

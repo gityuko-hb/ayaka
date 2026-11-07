@@ -12,7 +12,7 @@ Requires [uv](https://docs.astral.sh/uv/).
 git clone https://github.com/gityuko-hb/ayaka.git
 cd ayaka
 uv sync --extra cpu        # or --extra cu130 with an NVIDIA GPU
-uv run pytest -m "not gpu"
+uv run pytest -m "not gpu and not integration"
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks, the title convention and what a good pull request

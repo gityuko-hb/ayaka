@@ -26,7 +26,8 @@ uv run pre-commit install            # optional: run the checks below on every c
 uv run ruff check .                  # lint
 uv run ruff format --check .         # formatting (drop --check to apply it)
 uv run pyright                       # types (strict for python/, standard for tests/)
-uv run pytest -m "not gpu"           # tests that run anywhere
+uv run pytest -m "not gpu and not integration"   # unit tests that run anywhere (CI job `test`)
+uv run pytest -m integration         # needs `uv sync --extra hf --extra tiktoken` (CI job `adapters`)
 uv run pytest -m gpu                 # tests that need a CUDA GPU (CI does not run these)
 ```
 
