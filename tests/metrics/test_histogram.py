@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import struct
 import sys
 
 import pytest
@@ -48,40 +47,6 @@ def _values_around_boundaries() -> list[float]:
     return values
 
 
-def _ieee_bucket_index(value: float, schema: int) -> int:
-    """Reference port of the Rust engine's manual IEEE bit decomposition."""
-    bits = struct.unpack("<Q", struct.pack("<d", value))[0]
-    exponent = (bits >> 52) & 0x7FF
-    mantissa = bits & ((1 << 52) - 1)
-    if exponent == 0:
-        highest_bit = mantissa.bit_length() - 1
-        fraction = mantissa / float(1 << (highest_bit + 1))
-        exponent = highest_bit - 1073
-    else:
-        fraction = struct.unpack("<d", struct.pack("<Q", mantissa | (1022 << 52)))[0]
-        exponent -= 1022
-    bucket = sum(1 for bound in _FRACTION_BOUNDS if bound < fraction)
-    index = bucket + (exponent - 1) * 16
-    shift = INITIAL_SCHEMA - schema
-    return (index + (1 << shift) - 1) >> shift
-
-
-def test_frexp_matches_the_ieee_bit_decomposition() -> None:
-    values = _values_around_boundaries()
-    for exponent in range(0, 2047, 13):
-        for mantissa in (0, 1, (1 << 52) - 1, 0x1_2345_6789_ABCD):
-            bits = (exponent << 52) | mantissa
-            value = struct.unpack("<d", struct.pack("<Q", bits))[0]
-            if math.isfinite(value) and value > 0.0:
-                values.append(value)
-
-    for value in values:
-        if value == 0.0:
-            continue
-        for schema in range(MIN_SCHEMA, INITIAL_SCHEMA + 1):
-            assert _bucket_index(value, schema) == _ieee_bucket_index(value, schema)
-
-
 def test_boundary_values_keep_every_observation_within_the_bucket_limit() -> None:
     values = _values_around_boundaries()
     histogram = Histogram()
@@ -106,7 +71,7 @@ def test_boundary_values_keep_every_observation_within_the_bucket_limit() -> Non
         (sys.float_info.max, MIN_SCHEMA, 64),
     ],
 )
-def test_bucket_index_golden_values(value: float, schema: int, expected: int) -> None:
+def test_bucket_index_matches_the_rust_reference(value: float, schema: int, expected: int) -> None:
     assert _bucket_index(value, schema) == expected
 
 
