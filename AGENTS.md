@@ -25,6 +25,7 @@ Use `uv` for everything; do not call `pip` or activate the venv by hand.
 ```sh
 uv sync --extra cpu            # install the project, dev tools and CPU PyTorch (what CI uses)
 uv sync --extra cu130          # ...or CUDA 13.0 PyTorch on a machine with an NVIDIA GPU (not both)
+uv sync --extra cpu --extra hf --extra tiktoken   # add the tokenizer adapters (optional; the tests do not need them)
 uv run ruff check .            # lint
 uv run ruff format .           # format
 uv run pyright                 # types: strict in python/, standard in tests/
@@ -46,6 +47,9 @@ CI runs the same commands on Ubuntu only for now. All of them must pass before r
   its own PyTorch index through `[tool.uv.sources]`. The two cannot be installed together, and a plain `uv sync`
   installs no torch. Do not add `torch` to `[project].dependencies`: that would make `uv.lock` pull the CUDA
   build (and ~15 `nvidia-*` packages) into hosted Linux CI. Keep both extras on the same torch version range.
+- Tokenizer adapters are optional extras, not runtime dependencies: `hf` (transformers, tokenizers,
+  huggingface-hub) and `tiktoken` (tiktoken, jinja2). The adapters import them lazily through
+  `ayaka.utils.import_utils.require_module`, so never import them at module top level.
 - Titles of PRs follow Conventional Commits (`type(scope): description`); see CONTRIBUTING.md.
 - Never report a measurement, test result or log you did not produce. Separate what you ran from what you did
   not run, and say so for GPU and CUDA checks in particular.

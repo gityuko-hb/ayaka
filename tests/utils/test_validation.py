@@ -5,7 +5,19 @@ from enum import Enum
 
 import pytest
 
-from ayaka.utils.validation import require_frozen, require_int, require_text
+from ayaka.utils.validation import require_bool, require_frozen, require_int, require_text
+
+
+@pytest.mark.unit
+class TestRequireBool:
+    @pytest.mark.parametrize("value", [True, False])
+    def test_accepts_booleans(self, value: bool) -> None:
+        require_bool(value, "enabled")
+
+    @pytest.mark.parametrize("value", [0, 1, "", "true", None, [], object()])
+    def test_rejects_non_booleans(self, value: object) -> None:
+        with pytest.raises(TypeError, match="enabled must be bool"):
+            require_bool(value, "enabled")  # type: ignore[arg-type]  # deliberately wrong type
 
 
 class Color(Enum):
