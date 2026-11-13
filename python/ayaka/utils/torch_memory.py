@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ayaka.utils.import_utils import CapabilityError
+from ayaka.core.errors import CapabilityError
 from ayaka.utils.torch_utils import (
     cuda_available,
     device_index,

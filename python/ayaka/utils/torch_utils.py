@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any, Final
 
+from ayaka.core.errors import CapabilityError
 from ayaka.utils.dtypes import COMPUTE_DTYPES as _COMPUTE_DTYPES
 from ayaka.utils.dtypes import DType as _DType
-from ayaka.utils.import_utils import CapabilityError, LazyModule, has_module
+from ayaka.utils.import_utils import LazyModule, has_module
 
 if TYPE_CHECKING:
     from collections.abc import Generator

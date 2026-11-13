@@ -36,6 +36,31 @@ uv build                       # build the sdist and wheel
 
 CI runs the same commands on Ubuntu only for now. All of them must pass before review.
 
+## Layering
+
+Every package `__init__.py`, including `ayaka.core`, exposes its public names through
+`build_lazy_exports`: keep the literal `__all__` and `_EXPORTS` table in sync, and add a `TYPE_CHECKING`
+block for the real types. Do not replace lazy exports with eager imports, so importing a package never
+loads torch, NVML, HuggingFace Hub or the tokenizer adapters.
+
+### One home per name
+
+Every public name has exactly one defining module, and that module owns the name. `__all__` lists
+what a module defines, never what it imports. A module may import a name to raise it, annotate
+with it or check it, but the imported name stays out of `__all__` and out of the module's documented
+public API. For example, `ayaka.utils.cancellation` raises `ayaka.core.errors.CancelledError` but
+does not export it.
+
+- Import every name from its defining module, in `python/` and in `tests/` alike:
+  `from ayaka.core.errors import CancelledError`, never from `ayaka.utils.cancellation`. A test that
+  follows the real owner fails in the right place.
+- A package `__init__.py` exposes names only from modules inside that package (a nested subpackage
+  counts), and `_EXPORTS` must name the module that defines the name, never one that re-exports it.
+  A facade does not reach into another package: a shared type belongs in `ayaka.core`, the lowest
+  contract layer.
+- `tests/test_public_api.py` enforces this over `python/ayaka` and `tests/` with an AST scan. Do not
+  weaken it with an allowlist or a skip; fix the import instead.
+
 ## Conventions
 
 - Python 3.13, fully typed. `python/` is checked by pyright in strict mode; fix the type instead of adding

@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self
 
 from ayaka.configs.tokenizer import DetokenizeParams, EncodeResult, TokenizerConfig
+from ayaka.core.errors import CancelledError
 from ayaka.tokenizers.contracts import (
     ChatInput,
     EncodeInput,
@@ -59,13 +60,13 @@ from ayaka.tokenizers.errors import TokenizerOverloaded
 from ayaka.tokenizers.factory import DefaultTokenizerFactory, validate_loading_config
 from ayaka.tokenizers.ports import RenderedEncoderLike, TokenizerLike
 from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy
-from ayaka.utils.cancellation import CancellationToken, CancelledError
+from ayaka.utils.cancellation import CancellationToken
 from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
     from types import TracebackType
 
-__all__ = ["TokenizerOverloaded", "TokenizerService"]
+__all__ = ["TokenizerService"]
 
 _DEFAULT_OPTIONS = EncodeOptions()
 _LOGGER = logging.getLogger(__name__)

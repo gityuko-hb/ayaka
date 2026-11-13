@@ -13,11 +13,9 @@ from __future__ import annotations
 
 import threading
 
-__all__ = ["CancellationToken", "CancelledError"]
+from ayaka.core.errors import CancelledError
 
-
-class CancelledError(Exception):
-    """The work was cancelled through its :class:`CancellationToken`."""
+__all__ = ["CancellationToken"]
 
 
 class CancellationToken:

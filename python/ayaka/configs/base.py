@@ -8,25 +8,15 @@ from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from ayaka.core.errors import ConfigError
 from ayaka.utils.validation import require_int
 
-
-class ConfigError(ValueError):
-    """A validation failure with a stable code and a machine-readable path."""
-
-    def __init__(
-        self,
-        path: str,
-        code: str,
-        message: str,
-        *,
-        context: Mapping[str, Any] | None = None,
-    ) -> None:
-        self.path = path
-        self.code = code
-        self.message = message
-        self.context = dict(context or {})
-        super().__init__(f"{path}: {message} [{code}]")
+__all__ = [
+    "ConfigMixin",
+    "FrozenMapping",
+    "freeze_mapping",
+    "validate_buckets",
+]
 
 
 class FrozenMapping(tuple[tuple[str, Any], ...]):

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
-    from ayaka.utils.cancellation import CancellationToken, CancelledError
+    from ayaka.utils.cancellation import CancellationToken
     from ayaka.utils.dtypes import (
         COMPUTE_DTYPES,
         FP8_E4M3_MAX,
@@ -36,7 +36,6 @@ if TYPE_CHECKING:
         pci_numa_node,
     )
     from ayaka.utils.import_utils import (
-        CapabilityError,
         LazyModule,
         has_module,
         require_module,
@@ -104,7 +103,17 @@ if TYPE_CHECKING:
         torch_version,
         validate_output_dtype,
     )
-    from ayaka.utils.validation import require_bool, require_frozen, require_int, require_text
+    from ayaka.utils.validation import (
+        require_bool,
+        require_float,
+        require_frozen,
+        require_int,
+        require_nonempty_text,
+        require_number,
+        require_text,
+        require_token_set,
+        require_token_tuple,
+    )
 
 __all__ = [
     "COMPUTE_DTYPES",
@@ -120,8 +129,6 @@ __all__ = [
     "SM_AMPERE",
     "SM_HOPPER",
     "CancellationToken",
-    "CancelledError",
-    "CapabilityError",
     "CgroupMemory",
     "Clock",
     "DType",
@@ -179,11 +186,16 @@ __all__ = [
     "require_bool",
     "require_cuda",
     "require_cuda_contiguous",
+    "require_float",
     "require_frozen",
     "require_int",
     "require_last_dim_contiguous",
     "require_module",
+    "require_nonempty_text",
+    "require_number",
     "require_text",
+    "require_token_set",
+    "require_token_tuple",
     "require_torch",
     "require_torch_version",
     "resolve_device",
@@ -203,7 +215,7 @@ __all__ = [
 ]
 
 _EXPORTS = {
-    "cancellation": ("CancellationToken", "CancelledError"),
+    "cancellation": ("CancellationToken",),
     "dtypes": (
         "COMPUTE_DTYPES",
         "FP8_E4M3_MAX",
@@ -228,7 +240,6 @@ _EXPORTS = {
         "pci_numa_node",
     ),
     "import_utils": (
-        "CapabilityError",
         "LazyModule",
         "has_module",
         "require_module",
@@ -291,7 +302,17 @@ _EXPORTS = {
         "torch_version",
         "validate_output_dtype",
     ),
-    "validation": ("require_bool", "require_frozen", "require_int", "require_text"),
+    "validation": (
+        "require_bool",
+        "require_float",
+        "require_frozen",
+        "require_int",
+        "require_nonempty_text",
+        "require_number",
+        "require_text",
+        "require_token_set",
+        "require_token_tuple",
+    ),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())

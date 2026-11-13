@@ -4,7 +4,8 @@ import threading
 
 import pytest
 
-from ayaka.utils.cancellation import CancellationToken, CancelledError
+from ayaka.core.errors import CancelledError
+from ayaka.utils.cancellation import CancellationToken
 
 
 @pytest.mark.unit
