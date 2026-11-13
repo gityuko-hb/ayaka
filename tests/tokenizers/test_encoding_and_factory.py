@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from ayaka.configs.base import ConfigError
 from ayaka.configs.tokenizer import TokenizerConfig
+from ayaka.core.errors import ConfigError
 from ayaka.tokenizers.adapters.tiktoken import TiktokenTokenizer, load_tiktoken_vocab
 from ayaka.tokenizers.contracts import ChatInput, ChatMessage, EncodeOptions
 from ayaka.tokenizers.encoding.chunked import encode_chunked, safe_split_points, split_into_chunks

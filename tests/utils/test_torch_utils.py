@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
+from ayaka.core.errors import CapabilityError
 from ayaka.utils.dtypes import DType
-from ayaka.utils.import_utils import CapabilityError
 from ayaka.utils.torch_utils import (
     compute_capability,
     compute_torch_dtypes,

@@ -30,7 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from ayaka.configs.base import ConfigError, ConfigMixin
+from ayaka.configs.base import ConfigMixin
+from ayaka.core.errors import ConfigError
 from ayaka.utils.validation import require_bool, require_frozen, require_int, require_text
 
 if TYPE_CHECKING:

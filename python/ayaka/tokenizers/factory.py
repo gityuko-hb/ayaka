@@ -24,13 +24,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ayaka.configs.base import ConfigError
+from ayaka.core.errors import ConfigError
 from ayaka.tokenizers.contracts import LoadedTokenizer, TokenizerCapabilities
 
 if TYPE_CHECKING:
     from ayaka.configs.tokenizer import TokenizerConfig
 
-__all__ = ["DefaultTokenizerFactory", "LoadedTokenizer", "validate_loading_config"]
+__all__ = ["DefaultTokenizerFactory", "validate_loading_config"]
 
 
 def validate_loading_config(config: TokenizerConfig) -> None:

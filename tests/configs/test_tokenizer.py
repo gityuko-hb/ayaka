@@ -5,7 +5,6 @@ from typing import Any
 
 import pytest
 
-from ayaka.configs.base import ConfigError
 from ayaka.configs.model_source import ModelSourceConfig, ModelTrustPolicy
 from ayaka.configs.tokenizer import (
     DetokenizeParams,
@@ -14,6 +13,7 @@ from ayaka.configs.tokenizer import (
     TokenizerConfig,
     tokenizer_config_from_source,
 )
+from ayaka.core.errors import ConfigError
 
 
 @pytest.mark.unit

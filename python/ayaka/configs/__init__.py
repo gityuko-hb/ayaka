@@ -12,7 +12,6 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
     from ayaka.configs.base import (
-        ConfigError,
         ConfigMixin,
         FrozenMapping,
         freeze_mapping,
@@ -32,7 +31,6 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    "ConfigError",
     "ConfigMixin",
     "DetokBackend",
     "DetokUpdate",
@@ -53,7 +51,6 @@ __all__ = [
 
 _EXPORTS = {
     "base": (
-        "ConfigError",
         "ConfigMixin",
         "FrozenMapping",
         "freeze_mapping",

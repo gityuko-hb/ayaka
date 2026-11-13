@@ -14,6 +14,7 @@ pytestmark = pytest.mark.unit
 
 PACKAGES = (
     "ayaka.configs",
+    "ayaka.core",
     "ayaka.metrics",
     "ayaka.tokenizers",
     "ayaka.tokenizers.adapters",

@@ -6,23 +6,14 @@ from functools import cache
 from types import ModuleType
 from typing import Any
 
+from ayaka.core.errors import CapabilityError
+
 __all__ = [
-    "CapabilityError",
     "LazyModule",
     "has_module",
     "require_module",
     "resolve_qualname",
 ]
-
-
-class CapabilityError(ImportError):
-    """Raised when an optional dependency required by a capability is unavailable."""
-
-    def __init__(self, capability: str, *, detail: str, remedy: str) -> None:
-        self.capability = capability
-        self.detail = detail
-        self.remedy = remedy
-        super().__init__(f"capability {capability!r} unavailable: {detail}. Remedy: {remedy}")
 
 
 @cache
@@ -132,8 +123,8 @@ def resolve_qualname(path: str) -> Any:
     Args:
         path: A dotted or colon-separated path to a module and attribute.
     Examples:
-        >>> resolve_qualname("ayaka.utils.import_utils:CapabilityError")
-        <class 'ayaka.utils.import_utils.CapabilityError'>
+        >>> resolve_qualname("ayaka.core.errors:CapabilityError")
+        <class 'ayaka.core.errors.CapabilityError'>
     """
 
     if ":" in path:

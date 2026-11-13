@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from ayaka.utils.import_utils import CapabilityError
+from ayaka.core.errors import CapabilityError
 from ayaka.utils.torch_memory import (
     DeviceMemory,
     device_memory,

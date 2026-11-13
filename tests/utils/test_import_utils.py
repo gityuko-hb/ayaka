@@ -4,8 +4,8 @@ import json
 
 import pytest
 
+from ayaka.core.errors import CapabilityError
 from ayaka.utils.import_utils import (
-    CapabilityError,
     LazyModule,
     has_module,
     require_module,
@@ -79,7 +79,7 @@ class TestResolveQualname:
         assert resolve_qualname("json:dumps") is json.dumps
 
     def test_dotted_form(self) -> None:
-        assert resolve_qualname("ayaka.utils.import_utils.CapabilityError") is CapabilityError
+        assert resolve_qualname("ayaka.core.errors.CapabilityError") is CapabilityError
 
     def test_requires_a_module_and_attribute(self) -> None:
         with pytest.raises(ValueError, match="must contain a module and an attribute"):

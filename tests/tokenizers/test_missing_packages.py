@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from ayaka.configs.tokenizer import TokenizerConfig
+from ayaka.core.errors import CapabilityError
 from ayaka.tokenizers.adapters.hf import HfTokenizer
 from ayaka.tokenizers.adapters.tiktoken import TiktokenTokenizer
 from ayaka.tokenizers.factory import DefaultTokenizerFactory
 from ayaka.utils.hf_utils import optional_file
-from ayaka.utils.import_utils import CapabilityError
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from ayaka.configs.base import ConfigError
 from ayaka.configs.tokenizer import TokenizerConfig
+from ayaka.core.errors import ConfigError
 from ayaka.tokenizers.contracts import (
     ChatInput,
     ChatMessage,

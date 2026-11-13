@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from ayaka.configs.tokenizer import DetokenizeParams, TokenizerConfig
+from ayaka.core.errors import CancelledError
 from ayaka.tokenizers.contracts import (
     ChatInput,
     ChatMessage,
@@ -21,7 +22,7 @@ from ayaka.tokenizers.contracts import (
 from ayaka.tokenizers.decoding.byte import ByteIncrementalDetokenizer
 from ayaka.tokenizers.errors import TokenizerOverloaded
 from ayaka.tokenizers.service import TokenizerService
-from ayaka.utils.cancellation import CancellationToken, CancelledError
+from ayaka.utils.cancellation import CancellationToken
 from tokenizer_fakes import BOS, EOS, IM_END, IM_START, FakeTokenizer, RenderedFake, loaded_for
 
 Make = Callable[..., TokenizerService]

@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 
 from ayaka.configs.base import (
-    ConfigError,
     ConfigMixin,
     FrozenMapping,
     freeze_mapping,
     validate_buckets,
 )
+from ayaka.core.errors import ConfigError
 
 
 class Mode(enum.Enum):

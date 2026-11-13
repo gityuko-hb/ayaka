@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
+from ayaka.core.errors import CapabilityError
 from ayaka.utils.hf_utils import hub_offline, optional_file, parse_eos_token_ids, read_json
-from ayaka.utils.import_utils import CapabilityError
 
 
 @pytest.mark.unit
