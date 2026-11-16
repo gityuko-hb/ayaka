@@ -27,6 +27,9 @@ classifiers = [
 Homepage = "https://github.com/gityuko-hb/ayaka"
 Issues = "https://github.com/gityuko-hb/ayaka/issues"
 
+[project.scripts]
+ayaka = "ayaka.entrypoints.cli:main"
+
 [project.optional-dependencies]
 # PyTorch ships one build per accelerator on separate indexes, so the accelerator is an extra:
 #   uv sync --extra cpu     CPU build (CI, machines without a GPU, macOS)
