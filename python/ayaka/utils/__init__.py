@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         require_module,
         resolve_qualname,
     )
+    from ayaka.utils.logging import init_logger
     from ayaka.utils.math_utils import (
         align_down,
         align_up,
@@ -166,6 +167,7 @@ __all__ = [
     "host_ram_bytes",
     "host_total_ram_bytes",
     "hub_offline",
+    "init_logger",
     "memory_pressure",
     "next_power_of_2",
     "no_device_sync",
@@ -246,6 +248,7 @@ _EXPORTS = {
         "resolve_qualname",
     ),
     "lazy_exports": ("build_lazy_exports",),
+    "logging": ("init_logger",),
     "math_utils": ("align_down", "align_up", "div_ceil", "next_power_of_2", "percentiles"),
     "nvml_utils": (
         "NvmlDeviceRaw",
