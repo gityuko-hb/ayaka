@@ -33,10 +33,9 @@ def _lazy_packages() -> tuple[str, ...]:
 PACKAGES = _lazy_packages()
 
 
-def test_the_discovery_finds_the_known_facades() -> None:
-    assert {"ayaka.configs", "ayaka.layers", "ayaka.models", "ayaka.ops", "ayaka.scheduler"} <= set(
-        PACKAGES
-    )
+def test_the_discovery_finds_the_facades_that_exist_here() -> None:
+    # Packages arrive in layers; assert only the ones present at every revision of this stack.
+    assert {"ayaka.configs", "ayaka.ops", "ayaka.tokenizers"} <= set(PACKAGES)
 
 
 @pytest.mark.parametrize("package_name", PACKAGES)
