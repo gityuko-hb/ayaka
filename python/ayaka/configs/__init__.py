@@ -1,4 +1,4 @@
-"""Host-side configuration records for model sources and tokenizers.
+"""Host-side configuration records for the model, tokenizer, device, cache, scheduler and engine.
 
 Every record is frozen and validated at construction. Importing this package is
 cheap: each public name is resolved from its submodule on first access.
@@ -17,7 +17,12 @@ if TYPE_CHECKING:
         freeze_mapping,
         validate_buckets,
     )
+    from ayaka.configs.cache import CacheConfig
+    from ayaka.configs.device import DeviceConfig
+    from ayaka.configs.engine import EngineConfig
+    from ayaka.configs.model import ModelConfig
     from ayaka.configs.model_source import ModelSourceConfig, ModelTrustPolicy, RequestFormat
+    from ayaka.configs.scheduler import SchedulerConfig, SchedulingPolicyName
     from ayaka.configs.tokenizer import (
         DetokBackend,
         DetokenizeParams,
@@ -31,15 +36,21 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "CacheConfig",
     "ConfigMixin",
     "DetokBackend",
     "DetokUpdate",
     "DetokenizeParams",
+    "DeviceConfig",
     "EncodeResult",
+    "EngineConfig",
     "FrozenMapping",
+    "ModelConfig",
     "ModelSourceConfig",
     "ModelTrustPolicy",
     "RequestFormat",
+    "SchedulerConfig",
+    "SchedulingPolicyName",
     "SpecialTokenPolicyName",
     "TokenizerConfig",
     "TokenizerMode",
@@ -56,7 +67,12 @@ _EXPORTS = {
         "freeze_mapping",
         "validate_buckets",
     ),
+    "cache": ("CacheConfig",),
+    "device": ("DeviceConfig",),
+    "engine": ("EngineConfig",),
+    "model": ("ModelConfig",),
     "model_source": ("ModelSourceConfig", "ModelTrustPolicy", "RequestFormat"),
+    "scheduler": ("SchedulerConfig", "SchedulingPolicyName"),
     "tokenizer": (
         "DetokBackend",
         "DetokUpdate",

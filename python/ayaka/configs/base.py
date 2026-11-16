@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ayaka.core.errors import ConfigError
+from ayaka.utils.dtypes import DType
 from ayaka.utils.validation import require_int
 
 __all__ = [
@@ -42,6 +43,9 @@ def freeze_mapping(
 def _canonical(value: Any) -> Any:
     """Return a canonical (stable, deterministic) representation of a Python value."""
 
+    if isinstance(value, DType):
+        # DType.value is a tuple of registry data; the label is the stable name.
+        return value.label
     if isinstance(value, enum.Enum):
         return value.value
     if isinstance(value, Path):
