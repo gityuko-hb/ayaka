@@ -6,7 +6,7 @@ import logging
 import subprocess
 import sys
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 import pytest
 
@@ -15,6 +15,7 @@ from ayaka.ops import backend as backend_module
 from ayaka.ops.backend import (
     BackendCaps,
     BackendFamilies,
+    FamilyName,
     available_backends,
     load_backend,
     register_backend,
@@ -26,7 +27,15 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.unit
 
-ALL = ("norm", "activation", "embedding", "linear")
+ALL: tuple[FamilyName, ...] = (
+    "norm",
+    "activation",
+    "embedding",
+    "linear",
+    "kvcache",
+    "attention",
+    "sampling",
+)
 LINUX = frozenset({sys.platform})
 
 
@@ -70,6 +79,12 @@ def _owner(implementation: object) -> str:
     return cast("Any", implementation).owner
 
 
+def test_family_name_lists_exactly_the_registered_families() -> None:
+    value = cast("Any", FamilyName).__value__
+
+    assert get_args(value) == backend_module._FAMILIES
+
+
 class TestComposition:
     def test_first_listed_backend_wins_every_family_it_serves(self, loaders: _Loaders) -> None:
         loaders.add(_caps("fast"))
@@ -91,6 +106,9 @@ class TestComposition:
             "activation": "full",
             "embedding": "full",
             "linear": "partial",
+            "kvcache": "full",
+            "attention": "full",
+            "sampling": "full",
         }
         assert _owner(ops.norm) == "partial"
         assert _owner(ops.activation) == "full"
@@ -152,9 +170,11 @@ class TestComposition:
         with caplog.at_level(logging.INFO, logger=backend_module.logger.name):
             load_backend(["only"], device="cuda", dtype=DType.BF16)
 
-        assert [r.getMessage() for r in caplog.records] == [
-            "ops backends for cuda bf16: norm=only, activation=only, embedding=only, linear=only"
-        ]
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 1
+        assert messages[0].startswith("ops backends for cuda bf16: ")
+        for family in ALL:
+            assert f"{family}=only" in messages[0]
 
     def test_providers_cannot_be_modified(self, loaders: _Loaders) -> None:
         loaders.add(_caps("only"))
@@ -176,8 +196,9 @@ class TestMissingCapabilities:
         assert error.code == "BACKEND_CAPABILITY_MISSING"
         assert error.path == "ops.backends"
         assert (
-            "provides norm, activation, embedding, linear for device 'cpu' and dtype fp32"
-            in str(error)
+            "provides norm, activation, embedding, linear, kvcache, attention, sampling "
+            "for device 'cpu' "
+            "and dtype fp32" in str(error)
         )
         assert "norm: cuda-only has no cpu support; tiny has no fp32 support" in str(error)
         assert "activation: cuda-only does not implement this family; tiny does not implement" in (
@@ -189,7 +210,7 @@ class TestMissingCapabilities:
         assert set(cast("dict[str, Any]", error.context["missing"])) == set(ALL)
 
     def test_one_family_missing_does_not_hide_the_others(self, loaders: _Loaders) -> None:
-        loaders.add(_caps("partial", families=("norm", "activation", "embedding")))
+        loaders.add(_caps("partial", families=tuple(f for f in ALL if f != "linear")))
 
         with pytest.raises(ConfigError, match=r"provides linear for device"):
             load_backend(["partial"], device="cpu", dtype=DType.FP32)
@@ -208,7 +229,7 @@ class TestMissingCapabilities:
     def test_a_loader_that_omits_a_declared_family_is_a_backend_error(
         self, loaders: _Loaders
     ) -> None:
-        loaders.add(_caps("liar"), lambda: _impls("liar", ("norm", "activation", "embedding")))
+        loaders.add(_caps("liar"), lambda: _impls("liar", tuple(f for f in ALL if f != "linear")))
 
         with pytest.raises(BackendError, match=r"declares \['linear'\]"):
             load_backend(["liar"], device="cpu", dtype=DType.FP32)
@@ -266,8 +287,8 @@ class TestRegistration:
         assert loaders.calls == []
 
     def test_caps_reject_an_unknown_family(self) -> None:
-        with pytest.raises(ValueError, match=r"unknown op families \['attention'\]"):
-            _caps("x", families=("norm", "attention"))
+        with pytest.raises(ValueError, match=r"unknown op families \['not-a-family'\]"):
+            _caps("x", families=("norm", "not-a-family"))
 
     def test_caps_reject_a_blank_name(self) -> None:
         with pytest.raises(ValueError, match="name must be a non-empty string"):

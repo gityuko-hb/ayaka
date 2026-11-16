@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import torch
+
 from ayaka.core.errors import BackendError
 from ayaka.utils.torch_utils import compute_torch_dtypes, dtype_name
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    import torch
 
 
 def require_compute_dtype(op: str, name: str, tensor: torch.Tensor) -> None:
@@ -36,6 +36,16 @@ def require_like(
     if tuple(tensor.shape) != tuple(shape) or tensor.dtype != dtype:
         raise BackendError(
             f"{op}: {name} must be {dtype_name(dtype)} {list(shape)}, "
+            f"got {dtype_name(tensor.dtype)} {list(tensor.shape)}",
+            context={"op": op, "argument": name},
+        )
+
+
+def require_index_tensor(op: str, name: str, tensor: torch.Tensor, *, ndim: int) -> None:
+    """Refuse an index tensor that is not int32 or int64 with ``ndim`` dimensions."""
+    if tensor.dtype not in (torch.int32, torch.int64) or tensor.ndim != ndim:
+        raise BackendError(
+            f"{op}: {name} must be an int32 or int64 tensor with {ndim} dimension(s), "
             f"got {dtype_name(tensor.dtype)} {list(tensor.shape)}",
             context={"op": op, "argument": name},
         )

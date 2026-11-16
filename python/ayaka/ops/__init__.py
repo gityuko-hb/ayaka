@@ -31,26 +31,37 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
     from ayaka.ops.activation import ActivationOps
+    from ayaka.ops.attention import AttentionMetadata, AttentionOps
     from ayaka.ops.backend import (
         BackendCaps,
         BackendFamilies,
+        FamilyName,
         OpsBackend,
         available_backends,
         load_backend,
         register_backend,
     )
     from ayaka.ops.embedding import EmbeddingOps
+    from ayaka.ops.kvcache import KVBuffers, KVCacheOps
     from ayaka.ops.linear import LinearOps
     from ayaka.ops.norm import NormOps
+    from ayaka.ops.sampling import DrawStream, SamplingOps
 
 __all__ = [
     "ActivationOps",
+    "AttentionMetadata",
+    "AttentionOps",
     "BackendCaps",
     "BackendFamilies",
+    "DrawStream",
     "EmbeddingOps",
+    "FamilyName",
+    "KVBuffers",
+    "KVCacheOps",
     "LinearOps",
     "NormOps",
     "OpsBackend",
+    "SamplingOps",
     "available_backends",
     "load_backend",
     "register_backend",
@@ -58,17 +69,21 @@ __all__ = [
 
 _EXPORTS = {
     "activation": ("ActivationOps",),
+    "attention": ("AttentionMetadata", "AttentionOps"),
     "backend": (
         "BackendCaps",
         "BackendFamilies",
+        "FamilyName",
         "OpsBackend",
         "available_backends",
         "load_backend",
         "register_backend",
     ),
     "embedding": ("EmbeddingOps",),
+    "kvcache": ("KVBuffers", "KVCacheOps"),
     "linear": ("LinearOps",),
     "norm": ("NormOps",),
+    "sampling": ("DrawStream", "SamplingOps"),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())
