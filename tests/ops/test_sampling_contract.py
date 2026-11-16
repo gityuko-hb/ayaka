@@ -16,12 +16,13 @@ import pytest
 
 from ayaka.core.errors import BackendError
 from ayaka.ops.backend import load_backend
-from ayaka.ops.backends.torch.sampling import philox_rounds
 from ayaka.ops.sampling import DrawStream
 from ayaka.sampling.rng import draw_uniform, philox4x32_10
 from ayaka.utils.dtypes import DType
 
 torch: Any = pytest.importorskip("torch")
+
+from ayaka.ops.backends.torch.sampling import philox_rounds  # noqa: E402
 
 if TYPE_CHECKING:
     from ayaka.ops.sampling import SamplingOps
