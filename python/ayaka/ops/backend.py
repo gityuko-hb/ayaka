@@ -14,7 +14,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, TypedDict, cast
+from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 from ayaka.core.errors import BackendError, CapabilityError, ConfigError
 from ayaka.utils.dtypes import COMPUTE_DTYPES
@@ -25,14 +25,18 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from ayaka.ops.activation import ActivationOps
+    from ayaka.ops.attention import AttentionOps
     from ayaka.ops.embedding import EmbeddingOps
+    from ayaka.ops.kvcache import KVCacheOps
     from ayaka.ops.linear import LinearOps
     from ayaka.ops.norm import NormOps
+    from ayaka.ops.sampling import SamplingOps
     from ayaka.utils.dtypes import DType
 
 __all__ = [
     "BackendCaps",
     "BackendFamilies",
+    "FamilyName",
     "OpsBackend",
     "available_backends",
     "load_backend",
@@ -41,9 +45,28 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+type FamilyName = Literal[
+    "norm",
+    "activation",
+    "embedding",
+    "linear",
+    "kvcache",
+    "attention",
+    "sampling",
+]
+"""One op family: a field of :class:`OpsBackend` and a key of :class:`BackendFamilies`."""
+
 #: Op families, in the order logs and error messages list them. One field of
 #: :class:`OpsBackend` and one key of :class:`BackendFamilies` per entry.
-_FAMILIES: Final = ("norm", "activation", "embedding", "linear")
+_FAMILIES: Final[tuple[FamilyName, ...]] = (
+    "norm",
+    "activation",
+    "embedding",
+    "linear",
+    "kvcache",
+    "attention",
+    "sampling",
+)
 
 _CONFIG_PATH: Final = "ops.backends"
 _NOT_IMPLEMENTED: Final = "does not implement this family"
@@ -56,6 +79,9 @@ class BackendFamilies(TypedDict, total=False):
     activation: ActivationOps
     embedding: EmbeddingOps
     linear: LinearOps
+    kvcache: KVCacheOps
+    attention: AttentionOps
+    sampling: SamplingOps
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +100,7 @@ class BackendCaps:
     """
 
     name: str
-    families: frozenset[str]
+    families: frozenset[FamilyName]
     platforms: frozenset[str]
     devices: frozenset[str]
     dtypes: frozenset[DType]
@@ -98,7 +124,10 @@ class OpsBackend:
     activation: ActivationOps
     embedding: EmbeddingOps
     linear: LinearOps
-    providers: Mapping[str, str]
+    kvcache: KVCacheOps
+    attention: AttentionOps
+    sampling: SamplingOps
+    providers: Mapping[FamilyName, str]
 
 
 _registry: dict[str, tuple[BackendCaps, Callable[[], BackendFamilies]]] = {}
@@ -154,9 +183,9 @@ def load_backend(names: Sequence[str], *, device: str, dtype: DType) -> OpsBacke
     _check_names(names)
     loaded: dict[str, Mapping[str, object]] = {}
     unavailable: dict[str, str] = {}
-    chosen: dict[str, object] = {}
-    providers: dict[str, str] = {}
-    missing: dict[str, tuple[str, ...]] = {}
+    chosen: dict[FamilyName, object] = {}
+    providers: dict[FamilyName, str] = {}
+    missing: dict[FamilyName, tuple[str, ...]] = {}
 
     for family in _FAMILIES:
         rejections: list[str] = []
@@ -170,7 +199,7 @@ def load_backend(names: Sequence[str], *, device: str, dtype: DType) -> OpsBacke
                 providers[family] = name
                 break
             rejections.append(f"{name} {reason}")
-            if reason is not _NOT_IMPLEMENTED:
+            if reason != _NOT_IMPLEMENTED:
                 passed_over.append(rejections[-1])
         else:
             missing[family] = tuple(rejections)
@@ -201,6 +230,9 @@ def load_backend(names: Sequence[str], *, device: str, dtype: DType) -> OpsBacke
         activation=cast("ActivationOps", chosen["activation"]),
         embedding=cast("EmbeddingOps", chosen["embedding"]),
         linear=cast("LinearOps", chosen["linear"]),
+        kvcache=cast("KVCacheOps", chosen["kvcache"]),
+        attention=cast("AttentionOps", chosen["attention"]),
+        sampling=cast("SamplingOps", chosen["sampling"]),
         providers=MappingProxyType(providers),
     )
 
@@ -222,7 +254,7 @@ def _check_names(names: Sequence[str]) -> None:
         )
 
 
-def _rejection(caps: BackendCaps, family: str, device: str, dtype: DType) -> str | None:
+def _rejection(caps: BackendCaps, family: FamilyName, device: str, dtype: DType) -> str | None:
     """Return why ``caps`` cannot serve ``family`` here, or ``None`` if it can."""
     if family not in caps.families:
         return _NOT_IMPLEMENTED
@@ -263,9 +295,25 @@ def _load_torch() -> BackendFamilies:
         capability="ops.torch",
         remedy="install PyTorch with `uv sync --extra cpu` (or `--extra cu130` for CUDA)",
     )
-    from ayaka.ops.backends.torch import activation, embedding, linear, norm
+    from ayaka.ops.backends.torch import (
+        activation,
+        attention,
+        embedding,
+        kvcache,
+        linear,
+        norm,
+        sampling,
+    )
 
-    return {"norm": norm, "activation": activation, "embedding": embedding, "linear": linear}
+    return {
+        "norm": norm,
+        "activation": activation,
+        "embedding": embedding,
+        "linear": linear,
+        "kvcache": kvcache,
+        "attention": attention,
+        "sampling": sampling,
+    }
 
 
 register_backend(
