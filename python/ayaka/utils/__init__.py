@@ -58,7 +58,7 @@ if TYPE_CHECKING:
         probe_device,
         probe_nvlink_matrix,
     )
-    from ayaka.utils.parsing import format_human_int, parse_bool, parse_human_int
+    from ayaka.utils.parsing import format_human_int, parse_bool, parse_human_int, parse_json_strict
     from ayaka.utils.rwlock import RWLock
     from ayaka.utils.timing import MAX_INTER_TOKEN_SAMPLES, Clock, RequestTiming, Timestamp
     from ayaka.utils.torch_memory import (
@@ -179,6 +179,7 @@ __all__ = [
     "parse_bool",
     "parse_eos_token_ids",
     "parse_human_int",
+    "parse_json_strict",
     "pci_numa_node",
     "peak_memory_bytes",
     "percentiles",
@@ -259,7 +260,7 @@ _EXPORTS = {
         "probe_device",
         "probe_nvlink_matrix",
     ),
-    "parsing": ("format_human_int", "parse_bool", "parse_human_int"),
+    "parsing": ("format_human_int", "parse_bool", "parse_human_int", "parse_json_strict"),
     "rwlock": ("RWLock",),
     "timing": ("MAX_INTER_TOKEN_SAMPLES", "Clock", "RequestTiming", "Timestamp"),
     "torch_memory": (

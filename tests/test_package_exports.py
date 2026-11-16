@@ -22,6 +22,7 @@ PACKAGES = (
     "ayaka.tokenizers.decoding",
     "ayaka.tokenizers.encoding",
     "ayaka.utils",
+    "ayaka.weights",
 )
 
 

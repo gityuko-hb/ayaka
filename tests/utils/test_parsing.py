@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from ayaka.utils.parsing import format_human_int, parse_bool, parse_human_int
+from ayaka.utils.parsing import (
+    format_human_int,
+    parse_bool,
+    parse_human_int,
+    parse_json_strict,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -73,3 +78,41 @@ class TestFormatHumanInt:
     def test_round_trips_through_parser(self, value: int) -> None:
         assert parse_human_int(format_human_int(value, binary=False)) == value
         assert parse_human_int(format_human_int(value, binary=True)) == value
+
+
+class TestParseJsonStrict:
+    def test_parses_ordinary_json(self) -> None:
+        assert parse_json_strict('{"a": [1, 2.5, null, true], "b": {"c": "d"}}') == {
+            "a": [1, 2.5, None, True],
+            "b": {"c": "d"},
+        }
+
+    def test_rejects_a_repeated_key(self) -> None:
+        with pytest.raises(ValueError, match=r"duplicate object keys: \['a'\]"):
+            parse_json_strict('{"a": 1, "a": 2}')
+
+    def test_rejects_a_repeated_key_at_any_depth(self) -> None:
+        with pytest.raises(ValueError, match=r"duplicate object keys: \['x'\]"):
+            parse_json_strict('{"a": [{"b": {"x": 1, "x": 2}}]}')
+
+    def test_names_every_repeated_key(self) -> None:
+        with pytest.raises(ValueError, match=r"\['a', 'b'\]"):
+            parse_json_strict('{"b": 1, "a": 1, "b": 2, "a": 2, "c": 3}')
+
+    def test_the_same_key_in_different_objects_is_fine(self) -> None:
+        assert parse_json_strict('{"a": {"k": 1}, "b": {"k": 2}}') == {
+            "a": {"k": 1},
+            "b": {"k": 2},
+        }
+
+    def test_malformed_text_is_a_value_error(self) -> None:
+        with pytest.raises(ValueError, match="Expecting"):
+            parse_json_strict("{")
+
+    def test_deep_nesting_is_a_value_error_not_a_recursion_error(self) -> None:
+        with pytest.raises(ValueError, match="nested too deeply"):
+            parse_json_strict("[" * 100_000 + "]" * 100_000)
+
+    def test_a_huge_integer_is_a_value_error(self) -> None:
+        with pytest.raises(ValueError, match="Exceeds the limit"):
+            parse_json_strict("1" * 10_000)
