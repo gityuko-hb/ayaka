@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,18 +13,30 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.unit
 
-PACKAGES = (
-    "ayaka.configs",
-    "ayaka.core",
-    "ayaka.metrics",
-    "ayaka.ops",
-    "ayaka.tokenizers",
-    "ayaka.tokenizers.adapters",
-    "ayaka.tokenizers.decoding",
-    "ayaka.tokenizers.encoding",
-    "ayaka.utils",
-    "ayaka.weights",
-)
+#: Some lazy packages (layers, models, model_loader) load torch when a name resolves.
+pytest.importorskip("torch")
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "python" / "ayaka"
+
+
+def _lazy_packages() -> tuple[str, ...]:
+    """Every package whose ``__init__.py`` calls ``build_lazy_exports``."""
+    packages: list[str] = []
+    for init in _PACKAGE_ROOT.rglob("__init__.py"):
+        if "build_lazy_exports(" not in init.read_text(encoding="utf-8"):
+            continue
+        parts = init.relative_to(_PACKAGE_ROOT).parent.parts
+        packages.append(".".join(("ayaka", *parts)))
+    return tuple(sorted(packages))
+
+
+PACKAGES = _lazy_packages()
+
+
+def test_the_discovery_finds_the_known_facades() -> None:
+    assert {"ayaka.configs", "ayaka.layers", "ayaka.models", "ayaka.ops", "ayaka.scheduler"} <= set(
+        PACKAGES
+    )
 
 
 @pytest.mark.parametrize("package_name", PACKAGES)
