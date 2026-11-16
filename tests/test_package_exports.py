@@ -16,6 +16,7 @@ PACKAGES = (
     "ayaka.configs",
     "ayaka.core",
     "ayaka.metrics",
+    "ayaka.ops",
     "ayaka.tokenizers",
     "ayaka.tokenizers.adapters",
     "ayaka.tokenizers.decoding",
