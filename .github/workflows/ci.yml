@@ -3,18 +3,24 @@ name: CI
 # Hosted runners have no GPU: GPU tests are marked `gpu` and skipped here (-m "not gpu").
 # Run them on your own machine and report them under "Validation" in the pull request.
 #
-# Two test jobs: `test` runs the unit tests with the CPU torch build; `adapters` runs the integration tests
-# (real HuggingFace and tiktoken tokenizers, spawned worker processes) with the optional extras and no torch.
+# Three test jobs: `test` runs the unit tests with the CPU torch build, which includes the small end-to-end tests
+# of tests/e2e (the tiny GPT-2 on the CPU, no network); `adapters` runs the integration tests (real HuggingFace
+# and tiktoken tokenizers, spawned worker processes) with the optional extras and no torch; `parity` runs the
+# integration tests that need torch and `transformers` together, among them real GPT-2 against `transformers`.
 # Keep them apart: the integration tests need packages that the unit tests must work without.
 #
 # Caching: only the uv cache is cached (keyed on uv.lock). Pyright ships bundled in its wheel and uses the
 # runner's Node.js, and ruff runs in milliseconds, so neither needs a cache of its own.
 #
-# PyTorch: lint and test install the CPU build (`--extra cpu`); hosted runners have no GPU, and the CPU wheel
-# avoids the ~15 nvidia-* packages the default Linux build pulls in. build and workflows install no torch.
-# The uv cache is not pruned in those two jobs: pruning drops prebuilt wheels, so torch would be downloaded
+# PyTorch: lint, test and parity install the CPU build (`--extra cpu`); hosted runners have no GPU, and the CPU
+# wheel avoids the ~15 nvidia-* packages the default Linux build pulls in. adapters, build and workflows install
+# no torch. The uv cache is not pruned in those three jobs: pruning drops prebuilt wheels, so torch would be downloaded
 # from download.pytorch.org on every run. This is a reasoned default, not a measurement: compare the
 # "Install" step time with prune-cache true/false on a real run before keeping it.
+#
+# Network: `parity` is the one job that needs it at run time, to download the GPT-2 checkpoint (about 0.5 GB) from
+# the Hugging Face Hub. The Hub cache is restored by model id, and saved only from main (like the uv cache). The
+# job sets AYAKA_REQUIRE_REAL_MODEL=1, so a download that fails turns the job red instead of skipping the test.
 # Actions are pinned to a full commit SHA; dependabot keeps the SHA and the version comment up to date.
 
 on:
@@ -99,6 +105,41 @@ jobs:
       - run: uv sync --extra hf --extra tiktoken
       - run: uv run pytest -m integration
 
+  # Real GPT-2 against `transformers` (greedy, token by token), plus the other tests that need torch and
+  # `transformers` together (tests/models, tests/model_loader). Needs the network the first time: see the note
+  # at the top. The extras come from uv.lock like everything else.
+  parity:
+    name: parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AYAKA_REQUIRE_REAL_MODEL: "1"  # a missing checkpoint or package fails the job; it never skips
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: parity
+          prune-cache: false  # keep the prebuilt torch wheel; see the note at the top
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore the Hugging Face cache
+        id: hf-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-hub-openai-community-gpt2-v1  # the model id of tests/e2e/test_gpt2_parity.py; bump the suffix to refresh
+      - run: uv sync --extra cpu --extra hf --extra tiktoken
+      - run: uv run pytest -m integration tests/e2e/test_gpt2_parity.py tests/models tests/model_loader
+      - name: Save the Hugging Face cache
+        if: github.ref == 'refs/heads/main' && steps.hf-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-hub-openai-community-gpt2-v1
+
   build:
     name: build
     runs-on: ubuntu-latest
@@ -133,7 +174,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [lint, test, adapters, build, workflows]
+    needs: [lint, test, adapters, parity, build, workflows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
