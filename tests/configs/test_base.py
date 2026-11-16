@@ -14,6 +14,7 @@ from ayaka.configs.base import (
     validate_buckets,
 )
 from ayaka.core.errors import ConfigError
+from ayaka.utils.dtypes import DType
 
 
 class Mode(enum.Enum):
@@ -88,6 +89,14 @@ class TestConfigMixin:
             }
             or "hidden" not in cfg.to_dict()
         )
+
+    def test_dtype_serializes_as_its_label(self) -> None:
+        @dataclass(frozen=True, slots=True)
+        class WithDtype(ConfigMixin):
+            dtype: DType
+
+        assert WithDtype(DType.BF16).to_dict() == {"dtype": "bf16"}
+        assert WithDtype(DType.BF16).canonical_json() == '{"dtype":"bf16"}'
 
     def test_fields_with_repr_false_are_excluded(self) -> None:
         assert "hidden" not in Sample("n").to_dict()
