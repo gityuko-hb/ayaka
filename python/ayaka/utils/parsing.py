@@ -7,14 +7,17 @@ case-sensitive, and decimal points are only accepted with SI suffixes.
 
 from __future__ import annotations
 
+import json
 import re
+from collections import Counter
 from decimal import Decimal
-from typing import Final
+from typing import Any, Final
 
 __all__ = [
     "format_human_int",
     "parse_bool",
     "parse_human_int",
+    "parse_json_strict",
 ]
 
 _TRUE: Final = frozenset({"1", "true", "yes", "y", "on"})
@@ -126,3 +129,37 @@ def format_human_int(value: int, *, binary: bool = True) -> str:
         if mult <= abs(value) and value % mult == 0:
             return f"{value // mult}{suffix}"
     return str(value)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    counts = Counter(key for key, _ in pairs)
+    duplicated = sorted(key for key, count in counts.items() if count > 1)
+    if duplicated:
+        raise ValueError(f"duplicate object keys: {duplicated}")
+    return dict(pairs)
+
+
+def parse_json_strict(text: str) -> object:
+    """Parse JSON from an untrusted source, refusing what ``json.loads`` forgives.
+
+    ``json.loads`` keeps the last value of a repeated key, so a document that
+    says ``{"w": 1, "w": 2}`` parses cleanly and one of its entries silently
+    disappears. This parser refuses a repeated key in any object, at any depth.
+
+    Raises:
+        ValueError: If the text is not valid JSON, repeats an object key, holds
+            an integer too long to convert, or nests deeper than the parser can
+            follow. The message says which.
+
+    Examples:
+        >>> parse_json_strict('{"a": [1, {"b": 2}]}')
+        {'a': [1, {'b': 2}]}
+        >>> parse_json_strict('{"a": 1, "a": 2}')
+        Traceback (most recent call last):
+        ...
+        ValueError: duplicate object keys: ['a']
+    """
+    try:
+        return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except RecursionError:
+        raise ValueError("JSON is nested too deeply") from None
