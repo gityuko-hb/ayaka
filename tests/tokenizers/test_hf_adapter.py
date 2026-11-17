@@ -195,3 +195,34 @@ class TestFromConfig:
 
         with pytest.raises(ValueError, match="unsupported tokenizer mode"):
             HfTokenizer.from_config(TokenizerConfig("x", mode=mode))
+
+    def test_a_source_without_tokenizer_files_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # transformers 5 answers a directory with only config.json with a tokenizer whose
+        # base vocabulary is empty and whose only entry is an added token; encoding then
+        # yields no tokens at all. The adapter must refuse that instead of running on it.
+        from ayaka.configs.tokenizer import TokenizerConfig
+        from ayaka.core.errors import ModelLoadError
+        from ayaka.tokenizers.adapters import hf as hf_module
+
+        class EmptyTokenizer:
+            def get_vocab(self) -> dict[str, int]:
+                return {"<|endoftext|>": 50256}
+
+            def get_added_vocab(self) -> dict[str, int]:
+                return {"<|endoftext|>": 50256}
+
+        class AutoTokenizer:
+            @staticmethod
+            def from_pretrained(*args: Any, **kwargs: Any) -> EmptyTokenizer:
+                del args, kwargs
+                return EmptyTokenizer()
+
+        monkeypatch.setattr(
+            hf_module,
+            "require_module",
+            lambda *args, **kwargs: SimpleNamespace(AutoTokenizer=AutoTokenizer),
+        )
+        with pytest.raises(ModelLoadError, match="no tokenizer vocabulary"):
+            HfTokenizer.from_config(TokenizerConfig("checkpoint"))

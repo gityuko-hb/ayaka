@@ -29,6 +29,7 @@ import logging
 from functools import cache
 from typing import TYPE_CHECKING, Any, cast
 
+from ayaka.core.errors import ModelLoadError
 from ayaka.tokenizers.decoding.byte import verify_byte_table
 from ayaka.utils.hf_utils import hub_offline, optional_file, parse_eos_token_ids, read_json
 from ayaka.utils.import_utils import require_module
@@ -191,6 +192,10 @@ class HfTokenizer:
             ValueError: For token-ID-only mode or a mode this adapter does not handle,
                 or if ``hf`` was requested and only a slow tokenizer exists.
             CapabilityError: If ``transformers`` is not installed.
+            ModelLoadError: If the source holds no tokenizer vocabulary, as a checkpoint
+                with only ``config.json`` does: ``transformers`` 5 answers that with a
+                tokenizer whose base vocabulary is empty instead of raising, and every
+                prompt then encodes to no tokens at all.
         """
         if config.skip_tokenizer_init:
             raise ValueError("use DefaultTokenizerFactory for token-ID-only mode")
@@ -210,6 +215,18 @@ class HfTokenizer:
                 cache_dir=config.download_dir,
                 use_fast=config.mode != "slow",
                 local_files_only=config.offline,
+            )
+
+        # transformers 5 builds a tokenizer from the model config alone when the directory
+        # holds no tokenizer files: a GPT2Tokenizer whose base vocabulary is empty and whose
+        # only entry is an added token. Encoding then yields no tokens, so refuse it here
+        # instead of running on an empty vocabulary.
+        if not set(tok.get_vocab()) - set(tok.get_added_vocab()):
+            raise ModelLoadError(
+                f"{source!r} holds no tokenizer vocabulary: transformers built a tokenizer "
+                "from the model config alone; write tokenizer.json (or vocab.json and "
+                "merges.txt) next to the checkpoint, or name the tokenizer directory or "
+                "repo id with tokenizer="
             )
 
         def find(filename: str) -> Any:
