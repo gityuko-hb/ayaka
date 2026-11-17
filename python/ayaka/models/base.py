@@ -25,13 +25,19 @@ Where a checkpoint's layout is turned into the model's
   :meth:`CausalLM.checkpoint_specs` then reports the stored (transposed) shape, so a
   checkpoint with the wrong shape is caught by ``bind`` before a byte is read,
   and :meth:`CausalLM.load_weight` transposes while it copies.
-* **Fusion** (Llama's separate ``q_proj``/``k_proj``/``v_proj`` into one
-  ``qkv_proj``, ``gate_proj``/``up_proj`` into ``gate_up_proj``) is not needed
-  by GPT-2, whose checkpoint already stores ``qkv`` fused. The model that first
-  needs it overrides :meth:`~CausalLM.load_weight` (and ``checkpoint_specs``),
-  which is the one place a model sees a checkpoint tensor.
+* **Fusion**: Llama stores ``q_proj``, ``k_proj`` and ``v_proj`` separately
+  where the model has one ``qkv_proj``, and ``gate_proj`` and ``up_proj`` where
+  it has ``gate_up_proj``. A model lists each fused parameter's parts, in the
+  order they are stacked along the first dimension, in :meth:`CausalLM.stored_parts`.
+  :meth:`CausalLM.checkpoint_specs` then reports the parts instead of the
+  fused parameter, under names of their own (``layers.0.attn.q_proj.weight``),
+  and :meth:`CausalLM.load_weight` copies each part into its rows.
 
 The loader never reads a parameter's layout from anywhere but these methods.
+
+Buffers that no checkpoint stores (the rotary table) are computed by
+:meth:`CausalLM.initialize_buffers`, which the loader calls once the model has
+memory.
 """
 
 from __future__ import annotations
@@ -147,6 +153,29 @@ class CausalLM(nn.Module, ABC):
         with nothing tied leaves it as it is.
         """
 
+    def initialize_buffers(self) -> None:
+        """Compute the buffers no checkpoint stores, on the device the model now lives on.
+
+        The loader calls this after it materialises a model built on the meta
+        device, whose buffers then hold arbitrary memory. The default rebuilds
+        the table of every :class:`~ayaka.layers.rope.RotaryEmbedding` in the model.
+        """
+        from ayaka.layers.rope import RotaryEmbedding
+
+        for module in self.modules():
+            if isinstance(module, RotaryEmbedding):
+                module.reset_cache()
+
+    def stored_parts(self, name: str) -> tuple[tuple[str, int], ...]:
+        """The checkpoint tensors that parameter ``name`` is fused from, with their rows.
+
+        Each entry is ``(part name, rows)``; the parts are stacked along the
+        first dimension in this order and their rows add up to the parameter's.
+        The default is ``()``: the parameter is stored whole.
+        """
+        del name
+        return ()
+
     def kv_specs(self, *, block_size: int, layout: KVLayoutKind) -> tuple[KVGroup, ...]:
         """Describe the KV cache this model needs, one group per distinct geometry.
 
@@ -174,28 +203,34 @@ class CausalLM(nn.Module, ABC):
         """List every parameter as the checkpoint stores it.
 
         Names are parameter names (a tied parameter appears once, under the
-        first name it is registered with). Shapes are the stored ones, so
+        first name it is registered with), and a fused parameter is replaced by
+        its parts (:meth:`stored_parts`). Shapes are the stored ones, so
         :meth:`~ayaka.weights.mapping.WeightMapping.bind` compares like with
         like: a parameter in :attr:`stored_transposed` is listed with its
         dimensions swapped. The dtype is the compute dtype; the checkpoint's
         own dtype is converted when the tensor is loaded.
         """
-        return [
-            TensorSpec(
-                name,
-                tuple(reversed(parameter.shape))
-                if self._is_stored_transposed(name)
-                else tuple(parameter.shape),
-                self.compute_dtype,
-            )
-            for name, parameter in self.named_parameters()
-        ]
+        specs: list[TensorSpec] = []
+        for name, parameter in self.named_parameters():
+            parts = self.stored_parts(name)
+            if parts:
+                tail = tuple(parameter.shape[1:])
+                specs.extend(
+                    TensorSpec(part, (rows, *tail), self.compute_dtype) for part, rows in parts
+                )
+                continue
+            shape = tuple(parameter.shape)
+            if self._is_stored_transposed(name):
+                shape = tuple(reversed(shape))
+            specs.append(TensorSpec(name, shape, self.compute_dtype))
+        return specs
 
     def load_weight(self, name: str, tensor: torch.Tensor) -> None:
         """Copy one checkpoint tensor into the parameter ``name``, converting its dtype.
 
         Args:
-            name: A parameter name, as listed by :meth:`checkpoint_specs`.
+            name: A name as listed by :meth:`checkpoint_specs`: a parameter, or a
+                part of a fused one, which fills that part's rows.
             tensor: The tensor in the checkpoint's layout and dtype, on any device.
 
         Raises:
@@ -203,6 +238,19 @@ class CausalLM(nn.Module, ABC):
                 not have the parameter's shape. ``bind`` rules this out for a
                 checkpoint it accepted; this is the guard for a direct call.
         """
+        target = self._part_target(name)
+        if target is not None:
+            fused, start, rows = target
+            parameter = self.get_parameter(fused)
+            expected = (rows, *parameter.shape[1:])
+            if tuple(tensor.shape) != expected:
+                raise ModelLoadError(
+                    f"{name} (rows {start}..{start + rows} of {fused}) is {list(expected)} but "
+                    f"the checkpoint tensor is {list(tensor.shape)}",
+                    context={"parameter": fused, "part": name},
+                )
+            parameter[start : start + rows].copy_(tensor)
+            return
         parameter = self.get_parameter(name)
         if self._is_stored_transposed(name):
             tensor = tensor.t()
@@ -216,3 +264,15 @@ class CausalLM(nn.Module, ABC):
 
     def _is_stored_transposed(self, name: str) -> bool:
         return any(re.fullmatch(pattern, name) for pattern in self.stored_transposed)
+
+    def _part_target(self, name: str) -> tuple[str, int, int] | None:
+        """``(fused parameter, first row, rows)`` when ``name`` is a part, else ``None``."""
+        if name in dict(self.named_parameters()):
+            return None
+        for fused, _ in self.named_parameters():
+            start = 0
+            for part, rows in self.stored_parts(fused):
+                if part == name:
+                    return fused, start, rows
+                start += rows
+        return None

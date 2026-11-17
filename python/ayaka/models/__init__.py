@@ -17,13 +17,15 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 if TYPE_CHECKING:
     from ayaka.models.base import CausalLM
     from ayaka.models.gpt2 import GPT2LMHeadModel
+    from ayaka.models.llama import LlamaForCausalLM
     from ayaka.models.registry import register_model, resolve_model
 
-__all__ = ["CausalLM", "GPT2LMHeadModel", "register_model", "resolve_model"]
+__all__ = ["CausalLM", "GPT2LMHeadModel", "LlamaForCausalLM", "register_model", "resolve_model"]
 
 _EXPORTS = {
     "base": ("CausalLM",),
     "gpt2": ("GPT2LMHeadModel",),
+    "llama": ("LlamaForCausalLM",),
     "registry": ("register_model", "resolve_model"),
 }
 

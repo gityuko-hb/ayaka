@@ -41,12 +41,14 @@ def test_gpt2_is_resolved_by_its_architecture_name() -> None:
 
 def test_an_unknown_architecture_lists_what_is_supported() -> None:
     with pytest.raises(
-        ModelLoadError, match=r"'LlamaForCausalLM' is not supported.*GPT2LMHeadModel"
+        ModelLoadError,
+        match=r"'MistralForCausalLM' is not supported.*GPT2LMHeadModel.*LlamaForCausalLM",
     ) as error:
-        resolve_model("LlamaForCausalLM")
+        resolve_model("MistralForCausalLM")
 
-    assert error.value.context["architecture"] == "LlamaForCausalLM"
+    assert error.value.context["architecture"] == "MistralForCausalLM"
     assert "GPT2LMHeadModel" in error.value.context["supported"]  # type: ignore[operator]  # a list
+    assert "LlamaForCausalLM" in error.value.context["supported"]  # type: ignore[operator]  # a list
 
 
 def test_a_registered_class_is_resolved_and_listed_in_the_error() -> None:

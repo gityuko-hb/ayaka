@@ -11,6 +11,7 @@ from ayaka.layers.linear import Linear
 
 if TYPE_CHECKING:
     from ayaka.layers.context import ForwardContext
+    from ayaka.layers.rope import RotaryEmbedding
     from ayaka.ops.backend import OpsBackend
 
 __all__ = ["Attention"]
@@ -29,7 +30,9 @@ class Attention(nn.Module):
     :class:`~ayaka.layers.context.ForwardContext` of the step, stores this
     step's keys and values there, then attends over everything the step's
     requests have cached. A step may carry several rows per request, so
-    prefill, decode and verification all go through :meth:`forward`.
+    prefill, decode and verification all go through :meth:`forward`. With a
+    rotary embedding, queries and keys are rotated by ``context.positions``
+    before the keys are stored, so the cache holds rotated keys.
 
     Args:
         hidden_size: Width of the input and the output.
@@ -37,7 +40,10 @@ class Attention(nn.Module):
         num_kv_heads: Key/value heads; divides ``num_heads``.
         head_dim: Width of a head.
         layer_id: Which entry of the context's cache tensors this layer owns.
-        bias: Whether ``qkv_proj`` and ``o_proj`` have a bias.
+        bias: Whether ``qkv_proj`` has a bias.
+        out_bias: Whether ``o_proj`` has a bias; ``None`` follows ``bias``.
+        rotary: The model's rotary embedding, the same module in every layer; ``None``
+            for a model with learned position embeddings.
         ops: The backend whose ``kvcache``, ``attention`` and ``linear`` ops do the work.
         dtype: Compute dtype of the parameters.
         device: Where the parameters live.
@@ -55,6 +61,8 @@ class Attention(nn.Module):
         *,
         layer_id: int,
         bias: bool = True,
+        out_bias: bool | None = None,
+        rotary: RotaryEmbedding | None = None,
         ops: OpsBackend,
         dtype: torch.dtype,
         device: torch.device | str | None = None,
@@ -76,8 +84,16 @@ class Attention(nn.Module):
             device=device,
         )
         self.o_proj = Linear(
-            num_heads * head_dim, hidden_size, bias=bias, ops=ops, dtype=dtype, device=device
+            num_heads * head_dim,
+            hidden_size,
+            bias=bias if out_bias is None else out_bias,
+            ops=ops,
+            dtype=dtype,
+            device=device,
         )
+        # Every layer of a model holds the same module; it has no parameters and its table is
+        # a non-persistent buffer, so sharing it adds nothing to a checkpoint.
+        self.rotary = rotary
         self._kvcache = ops.kvcache
         self._attention = ops.attention
 
@@ -99,6 +115,8 @@ class Attention(nn.Module):
         q = q.reshape(rows, self.num_heads, self.head_dim).contiguous()
         k = k.reshape(rows, self.num_kv_heads, self.head_dim).contiguous()
         v = v.reshape(rows, self.num_kv_heads, self.head_dim).contiguous()
+        if self.rotary is not None:
+            self.rotary(context.positions, q, k)
 
         buffers = context.buffers(self.layer_id)
         self._kvcache.store(k, v, buffers, context.attention)

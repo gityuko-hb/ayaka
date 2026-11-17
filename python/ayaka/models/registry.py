@@ -27,6 +27,7 @@ __all__ = ["register_model", "resolve_model"]
 #: Architecture name to ``"module:Class"`` of the models in this package.
 _BUILTIN: Final = {
     "GPT2LMHeadModel": "ayaka.models.gpt2:GPT2LMHeadModel",
+    "LlamaForCausalLM": "ayaka.models.llama:LlamaForCausalLM",
 }
 
 _registered: dict[str, type[CausalLM]] = {}

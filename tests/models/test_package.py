@@ -27,6 +27,7 @@ def test_the_public_names_are_the_ones_the_tree_lists() -> None:
     assert sorted(package.__all__) == [
         "CausalLM",
         "GPT2LMHeadModel",
+        "LlamaForCausalLM",
         "register_model",
         "resolve_model",
     ]
