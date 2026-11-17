@@ -11,6 +11,7 @@ parses special tokens out of text (like the tiktoken adapter); the subclass
 from __future__ import annotations
 
 import codecs
+import json
 from typing import TYPE_CHECKING, Any
 
 from ayaka.configs.tokenizer import TokenizerConfig
@@ -44,6 +45,18 @@ class _Stream:
             return None if self._skip else next(k for k, v in SPECIALS.items() if v == token_id)
         text = self._decoder.decode(bytes([token_id]))
         return text or None
+
+
+def _calls(message: Mapping[str, Any]) -> str:
+    """A message's tool calls (and a tool turn's id and name) as short text, for the template."""
+    parts = [
+        f"<tool_call>{call['function']['name']}"
+        f"{json.dumps(call['function']['arguments'], separators=(',', ':'))}</tool_call>"
+        for call in message.get("tool_calls", ())
+    ]
+    if message.get("role") == "tool":
+        parts.append(f"[{message.get('tool_call_id')}:{message.get('name')}]")
+    return "".join(parts)
 
 
 class FakeTokenizer:
@@ -131,9 +144,14 @@ class FakeTokenizer:
         chat_template: str | None = None,
         **kwargs: Any,
     ) -> str:
-        del tools, chat_template, kwargs
-        body = "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages)
-        return body + ("<|im_start|>assistant\n" if add_generation_prompt else "")
+        del chat_template, kwargs
+        # Tool names and calls are written briefly, so a test can see they reached the prompt.
+        names = ",".join(str(tool.get("function", tool).get("name")) for tool in tools or ())
+        head = f"<|im_start|>tools\n{names}<|im_end|>\n" if names else ""
+        body = "".join(
+            f"<|im_start|>{m['role']}\n{m['content']}{_calls(m)}<|im_end|>\n" for m in messages
+        )
+        return head + body + ("<|im_start|>assistant\n" if add_generation_prompt else "")
 
     # -- decoding --
     def decode(

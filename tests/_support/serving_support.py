@@ -8,6 +8,8 @@
   test can compare prompt ids, and every abort. Use it where the tiny model cannot produce what
   the test needs (a tool call, a reasoning block).
 * ``read_sse(body)``: the frames of an SSE body as ``(event, data)`` pairs.
+* ``write_long_gpt2(directory)``: the tiny GPT-2 with 1024 positions, for prompts with a tool
+  history that the 128-position fixture cannot hold (only tokenized, never run, in these tests).
 
 Import this module only after ``pytest.importorskip("torch")`` and ``("aiohttp")``.
 """
@@ -27,7 +29,9 @@ from ayaka.core.types import FinishReason
 from ayaka.engine.async_llm import AsyncLLM, RequestStream
 from ayaka.engine.build import build_engine
 from ayaka.entrypoints.http import Serving, create_app
+from gpt2_support import hf_state, tiny_config, write_checkpoint
 from tiny_model import tiny_engine_config, tiny_tokenizer
+from tokenizer_fakes import MODEL_VOCAB
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
@@ -39,7 +43,14 @@ if TYPE_CHECKING:
     from ayaka.entrypoints.parsers.output import OutputFormat
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
-__all__ = ["ScriptedLLM", "parse_sse", "read_sse", "script", "serve"]
+__all__ = ["ScriptedLLM", "parse_sse", "read_sse", "script", "serve", "write_long_gpt2"]
+
+
+def write_long_gpt2(directory: Path, *, positions: int = 1024) -> Path:
+    """Write a tiny GPT-2 with a longer context to ``directory`` and return it."""
+    config = tiny_config(vocab_size=MODEL_VOCAB, max_position_embeddings=positions)
+    write_checkpoint(directory, hf_state(config), config)
+    return directory
 
 
 def script(
