@@ -18,6 +18,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
+def capturing(tensor: torch.Tensor) -> bool:
+    """Whether ``tensor`` is on a GPU whose current stream is capturing a CUDA graph.
+
+    A check that reads the device cannot run then: the read would end the capture.
+    """
+    return tensor.is_cuda and torch.cuda.is_current_stream_capturing()
+
+
 def require_compute_dtype(op: str, name: str, tensor: torch.Tensor) -> None:
     """Refuse a tensor whose dtype is not fp16, bf16 or fp32."""
     if tensor.dtype not in compute_torch_dtypes():

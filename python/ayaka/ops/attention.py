@@ -29,6 +29,18 @@ the padding slot and :meth:`AttentionOps.attend` writes zeros for them. A real
 request always has ``kv_lengths[b] >= rows_per_request[b] >= 1`` or no rows at
 all.
 
+Steps in a CUDA graph
+---------------------
+
+A captured graph replays the kernels it recorded on the tensors it recorded, so
+the metadata of a captured step must live in tensors that outlive the capture
+and are rewritten in place before each replay.
+:meth:`AttentionOps.graph_metadata` allocates such a record for a decode step of
+a fixed number of requests (a *bucket*), and
+:meth:`AttentionOps.update_graph_metadata` writes the next step into it from
+host data, outside the graph, without reading anything back from the device.
+Only decode steps are captured: one row per request, ``mode`` is ``DECODE``.
+
 Importing this module does not import torch.
 """
 
@@ -38,7 +50,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from torch import Tensor
+    from torch import Tensor, device
 
     from ayaka.core.types import ForwardMode
     from ayaka.ops.kvcache import KVBuffers
@@ -126,5 +138,43 @@ class AttentionOps(Protocol):
 
         Run it after :meth:`~ayaka.ops.kvcache.KVCacheOps.store` has written
         this step's rows. The cache is only read.
+
+        Given metadata from :meth:`graph_metadata`, the call reads only tensors
+        of ``meta`` and can be captured in a CUDA graph by a backend that
+        declares ``attention`` graph-safe.
+        """
+        ...
+
+    def graph_metadata(
+        self, num_requests: int, max_blocks: int, block_size: int, device: device
+    ) -> AttentionMetadata:
+        """Allocate the fixed metadata of a decode step of ``num_requests`` requests.
+
+        Every tensor is allocated here, on ``device``, and keeps its address for
+        the life of the record; ``block_table`` has room for ``max_blocks``
+        blocks per request. Every request starts as a padding request
+        (``kv_lengths`` 0, every row stored to slot 0), so the record is a valid
+        step to capture as it is. ``mode`` is ``DECODE``.
+        """
+        ...
+
+    def update_graph_metadata(
+        self, meta: AttentionMetadata, kv_lengths: Tensor, block_rows: Tensor
+    ) -> None:
+        """Write the next decode step into ``meta``, which :meth:`graph_metadata` made.
+
+        ``kv_lengths`` is ``[num_requests]`` and ``block_rows`` is
+        ``[num_requests, max_blocks]``, both int32 **CPU** tensors with the
+        meanings :meth:`plan` gives them; a request with ``kv_lengths`` 0 is a
+        padding request. The call runs outside any graph and does not wait for
+        the device: it copies to the device asynchronously, on the current
+        stream, so a replay queued after it sees the new step. The caller keeps
+        the CPU tensors unchanged until that copy is done; a step that reads its
+        sampled tokens back has waited for it.
+
+        Raises:
+            BackendError: If the shapes do not match ``meta``, a request's
+                length needs more blocks than ``max_blocks``, or ``meta`` was not
+                made by this backend's :meth:`graph_metadata`.
         """
         ...

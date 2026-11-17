@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 from ayaka.core.errors import BackendError, CapabilityError, ConfigError
-from ayaka.utils.dtypes import COMPUTE_DTYPES
+from ayaka.utils.dtypes import COMPUTE_DTYPES, DType
 from ayaka.utils.torch_utils import require_torch
 from ayaka.utils.validation import require_text
 
@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from ayaka.ops.linear import LinearOps
     from ayaka.ops.norm import NormOps
     from ayaka.ops.sampling import SamplingOps
-    from ayaka.utils.dtypes import DType
 
 __all__ = [
     "GRAPH_FAMILIES",
@@ -371,6 +370,12 @@ def _load_torch() -> BackendFamilies:
     }
 
 
+def _load_flashinfer() -> BackendFamilies:
+    from ayaka.ops.backends.flashinfer import load
+
+    return load()
+
+
 register_backend(
     BackendCaps(
         name="torch",
@@ -382,4 +387,17 @@ register_backend(
         multi_row_attention=True,
     ),
     _load_torch,
+)
+
+register_backend(
+    BackendCaps(
+        name="flashinfer",
+        families=frozenset({"attention"}),
+        platforms=frozenset({"linux"}),
+        devices=frozenset({"cuda"}),
+        dtypes=frozenset({DType.FP16, DType.BF16}),
+        graph_safe=frozenset({"attention"}),
+        multi_row_attention=True,
+    ),
+    _load_flashinfer,
 )
