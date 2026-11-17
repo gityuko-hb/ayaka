@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
-from ayaka.configs.model import ModelConfig
+from ayaka.configs.model import ModelConfig, RopeScaling
 from ayaka.core.errors import ConfigError, ModelLoadError
 
 GPT2_JSON: dict[str, object] = {
@@ -129,6 +129,46 @@ class TestModelConfig:
 
         assert caught.value.code == "KV_HEADS_NOT_DIVISOR"
 
+    def test_a_scaling_needs_a_rotary_embedding(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            make(rope_scaling=RopeScaling(kind="linear", factor=2.0))
+
+        assert caught.value.code == "ROPE_SCALING_WITHOUT_ROPE"
+
+    @pytest.mark.parametrize("theta", [0.5, float("inf"), -1.0])
+    def test_rope_theta_must_be_above_one(self, theta: float) -> None:
+        with pytest.raises(ConfigError, match="rope_theta"):
+            make(rope_theta=theta)
+
+
+@pytest.mark.unit
+class TestRopeScaling:
+    def test_llama3_needs_the_trained_context(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            RopeScaling(kind="llama3", factor=8.0)
+
+        assert caught.value.code == "ROPE_SCALING_INCOMPLETE"
+
+    def test_a_factor_below_one_is_refused(self) -> None:
+        with pytest.raises(ConfigError, match=">= 1"):
+            RopeScaling(kind="linear", factor=0.5)
+
+    def test_llama3_bands_must_be_ordered(self) -> None:
+        with pytest.raises(ConfigError, match="greater than low_freq_factor"):
+            RopeScaling(
+                kind="llama3",
+                factor=8.0,
+                original_max_position_embeddings=8192,
+                low_freq_factor=4.0,
+                high_freq_factor=1.0,
+            )
+
+    def test_an_unknown_kind_is_refused(self) -> None:
+        with pytest.raises(ConfigError) as caught:
+            RopeScaling(kind="dynamic", factor=2.0)  # type: ignore[arg-type]  # deliberately wrong
+
+        assert caught.value.code == "INVALID_CHOICE"
+
 
 @pytest.mark.unit
 class TestFromHfConfig:
@@ -216,6 +256,93 @@ class TestFromHfConfig:
             ModelConfig.from_hf_config(raw)
 
         assert caught.value.code == "HEAD_DIM_UNDEFINED"
+
+    def test_gpt2_has_no_rotary_embedding(self) -> None:
+        config = ModelConfig.from_hf_config(GPT2_JSON)
+
+        assert (config.rope_theta, config.rope_scaling) == (None, None)
+
+    def test_llama_rope_theta_and_its_default(self) -> None:
+        assert ModelConfig.from_hf_config({**LLAMA_JSON, "rope_theta": 500000}).rope_theta == 5e5
+        assert ModelConfig.from_hf_config(LLAMA_JSON).rope_theta == 10000.0
+
+    def test_llama_without_the_tie_key_is_untied(self) -> None:
+        raw = {k: v for k, v in LLAMA_JSON.items() if k != "tie_word_embeddings"}
+
+        assert not ModelConfig.from_hf_config(raw).tie_word_embeddings
+
+    def test_rope_scaling_in_the_older_spelling(self) -> None:
+        raw = {
+            **LLAMA_JSON,
+            "rope_theta": 500000.0,
+            "rope_scaling": {
+                "rope_type": "llama3",
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+            },
+        }
+
+        scaling = ModelConfig.from_hf_config(raw).rope_scaling
+
+        assert scaling == RopeScaling(
+            kind="llama3",
+            factor=32.0,
+            original_max_position_embeddings=8192,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+        )
+
+    def test_rope_parameters_of_transformers_5(self) -> None:
+        raw = {
+            **LLAMA_JSON,
+            "rope_parameters": {"rope_type": "linear", "rope_theta": 1e6, "factor": 2.0},
+        }
+
+        config = ModelConfig.from_hf_config(raw)
+
+        assert config.rope_theta == 1e6
+        assert config.rope_scaling == RopeScaling(kind="linear", factor=2.0)
+
+    def test_yarn_takes_the_context_when_the_original_is_not_given(self) -> None:
+        raw = {**LLAMA_JSON, "rope_scaling": {"type": "yarn", "factor": 4.0}}
+
+        scaling = ModelConfig.from_hf_config(raw).rope_scaling
+
+        assert scaling is not None
+        assert scaling.original_max_position_embeddings == 131072
+
+    def test_default_scaling_is_no_scaling(self) -> None:
+        raw = {**LLAMA_JSON, "rope_scaling": {"rope_type": "default"}}
+
+        assert ModelConfig.from_hf_config(raw).rope_scaling is None
+
+    @pytest.mark.parametrize(
+        "scaling",
+        [
+            {"rope_type": "dynamic", "factor": 2.0},
+            {"rope_type": "longrope", "factor": 2.0},
+            {"rope_type": "yarn", "factor": 4.0, "mscale": 0.7},
+        ],
+    )
+    def test_scalings_that_are_not_implemented_are_refused(
+        self, scaling: dict[str, object]
+    ) -> None:
+        with pytest.raises(ConfigError) as caught:
+            ModelConfig.from_hf_config({**LLAMA_JSON, "rope_scaling": scaling})
+
+        assert caught.value.code == "ROPE_SCALING_UNSUPPORTED"
+
+    def test_a_partial_rotary_factor_is_refused(self) -> None:
+        with pytest.raises(ConfigError, match="part of each head"):
+            ModelConfig.from_hf_config({**LLAMA_JSON, "partial_rotary_factor": 0.5})
+
+    def test_projection_biases_are_read(self) -> None:
+        config = ModelConfig.from_hf_config({**LLAMA_JSON, "attention_bias": True})
+
+        assert config.attention_bias
+        assert not config.mlp_bias
 
     def test_invalid_values_reach_the_constructor_checks(self) -> None:
         with pytest.raises(ConfigError) as caught:

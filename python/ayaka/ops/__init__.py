@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from ayaka.ops.kvcache import KVBuffers, KVCacheOps
     from ayaka.ops.linear import LinearOps
     from ayaka.ops.norm import NormOps
+    from ayaka.ops.rope import RopeOps
     from ayaka.ops.sampling import DrawStream, SamplingOps
 
 __all__ = [
@@ -63,6 +64,7 @@ __all__ = [
     "LinearOps",
     "NormOps",
     "OpsBackend",
+    "RopeOps",
     "SamplingOps",
     "available_backends",
     "load_backend",
@@ -86,6 +88,7 @@ _EXPORTS = {
     "kvcache": ("KVBuffers", "KVCacheOps"),
     "linear": ("LinearOps",),
     "norm": ("NormOps",),
+    "rope": ("RopeOps",),
     "sampling": ("DrawStream", "SamplingOps"),
 }
 

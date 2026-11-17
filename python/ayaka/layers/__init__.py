@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ayaka.layers.ffn.dense import MLP, GatedMLP
     from ayaka.layers.linear import Linear
     from ayaka.layers.norm import LayerNorm, RMSNorm
+    from ayaka.layers.rope import RotaryEmbedding, rope_inverse_frequencies
 
 __all__ = [
     "GELU",
@@ -36,8 +37,10 @@ __all__ = [
     "LayerNorm",
     "Linear",
     "RMSNorm",
+    "RotaryEmbedding",
     "SiLUAndMul",
     "TokenEmbedding",
+    "rope_inverse_frequencies",
 ]
 
 _EXPORTS = {
@@ -48,6 +51,7 @@ _EXPORTS = {
     "ffn.dense": ("MLP", "GatedMLP"),
     "linear": ("Linear",),
     "norm": ("LayerNorm", "RMSNorm"),
+    "rope": ("RotaryEmbedding", "rope_inverse_frequencies"),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())
