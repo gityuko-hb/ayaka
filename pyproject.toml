@@ -52,6 +52,16 @@ tiktoken = [
     "jinja2>=3.1.6",
     "tiktoken>=0.14.0",
 ]
+# The GPU attention backend (ayaka.ops.backends.flashinfer), for Linux and WSL2 only. It takes torch
+# from the cu130 index, like the cu130 extra, so on a GPU machine either of these works:
+#   uv sync --extra flashinfer      or      uv sync --extra cu130 --extra flashinfer
+# flashinfer is pinned exactly: a new version brings new kernels and numerics, so it is upgraded in
+# a pull request of its own with the gpu parity and end-to-end results. Its kernels are compiled on
+# first use (about 40 s each on the dev machine), which needs the CUDA toolkit (nvcc) on PATH.
+flashinfer = [
+    "flashinfer-python==0.7.4; sys_platform == 'linux'",
+    "torch>=2.14,<2.15; sys_platform == 'linux'",
+]
 
 [tool.hatch.version]
 path = "python/ayaka/__version__.py"
@@ -136,13 +146,17 @@ test = [
 ]
 
 [tool.uv]
-# An environment gets one torch build, never both.
-conflicts = [[{ extra = "cpu" }, { extra = "cu130" }]]
+# An environment gets one torch build, never both; flashinfer needs the CUDA one.
+conflicts = [
+    [{ extra = "cpu" }, { extra = "cu130" }],
+    [{ extra = "cpu" }, { extra = "flashinfer" }],
+]
 
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu130", extra = "cu130" },
+    { index = "pytorch-cu130", extra = "flashinfer" },
 ]
 
 # explicit = true: these indexes are used only for the packages pinned to them above.

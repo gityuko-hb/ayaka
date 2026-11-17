@@ -25,14 +25,19 @@ Use `uv` for everything; do not call `pip` or activate the venv by hand.
 ```sh
 uv sync --extra cpu            # install the project, dev tools and CPU PyTorch (what CI uses)
 uv sync --extra cu130          # ...or CUDA 13.0 PyTorch on a machine with an NVIDIA GPU (not both)
+uv sync --extra cu130 --extra flashinfer   # Linux/WSL2 GPU: the flashinfer attention backend (needs nvcc on PATH)
 uv sync --extra cpu --extra hf --extra tiktoken   # add the tokenizer adapters (optional; the tests do not need them)
 uv run ruff check .            # lint
 uv run ruff format .           # format
 uv run pyright                 # types: strict in python/, standard in tests/
 uv run pytest -m "not gpu and not integration"   # the unit tests: what the `test` job runs
 uv run pytest -m integration  # real tokenizers + worker processes; needs the hf and tiktoken extras (CI job `adapters`)
+uv run pytest -m gpu           # on the dev GPU only; AYAKA_REQUIRE_GPU=1 turns a missing GPU into a failure
 uv build                       # build the sdist and wheel
 ```
+
+Under WSL2, keep a separate checkout with its own `.venv` in the Linux file system and run `uv` there, never
+in the Windows checkout.
 
 CI runs the same commands on Ubuntu only for now. All of them must pass before review.
 
@@ -73,6 +78,8 @@ does not export it.
   its own PyTorch index through `[tool.uv.sources]`. The two cannot be installed together, and a plain `uv sync`
   installs no torch. Do not add `torch` to `[project].dependencies`: that would make `uv.lock` pull the CUDA
   build (and ~15 `nvidia-*` packages) into hosted Linux CI. Keep both extras on the same torch version range.
+  The `flashinfer` extra (Linux only) also takes torch from the cu130 index and conflicts with `cpu`; its
+  version is pinned exactly and upgraded in a PR of its own with the `gpu` parity and end-to-end results.
 - Tokenizer adapters are optional extras, not runtime dependencies: `hf` (transformers, tokenizers,
   huggingface-hub) and `tiktoken` (tiktoken, jinja2). The adapters import them lazily through
   `ayaka.utils.import_utils.require_module`, so never import them at module top level.
