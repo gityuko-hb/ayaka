@@ -13,7 +13,7 @@ request, and follow them whether a person or an agent writes the text.
 ```text
 python/ayaka/     the package (ships py.typed); python/ayaka/__version__.py is the only place the version is set
 tests/            pytest tests, outside the package
-.github/          issue forms, PR template, CI, dependabot, SECURITY.md
+.github/          issue forms, PR template, CI, SECURITY.md
 pyproject.toml    metadata, build backend and all tool configuration (ruff, pyright, pytest, coverage)
 uv.lock           committed; CI installs with `uv sync --locked`
 ```
@@ -78,6 +78,8 @@ does not export it.
   `ayaka.utils.import_utils.require_module`, so never import them at module top level.
 - Titles of PRs follow Conventional Commits with an icon in front (`<icon> type(scope): description`); see
   CONTRIBUTING.md.
+- Actions in the workflows stay pinned to a full commit SHA with the version in a comment. There is no dependabot:
+  a maintainer bumps the pins by hand (a tool such as `pinact` or `ratchet` helps), reads the diff and commits it.
 - Search past issues and PRs before writing a new one, and update what you find. Run
   `gh issue list --state all --search "<keywords>"` and `gh pr list --state all --search "<keywords>"`, closed ones
   included. If a thread already covers the work, add the new evidence or scope to it (a comment or an edit of its

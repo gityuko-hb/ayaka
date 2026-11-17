@@ -58,10 +58,12 @@ is fixed by the type, so a reader can tell the kind of change at a glance.
 Examples: `🐛 fix(cli): keep the config file when the input is invalid`,
 `⚡️ perf(kernels): fuse the softmax pass`. Add `!` before the colon for a breaking change
 (`✨ feat(api)!: rename generate to run`). A check on GitHub fails a pull request whose title does not match,
-including one with the wrong icon for its type. Pull requests are squash-merged, so the title becomes the commit
-message. Commits inside a branch are not checked on GitHub, but if you ran `uv run pre-commit install`, a hook
-checks each commit message locally with the same rule (merge, `fixup!` and `squash!` messages are skipped), so a
-commit can be reused as the title. The rule lives in `.github/scripts/check-title.sh`.
+including one with the wrong icon for its type. The title is what the pull request list and a later changelog
+read, and with **Squash and merge** it becomes the commit message on `main`. A merge commit or a rebase merge
+lands the commits inside the branch as they are instead; GitHub does not check those, so keep them presentable.
+If you ran `uv run pre-commit install`, a hook checks each commit message locally with the same rule (merge,
+`fixup!` and `squash!` messages are skipped), so a commit can be reused as the title. The rule lives in
+`.github/scripts/check-title.sh`.
 
 ## Report a problem people can investigate
 
