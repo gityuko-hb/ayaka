@@ -15,9 +15,10 @@ from ayaka.utils.host_info import host_available_bytes, host_total_ram_bytes
 from ayaka.utils.nvml_utils import nvml_session, probe_device
 from ayaka.utils.validation import require_int, require_text
 
-__all__ = ["DeviceInfo", "probe_devices"]
+__all__ = ["DeviceInfo", "DeviceKind", "probe_devices"]
 
 type DeviceKind = Literal["cuda", "cpu"]
+"""The kinds of device Ayaka runs on."""
 
 
 @dataclass(frozen=True, slots=True)

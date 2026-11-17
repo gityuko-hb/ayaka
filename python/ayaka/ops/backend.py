@@ -1,11 +1,14 @@
 """Backend registry: which library runs each op family.
 
 A backend is a named set of op-family implementations with a
-:class:`BackendCaps` record of where they run. :func:`load_backend` takes
-backend names in priority order and returns one :class:`OpsBackend`: for every
-family, the first listed backend that implements it and supports the requested
-device and dtype. The choice is made once, when the engine is built, and it is
-logged; no op switches to another backend during a call.
+:class:`BackendCaps` record of where they run and what they can do.
+:func:`load_backend` takes backend names in priority order and returns one
+:class:`OpsBackend`: for every family, the first listed backend that implements
+it, supports the requested device and dtype, and has every capability the
+engine asked for (running inside a CUDA graph, several query rows per request).
+The choice is made once, when the engine is built, and it is logged; no op
+switches to another backend during a call, and nothing is checked again on the
+hot path.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ if TYPE_CHECKING:
     from ayaka.utils.dtypes import DType
 
 __all__ = [
+    "GRAPH_FAMILIES",
     "BackendCaps",
     "BackendFamilies",
     "FamilyName",
@@ -68,6 +72,12 @@ _FAMILIES: Final[tuple[FamilyName, ...]] = (
     "sampling",
 )
 
+#: The families a captured decode step calls: the model's forward, the cache write,
+#: attention over graph metadata and the sampler. With ``cuda_graph=True``,
+#: :func:`load_backend` takes each of them only from a backend that lists it in
+#: :attr:`BackendCaps.graph_safe`.
+GRAPH_FAMILIES: Final[frozenset[FamilyName]] = frozenset(_FAMILIES)
+
 _CONFIG_PATH: Final = "ops.backends"
 _NOT_IMPLEMENTED: Final = "does not implement this family"
 
@@ -86,7 +96,7 @@ class BackendFamilies(TypedDict, total=False):
 
 @dataclass(frozen=True, slots=True)
 class BackendCaps:
-    """What one backend implements and where it runs.
+    """What one backend implements, where it runs and what it can do.
 
     Attributes:
         name: Registry name, as written in the list given to :func:`load_backend`.
@@ -94,9 +104,24 @@ class BackendCaps:
         platforms: ``sys.platform`` values it runs on.
         devices: Torch device types it runs on (``"cpu"``, ``"cuda"``).
         dtypes: Compute dtypes its ops accept.
+        graph_safe: Families whose ops can be captured in a CUDA graph and replayed:
+            they read nothing back to the host, allocate nothing that outlives the
+            call and, for attention, run on the fixed metadata of
+            :meth:`~ayaka.ops.attention.AttentionOps.graph_metadata`. A subset of
+            ``families``.
+        external_uniform: The sampling family draws its token from the random
+            number it is given (:meth:`~ayaka.ops.sampling.SamplingOps.sample`'s
+            ``u``) rather than from a generator of its own. Every sampling family
+            must; a backend whose library cannot does not implement ``sampling``.
+        multi_row_attention: The attention family serves several query rows per
+            request (prefill chunks, verify windows), not only decode rows. Every
+            engine prefills, so :func:`load_backend` takes attention only from a
+            backend that has it.
 
     Raises:
-        ValueError: If ``name`` is blank or ``families`` names an unknown family.
+        ValueError: If ``name`` is blank, ``families`` names an unknown family,
+            ``graph_safe`` names a family the backend does not implement, or a
+            backend implements ``sampling`` without ``external_uniform``.
     """
 
     name: str
@@ -104,12 +129,23 @@ class BackendCaps:
     platforms: frozenset[str]
     devices: frozenset[str]
     dtypes: frozenset[DType]
+    graph_safe: frozenset[FamilyName] = frozenset()
+    external_uniform: bool = False
+    multi_row_attention: bool = False
 
     def __post_init__(self) -> None:
         require_text(self.name, "name")
         unknown = sorted(self.families.difference(_FAMILIES))
         if unknown:
             raise ValueError(f"unknown op families {unknown}; known families: {list(_FAMILIES)}")
+        outside = sorted(self.graph_safe.difference(self.families))
+        if outside:
+            raise ValueError(f"graph_safe names families the backend does not implement: {outside}")
+        if "sampling" in self.families and not self.external_uniform:
+            raise ValueError(
+                "a sampling family must take its random numbers from the caller "
+                "(external_uniform=True); see ayaka.ops.sampling"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +154,8 @@ class OpsBackend:
 
     Layers receive this record, or the one family they use, when they are built.
     ``providers`` maps each family name to the backend that supplies it.
+    ``graph_safe`` is true when it was built with ``cuda_graph=True``, so every
+    family can be captured in a CUDA graph.
     """
 
     norm: NormOps
@@ -128,6 +166,7 @@ class OpsBackend:
     attention: AttentionOps
     sampling: SamplingOps
     providers: Mapping[FamilyName, str]
+    graph_safe: bool = False
 
 
 _registry: dict[str, tuple[BackendCaps, Callable[[], BackendFamilies]]] = {}
@@ -161,17 +200,24 @@ def available_backends() -> tuple[BackendCaps, ...]:
     return tuple(caps for caps, _ in _registry.values())
 
 
-def load_backend(names: Sequence[str], *, device: str, dtype: DType) -> OpsBackend:
+def load_backend(
+    names: Sequence[str], *, device: str, dtype: DType, cuda_graph: bool = False
+) -> OpsBackend:
     """Build the ops for one device from backends listed in priority order.
 
     Each family comes from the first listed backend that implements it, runs on
-    this platform and ``device``, accepts ``dtype`` and can be loaded. A backend
-    is loaded only when it is the best candidate for some family.
+    this platform and ``device``, accepts ``dtype``, has the capabilities the
+    family needs and can be loaded. A backend is loaded only when it is the best
+    candidate for some family. Attention always needs
+    :attr:`BackendCaps.multi_row_attention`; with ``cuda_graph`` every family of
+    :data:`GRAPH_FAMILIES` must also be in the backend's
+    :attr:`BackendCaps.graph_safe`.
 
     Args:
         names: Registered backend names, most preferred first.
         device: Torch device type the ops will run on: ``"cpu"`` or ``"cuda"``.
         dtype: Compute dtype of the model.
+        cuda_graph: Whether decode steps will be captured in CUDA graphs.
 
     Raises:
         ConfigError: If ``names`` is empty, repeats a name or contains an
@@ -191,7 +237,7 @@ def load_backend(names: Sequence[str], *, device: str, dtype: DType) -> OpsBacke
         rejections: list[str] = []
         passed_over: list[str] = []
         for name in names:
-            reason = _rejection(_registry[name][0], family, device, dtype)
+            reason = _rejection(_registry[name][0], family, device, dtype, cuda_graph=cuda_graph)
             if reason is None:
                 reason = _ensure_loaded(name, loaded, unavailable)
             if reason is None:
@@ -211,18 +257,20 @@ def load_backend(names: Sequence[str], *, device: str, dtype: DType) -> OpsBacke
         details = "".join(
             f"\n  {family}: {'; '.join(rejections)}" for family, rejections in missing.items()
         )
+        graph = " inside a CUDA graph" if cuda_graph else ""
         raise ConfigError(
             _CONFIG_PATH,
             "BACKEND_CAPABILITY_MISSING",
             f"no backend in {list(names)} provides {', '.join(missing)} "
-            f"for device {device!r} and dtype {dtype.label}:{details}",
+            f"for device {device!r} and dtype {dtype.label}{graph}:{details}",
             context={"missing": missing},
         )
 
     logger.info(
-        "ops backends for %s %s: %s",
+        "ops backends for %s %s%s: %s",
         device,
         dtype.label,
+        " (cuda graph)" if cuda_graph else "",
         ", ".join(f"{family}={name}" for family, name in providers.items()),
     )
     return OpsBackend(
@@ -234,6 +282,7 @@ def load_backend(names: Sequence[str], *, device: str, dtype: DType) -> OpsBacke
         attention=cast("AttentionOps", chosen["attention"]),
         sampling=cast("SamplingOps", chosen["sampling"]),
         providers=MappingProxyType(providers),
+        graph_safe=cuda_graph,
     )
 
 
@@ -254,7 +303,9 @@ def _check_names(names: Sequence[str]) -> None:
         )
 
 
-def _rejection(caps: BackendCaps, family: FamilyName, device: str, dtype: DType) -> str | None:
+def _rejection(
+    caps: BackendCaps, family: FamilyName, device: str, dtype: DType, *, cuda_graph: bool
+) -> str | None:
     """Return why ``caps`` cannot serve ``family`` here, or ``None`` if it can."""
     if family not in caps.families:
         return _NOT_IMPLEMENTED
@@ -265,6 +316,10 @@ def _rejection(caps: BackendCaps, family: FamilyName, device: str, dtype: DType)
         problems.append(f"has no {device} support")
     if dtype not in caps.dtypes:
         problems.append(f"has no {dtype.label} support")
+    if family == "attention" and not caps.multi_row_attention:
+        problems.append("serves only one query row per request")
+    if cuda_graph and family in GRAPH_FAMILIES and family not in caps.graph_safe:
+        problems.append("cannot run inside a CUDA graph")
     return ", ".join(problems) or None
 
 
@@ -323,6 +378,8 @@ register_backend(
         platforms=frozenset({"linux", "win32", "darwin"}),
         devices=frozenset({"cpu", "cuda"}),
         dtypes=frozenset(COMPUTE_DTYPES),
+        external_uniform=True,
+        multi_row_attention=True,
     ),
     _load_torch,
 )

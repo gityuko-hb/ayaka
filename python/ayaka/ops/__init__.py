@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from ayaka.ops.activation import ActivationOps
     from ayaka.ops.attention import AttentionMetadata, AttentionOps
     from ayaka.ops.backend import (
+        GRAPH_FAMILIES,
         BackendCaps,
         BackendFamilies,
         FamilyName,
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     from ayaka.ops.sampling import DrawStream, SamplingOps
 
 __all__ = [
+    "GRAPH_FAMILIES",
     "ActivationOps",
     "AttentionMetadata",
     "AttentionOps",
@@ -71,6 +73,7 @@ _EXPORTS = {
     "activation": ("ActivationOps",),
     "attention": ("AttentionMetadata", "AttentionOps"),
     "backend": (
+        "GRAPH_FAMILIES",
         "BackendCaps",
         "BackendFamilies",
         "FamilyName",
