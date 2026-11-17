@@ -5,8 +5,11 @@ unsigned dtype and gives the same bits on CPU and CUDA. The 32 by 32 bit product
 of a round is built from 16-bit limbs, so no intermediate leaves the positive
 int64 range. The token is chosen by the algorithm in :mod:`ayaka.ops.sampling`,
 written for clarity: one full-vocabulary stable sort per call and one pass per
-filter. It checks its logits, which costs a device-to-host synchronisation; do
-not measure speed with it, and do not capture it in a CUDA graph.
+filter. Eager calls check their logits and indices, which costs a
+device-to-host synchronisation; do not measure speed with them. A check cannot
+read the device while a CUDA graph is being captured, so during a capture the
+checks are skipped and the captured graph refuses nothing: NaN logits then give
+an unspecified token instead of a :class:`~ayaka.core.errors.BackendError`.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from __future__ import annotations
 import torch
 
 from ayaka.core.errors import BackendError
-from ayaka.ops.backends.torch._checks import require_compute_dtype, require_like
+from ayaka.ops.backends.torch._checks import capturing, require_compute_dtype, require_like
 from ayaka.ops.sampling import DrawStream
 
 __all__ = ["argmax", "philox_rounds", "sample", "uniform"]
@@ -83,13 +86,14 @@ def uniform(
             f"{op}: stream must be a DrawStream, got {stream}",
             context={"op": op, "argument": "stream"},
         ) from None
+    checked = not capturing(out)
     for name, tensor in (("seeds", seeds), ("positions", positions), ("sequences", sequences)):
-        if bool((tensor < 0).any()):
+        if checked and bool((tensor < 0).any()):
             raise BackendError(
                 f"{op}: {name} must not be negative", context={"op": op, "argument": name}
             )
     wide_sequences = sequences.to(torch.int64)
-    if bool((wide_sequences > _WORD).any()):
+    if checked and bool((wide_sequences > _WORD).any()):
         raise BackendError(
             f"{op}: sequences must be below 2**32", context={"op": op, "argument": "sequences"}
         )
@@ -170,6 +174,8 @@ def _check_logits(op: str, logits: torch.Tensor) -> None:
             f"{op}: logits must be [rows, vocab], got {list(logits.shape)}",
             context={"op": op, "argument": "logits"},
         )
+    if capturing(logits):
+        return
     wide = logits.float()
     unusable = torch.isnan(wide) | (wide == torch.inf) | ~torch.isfinite(wide).any(dim=-1)[:, None]
     if bool(unusable.any()):

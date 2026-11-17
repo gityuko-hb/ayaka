@@ -20,6 +20,10 @@ faster, never different. No draft proposer exists yet, so the scheduler is never
 look-ahead rows and :meth:`ModelRunner.plan_lookahead` returns none; the shape of the contract is
 what the tests keep.
 
+With :meth:`ModelRunner.capture_graphs`, plain decode steps that fit a captured bucket replay a
+CUDA graph (:class:`~ayaka.execution.graph.GraphRunner`) instead of running eagerly; every other
+step runs as before. Both paths draw the same tokens.
+
 This module imports torch. Import it through ``ayaka.execution``, which loads it on first use.
 """
 
@@ -30,6 +34,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from ayaka.core.errors import BackendError
+from ayaka.execution.graph import GraphRunner
 from ayaka.execution.inputs import InputBuilder
 from ayaka.layers.context import ForwardContext
 from ayaka.sampling.sampler import Sampler
@@ -40,6 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from ayaka.core.types import RequestId, TokenId
+    from ayaka.execution.graph import CapturedBucket
     from ayaka.execution.inputs import ModelInputs
     from ayaka.kvcache.storage.pool import KVPool
     from ayaka.kvcache.table import BlockTable
@@ -110,6 +116,7 @@ class ModelRunner:
             max_rows=max_rows,
             device=device,
         )
+        self._graph: GraphRunner | None = None
 
     @property
     def builder(self) -> InputBuilder:
@@ -125,6 +132,25 @@ class ModelRunner:
     def kv_buffers(self) -> Mapping[int, KVBuffers]:
         """The cache tensors of each layer, by layer id."""
         return self._buffers
+
+    @property
+    def graph(self) -> GraphRunner | None:
+        """The decode graphs, once :meth:`capture_graphs` has run."""
+        return self._graph
+
+    def capture_graphs(self, buckets: Sequence[int]) -> list[CapturedBucket]:
+        """Capture decode steps of each bucket size; later decode steps that fit replay them.
+
+        The model's ops must have been loaded with ``cuda_graph=True``.
+
+        Raises:
+            ConfigError: If the ops are not graph-safe, the model is not on a GPU, or no bucket
+                fits the buffers.
+        """
+        graph = GraphRunner(self._model, self._builder, self._buffers, buckets=buckets)
+        captured = graph.capture()
+        self._graph = graph
+        return captured
 
     def plan_lookahead(self) -> Mapping[RequestId, int]:
         """Ask for draft rows per request; none, because no draft proposer exists yet."""
@@ -149,6 +175,14 @@ class ModelRunner:
         """
         try:
             with torch.inference_mode():
+                if drafts is None and self._graph is not None and self._graph.bucket_for(step):
+                    drawn = self._graph.run(step)
+                    return StepOutput(
+                        step_id=step.step_id,
+                        request_ids=step.request_ids,
+                        tokens=tuple((token,) for token in drawn),
+                        accepted=(0,) * step.num_requests,
+                    )
                 inputs = self._builder.build(step, drafts)
                 sampled = self._forward(inputs)
         except BackendError as exc:

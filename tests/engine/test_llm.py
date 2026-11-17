@@ -648,19 +648,6 @@ class TestBuild:
         assert caught.value.code == "DEVICE_CAPABILITY_MISSING"
         assert "sm_75 has no bf16 arithmetic" in str(caught.value)
 
-    def test_cuda_graphs_are_refused_until_capture_is_implemented(
-        self, checkpoint: TinyCheckpoint
-    ) -> None:
-        config = replace(
-            tiny_engine_config(checkpoint.directory),
-            device=DeviceConfig(device="cuda:0", cuda_graph=True),
-        )
-
-        with pytest.raises(ConfigError) as caught:
-            LLM.from_config(config, tokenizer=tiny_tokenizer())
-
-        assert caught.value.code == "CUDA_GRAPH_UNSUPPORTED"
-
     def test_a_kv_reserve_larger_than_the_model_context_is_refused(
         self, checkpoint: TinyCheckpoint
     ) -> None:

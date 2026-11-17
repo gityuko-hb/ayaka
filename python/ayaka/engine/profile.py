@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
     from ayaka.device.context import Device, MemoryReading
+    from ayaka.execution.graph import CapturedBucket
     from ayaka.memory.budget import MemoryBudget
     from ayaka.models.base import CausalLM
     from ayaka.ops.kvcache import KVBuffers
@@ -255,11 +256,13 @@ class StartupReport:
         profile: The measurements, as saved for the next start-up.
         budget: The ledger: weights, KV, runtime, workspace and graph bytes.
         reconciliation: The ledger against the device.
+        graphs: What each captured decode bucket cost; empty without graphs.
     """
 
     profile: StartupProfile
     budget: MemoryBudget
     reconciliation: Reconciliation
+    graphs: tuple[CapturedBucket, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from ayaka.ops.attention import AttentionMetadata, AttentionOps
     from ayaka.scheduler.step import StepInput
 
-__all__ = ["InputBuilder", "ModelInputs"]
+__all__ = ["InputBuilder", "ModelInputs", "StagedDecode"]
 
 
 class _Mirrored:
@@ -67,6 +67,25 @@ class _Mirrored:
         """Copy the first ``stop`` entries back to the host and wait for them."""
         if self.device is not self.host and stop:
             self.host[:stop].copy_(self.device[:stop])
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StagedDecode:
+    """A decode step written into the fixed buffers at a bucket's size, for a captured graph.
+
+    Attributes:
+        bucket: Rows the graph runs: the step's requests, then padding requests.
+        count: The step's own requests; their rows come first.
+        kv_lengths: ``[bucket]`` int32 CPU tensor, 0 for padding requests.
+        block_rows: ``[bucket, max_blocks]`` int32 CPU tensor of the requests' block tables.
+        all_greedy: Whether every request samples greedily, which picks the graph variant.
+    """
+
+    bucket: int
+    count: int
+    kv_lengths: torch.Tensor
+    block_rows: torch.Tensor
+    all_greedy: bool
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -149,6 +168,12 @@ class InputBuilder:
         self._top_p = _Mirrored((rows,), torch.float32, target)
         self._min_p = _Mirrored((rows,), torch.float32, target)
         self._sampled = _Mirrored((rows,), torch.int64, target)
+        # Host staging of a graph step's lengths and block tables, handed to the backend.
+        pinned = target.type != "cpu"
+        self._graph_lengths = torch.zeros(requests, dtype=torch.int32, pin_memory=pinned)
+        self._graph_rows = torch.zeros(
+            (requests, table.max_blocks_per_request), dtype=torch.int32, pin_memory=pinned
+        )
 
     @property
     def max_rows(self) -> int:
@@ -267,6 +292,116 @@ class InputBuilder:
             sampled=self._sampled.device[:total],
             logit_counts=logit_counts,
             draft_tokens=tuple(used_drafts),
+        )
+
+    @property
+    def max_requests(self) -> int:
+        """Most requests one step can have: the rows of the block table."""
+        return self._max_requests
+
+    def reset_graph_inputs(self, bucket: int) -> None:
+        """Fill the first ``bucket`` rows with a valid all-padding decode step, for a capture."""
+        self._tokens.array[:bucket] = 0
+        self._tokens.push(bucket)
+        for buffer, neutral in (
+            (self._seeds, 0),
+            (self._positions, 0),
+            (self._temperature, 1.0),
+            (self._top_k, 0),
+            (self._top_p, 1.0),
+            (self._min_p, 0.0),
+        ):
+            buffer.array[:bucket] = neutral
+            buffer.push(bucket)
+
+    @property
+    def max_blocks(self) -> int:
+        """Entries of one request's block table."""
+        return int(self._graph_rows.shape[1])
+
+    @property
+    def block_size(self) -> int:
+        """Tokens per cache block."""
+        return self._block_size
+
+    def graph_views(self, bucket: int) -> tuple[torch.Tensor, SamplingBatch, torch.Tensor]:
+        """The token ids, sampling parameters and sampled-token output of a bucket's graph.
+
+        Views of the first ``bucket`` entries of the fixed buffers: the same tensors every step,
+        so a graph captured on them reads what :meth:`stage_decode` writes. ``all_greedy`` of the
+        returned batch is ``False``; a caller that captures the greedy variant replaces it.
+        """
+        batch = SamplingBatch(
+            seeds=self._seeds.device[:bucket],
+            positions=self._positions.device[:bucket],
+            sequences=self._sequences.device[:bucket],
+            temperature=self._temperature.device[:bucket],
+            top_k=self._top_k.device[:bucket],
+            top_p=self._top_p.device[:bucket],
+            min_p=self._min_p.device[:bucket],
+            all_greedy=False,
+        )
+        return self._tokens.device[:bucket], batch, self._sampled.device[:bucket]
+
+    def stage_decode(self, step: StepInput, bucket: int) -> StagedDecode:
+        """Write a decode step, padded to ``bucket`` requests, for a captured graph to replay.
+
+        The step's requests fill the first rows; the rest are padding requests (length 0, token 0,
+        greedy). Token ids and sampling parameters go to the fixed device buffers; the lengths and
+        block tables come back as host tensors for ``ops.attention.update_graph_metadata``. The
+        block table mirror is updated as :meth:`build` does, so an eager step after this one sees
+        the same table.
+
+        Raises:
+            EngineError: If the step is not a decode step of at most ``bucket`` requests, or the
+                bucket is larger than the buffers.
+        """
+        count = step.num_requests
+        if step.mode is not ForwardMode.DECODE or step.num_rows != count:
+            raise EngineError(f"step {step.step_id} is not a decode step; graphs run only those")
+        if not count <= bucket <= min(self._max_requests, self._max_rows):
+            raise EngineError(
+                f"step {step.step_id} has {count} requests for a bucket of {bucket}; the buffers "
+                f"hold {min(self._max_requests, self._max_rows)}"
+            )
+        try:
+            self._apply_table_updates(step)
+        except BaseException:
+            self._stale = True
+            raise
+        batch_rows = step.batch_rows
+        if max(batch_rows) >= self._max_requests or min(batch_rows) < 0:
+            raise EngineError(f"step {step.step_id} uses a batch row outside the block table")
+
+        self._tokens.array[:count] = [known[0] for known in step.tokens]
+        self._tokens.array[count:bucket] = 0
+        self._tokens.push(bucket)
+
+        lengths = self._graph_lengths.numpy()
+        lengths[:count] = [start + 1 for start in step.start_positions]
+        lengths[count:bucket] = 0
+        rows = self._graph_rows.numpy()
+        rows[:count] = self._table.rows[0, list(batch_rows)]
+        rows[count:bucket] = 0
+
+        logit_counts = (1,) * count
+        greedy = self._sampling_batch(step, logit_counts).all_greedy
+        for buffer, neutral in (
+            (self._seeds, 0),
+            (self._positions, 0),
+            (self._temperature, 0.0),
+            (self._top_k, 0),
+            (self._top_p, 1.0),
+            (self._min_p, 0.0),
+        ):
+            buffer.array[count:bucket] = neutral
+            buffer.push(bucket)
+        return StagedDecode(
+            bucket=bucket,
+            count=count,
+            kv_lengths=self._graph_lengths[:bucket],
+            block_rows=self._graph_rows[:bucket],
+            all_greedy=greedy,
         )
 
     def read_sampled(self, count: int) -> list[TokenId]:
