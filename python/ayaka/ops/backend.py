@@ -391,6 +391,7 @@ register_backend(
         platforms=frozenset({"linux", "win32", "darwin"}),
         devices=frozenset({"cpu", "cuda"}),
         dtypes=frozenset(COMPUTE_DTYPES),
+        graph_safe=frozenset(_FAMILIES),
         external_uniform=True,
         multi_row_attention=True,
     ),

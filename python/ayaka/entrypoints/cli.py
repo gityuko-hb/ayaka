@@ -168,6 +168,18 @@ def _parser() -> argparse.ArgumentParser:
         help="compute dtype of the model (fp32)",
     )
     where.add_argument(
+        "--backends",
+        default="torch",
+        metavar="LIST",
+        help="ops backends, most preferred first, comma separated; each op family comes from the "
+        "first that serves it, e.g. flashinfer,torch on Linux or WSL2 (torch)",
+    )
+    where.add_argument(
+        "--cuda-graph",
+        action="store_true",
+        help="capture decode steps in CUDA graphs at start-up and replay them (GPU only)",
+    )
+    where.add_argument(
         "--memory-ratio",
         type=float,
         default=None,
@@ -199,9 +211,10 @@ def _run(args: argparse.Namespace) -> int:
     )
     config = _engine_config(args)
     if not args.quiet:
+        graphs = ", decode in CUDA graphs" if config.device.cuda_graph else ""
         _say(
             f"running {args.model} on {config.device.device} in {config.device.dtype.label} "
-            f"(ops backends: {', '.join(config.device.backends)})"
+            f"(ops backends: {', '.join(config.device.backends)}{graphs})"
         )
     with LLM.from_config(config) as llm:
         chunks = (
@@ -221,7 +234,12 @@ def _engine_config(args: argparse.Namespace) -> EngineConfig:
         source=ModelSourceConfig(
             args.model, revision=args.revision, tokenizer=args.tokenizer, offline=args.offline
         ),
-        device=DeviceConfig(device=args.device, dtype=_DTYPES[args.dtype]),
+        device=DeviceConfig(
+            device=args.device,
+            dtype=_DTYPES[args.dtype],
+            backends=tuple(name.strip() for name in args.backends.split(",") if name.strip()),
+            cuda_graph=args.cuda_graph,
+        ),
         cache=cache,
         # One request is all this command ever runs, so the cache is built for one.
         scheduler=SchedulerConfig(max_running=1),

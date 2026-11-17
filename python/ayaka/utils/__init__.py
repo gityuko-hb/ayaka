@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         NVFP4_BLOCK_SIZE,
         DType,
     )
+    from ayaka.utils.gc_control import freeze_startup_objects, paused_gc
     from ayaka.utils.hf_utils import hub_offline, optional_file, parse_eos_token_ids, read_json
     from ayaka.utils.host_info import (
         CgroupMemory,
@@ -159,6 +160,7 @@ __all__ = [
     "empty_host_tensor",
     "format_human_int",
     "fp8_emulation_available",
+    "freeze_startup_objects",
     "get_attribute_int",
     "get_driver_version",
     "has_dtype",
@@ -180,6 +182,7 @@ __all__ = [
     "parse_eos_token_ids",
     "parse_human_int",
     "parse_json_strict",
+    "paused_gc",
     "pci_numa_node",
     "peak_memory_bytes",
     "percentiles",
@@ -230,6 +233,7 @@ _EXPORTS = {
         "NVFP4_BLOCK_SIZE",
         "DType",
     ),
+    "gc_control": ("freeze_startup_objects", "paused_gc"),
     "hf_utils": ("hub_offline", "optional_file", "parse_eos_token_ids", "read_json"),
     "host_info": (
         "CgroupMemory",

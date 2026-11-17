@@ -4,17 +4,18 @@
 :class:`~ayaka.engine.core.EngineCore`. The order is the order of the dependencies::
 
     free memory of the device         measured first, before anything is allocated
-    device capabilities               the dtype the config asks for exists here
+    device capabilities               the dtype and CUDA graphs the config asks for exist here
     ops backend                       from the config's backend list, for this device and dtype
+                                      (graph-safe families only when CUDA graphs are on)
     model                             resolve the source, check and load the weights
     memory plan                       plan_budget over the weights, the KV cost of the model and,
                                       on a GPU, the last start-up profile measured for this key
     KV cache                          tensors (KVPool) and bookkeeping (KVCacheManager)
     tokenizer                         checked against the model's vocabulary and context
     scheduler, runner, processors     and the engine that runs them
-    start-up run (GPU only)           measure activations and runtime memory, reserve it all in
-                                      the ledger, compare the ledger with the device, save the
-                                      profile for the next start-up
+    start-up run (GPU only)           measure activations and runtime memory, capture the decode
+                                      graphs, reserve it all in the ledger, compare the ledger with
+                                      the device, save the profile for the next start-up
 
 Nothing here is a decision of its own except one: the memory plan hands the whole pool to the KV
 cache, which is right for a GPU that holds only this engine and wrong for the host's RAM, so on the
@@ -29,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from dataclasses import replace
 from typing import TYPE_CHECKING, Final
 
 from ayaka.core.errors import (
@@ -90,9 +92,10 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         when done.
 
     Raises:
-        ConfigError: If CUDA graphs are requested (not implemented yet), the device cannot run
-            the dtype, the backend list cannot serve the device and dtype, the KV reserve exceeds
-            the model context, or the tokenizer settings cannot work.
+        ConfigError: If the device cannot run the dtype or CUDA graphs the config asks for, the
+            backend list cannot serve the device and dtype (graph-safe families included, with
+            graphs on), the KV reserve exceeds the model context, or the tokenizer settings cannot
+            work.
         CapabilityError: If torch, the requested GPU, the Hub client or a tokenizer package is
             missing.
         ModelLoadError: If the source cannot be resolved, the checkpoint does not match the model,
@@ -105,20 +108,15 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
     from ayaka.model_loader.loader import load_model
     from ayaka.ops.backend import load_backend
 
-    if config.device.cuda_graph:
-        raise ConfigError(
-            "device.cuda_graph",
-            "CUDA_GRAPH_UNSUPPORTED",
-            "CUDA graph capture is not implemented yet; set cuda_graph=False",
-        )
-
     device = config.device
     baseline_reserved = _release_cached_device_memory(device)
     info, baseline = _free_bytes(device)
     capabilities = device_capabilities(info)
     capabilities.check(device)
     logger.info("device: %s", capabilities.describe())
-    ops = load_backend(device.backends, device=device.device_type, dtype=device.dtype)
+    ops = load_backend(
+        device.backends, device=device.device_type, dtype=device.dtype, cuda_graph=device.cuda_graph
+    )
     model = load_model(config.source, device, ops=ops)
     model_config = model.config
 
@@ -175,6 +173,7 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
             activation_fixed_bytes=(
                 max(previous.workspace_bytes - previous.activation_peak_bytes, 0) if previous else 0
             ),
+            graph_bytes_estimate=previous.graph_bytes if previous and device.cuda_graph else 0,
         )
     )
 
@@ -257,7 +256,7 @@ def _startup_run(
     chunk_tokens: int,
     running: int,
 ) -> StartupReport:
-    """Measure, fill the ledger and check it against the device (GPU only)."""
+    """Measure, capture the graphs, fill the ledger and check it against the device (GPU only)."""
     from ayaka.device.context import Device
 
     target = Device(config.device.device)
@@ -280,6 +279,12 @@ def _startup_run(
     budget.reserve("kv", profile.kv_bytes)
     budget.reserve("runtime", min(profile.runtime_bytes, budget.free_bytes))
     budget.reserve("workspace", min(profile.workspace_bytes, budget.free_bytes))
+    captured = ()
+    if config.device.cuda_graph:
+        captured = tuple(runner.capture_graphs(buckets))
+        graph_bytes = sum(item.bytes for item in captured)
+        budget.reserve("graph", min(graph_bytes, budget.free_bytes))
+        profile = replace(profile, graph_bytes=graph_bytes)
     target.synchronize()
     reconciliation = reconcile(
         budget, baseline_bytes=baseline, reading=target.memory(), reused_bytes=profile.reused_bytes
@@ -296,7 +301,9 @@ def _startup_run(
         plan.headroom_bytes,
     )
     save_profile(profile)
-    return StartupReport(profile=profile, budget=budget, reconciliation=reconciliation)
+    return StartupReport(
+        profile=profile, budget=budget, reconciliation=reconciliation, graphs=captured
+    )
 
 
 def _release_cached_device_memory(device: DeviceConfig) -> int:

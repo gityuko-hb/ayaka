@@ -41,13 +41,13 @@ class DeviceConfig(ConfigMixin):
             ``ayaka.ops.backend.load_backend``: each op family comes from the
             first backend that serves it. Whether a name is registered is checked
             there, not here.
-        cuda_graph: Reserved for decode-graph capture. The field is validated and stored, but
-            capture is not implemented yet: ``build_engine`` refuses ``True`` with
-            ``CUDA_GRAPH_UNSUPPORTED`` rather than silently run without graphs. Requires a
-            CUDA device.
-        graph_buckets: Reserved for decode batch sizes a graph is captured for, ascending and
-            without duplicates. Validated even when ``cuda_graph`` is off, so a config does not
-            become invalid when capture lands and the flag is switched on.
+        cuda_graph: Capture plain decode steps in CUDA graphs at start-up and replay them
+            (``ayaka.execution.graph``). Requires a CUDA device, and every op family then comes
+            from a backend that declares it graph-safe. Off by default until the step time on
+            the dev machine says otherwise.
+        graph_buckets: Decode batch sizes a graph is captured for, ascending and without
+            duplicates; sizes above the engine's running requests are dropped. A decode step
+            replays the smallest bucket that holds it. Validated even when ``cuda_graph`` is off.
 
     Raises:
         TypeError: If a field has the wrong type (a raw string for ``dtype``, a

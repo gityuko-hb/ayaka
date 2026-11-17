@@ -365,6 +365,7 @@ class TestTorchBackend:
         assert torch_caps.families == frozenset(ALL)
         assert torch_caps.devices == {"cpu", "cuda"}
         assert torch_caps.dtypes == frozenset(COMPUTE_DTYPES)
+        assert torch_caps.graph_safe == frozenset(ALL)
         assert torch_caps.external_uniform
         assert torch_caps.multi_row_attention
 

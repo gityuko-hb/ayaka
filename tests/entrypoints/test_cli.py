@@ -227,6 +227,22 @@ class TestErrors:
 
         assert "INVALID_DEVICE" in err
 
+    def test_an_unregistered_backend_exits_2(
+        self, checkpoint: TinyCheckpoint, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        argv = _run(checkpoint, "-p", "x", "--backends", "nope,torch", "-q")
+
+        err = _fails(capsys, argv, 2)
+
+        assert "not registered: ['nope']" in err
+
+    def test_cuda_graphs_on_the_cpu_exit_2(
+        self, checkpoint: TinyCheckpoint, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        err = _fails(capsys, _run(checkpoint, "-p", "x", "--cuda-graph", "-q"), 2)
+
+        assert "GRAPH_NEEDS_CUDA" in err
+
     def test_no_prompt_on_a_terminal_exits_2(
         self,
         checkpoint: TinyCheckpoint,

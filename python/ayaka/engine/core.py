@@ -101,6 +101,11 @@ class EngineCore:
         return self._scheduler
 
     @property
+    def runner(self) -> ModelRunner:
+        """The model runner, for reading what it captured; steps go through the engine."""
+        return self._runner
+
+    @property
     def kv(self) -> KVCacheManager:
         """The cache manager, for reading its statistics and checking its integrity."""
         return self._kv

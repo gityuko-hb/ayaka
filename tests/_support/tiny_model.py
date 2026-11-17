@@ -174,12 +174,24 @@ def build_tiny_stack(
     block_size: int = TINY_BLOCK_SIZE,
     seed: int = 0,
     eos_token_ids: Sequence[int] = (),
+    device: str = "cpu",
+    dtype: DType = DType.FP32,
+    backends: Sequence[str] = ("torch",),
+    cuda_graph: bool = False,
+    config: ModelConfig | None = None,
 ) -> TinyStack:
-    """Wire the fixture model to a cache, a scheduler and a runner, as the engine builder does."""
-    config = tiny_gpt2_config()
+    """Wire the fixture model to a cache, a scheduler and a runner, as the engine builder does.
+
+    ``device``, ``dtype``, ``backends`` and ``cuda_graph`` choose where and how it runs; the
+    defaults are the CPU reference. ``config`` replaces the fixture's architecture (a wider head for
+    a backend that needs one), keeping its vocabulary and context.
+    """
+    config = config or tiny_gpt2_config()
     state = tiny_gpt2_state(config, seed=seed)
-    ops = load_backend(["torch"], device="cpu", dtype=DType.FP32)
-    model = GPT2LMHeadModel(config, ops=ops, dtype=DType.FP32)
+    ops = load_backend(
+        backends, device=device.partition(":")[0], dtype=dtype, cuda_graph=cuda_graph
+    )
+    model = GPT2LMHeadModel(config, ops=ops, dtype=dtype, device=device)
     load_hf_state(model, state)
     model.eval()
     [group] = model.kv_specs(block_size=block_size, layout=ops.kvcache.layout())
@@ -189,7 +201,7 @@ def build_tiny_stack(
         max_requests=max_running,
         max_blocks_per_request=-(-MAX_POSITIONS // block_size),
     )
-    pool = KVPool(group, num_blocks, device="cpu")
+    pool = KVPool(group, num_blocks, device=device)
     scheduler = Scheduler(
         SchedulerConfig(max_running=max_running, max_tokens_per_step=max_tokens_per_step),
         kv,
@@ -205,7 +217,7 @@ def build_tiny_stack(
             max_running=max_running,
             lookahead=3,
         ),
-        device="cpu",
+        device=device,
     )
     return TinyStack(model, kv, pool, scheduler, runner, state, config)
 
