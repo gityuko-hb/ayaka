@@ -28,9 +28,12 @@ from ayaka.core.errors import (
 from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import FinishReason, RequestId
+from ayaka.device import info as device_info
+from ayaka.device.info import DeviceInfo
 from ayaka.scheduler.step import StepOutput
 from ayaka.tokenizers.contracts import ChatMessage
 from ayaka.tokenizers.factory import DefaultTokenizerFactory
+from ayaka.utils.dtypes import DType
 from tokenizer_fakes import BOS, FakeTokenizer
 
 torch: Any = pytest.importorskip("torch")
@@ -620,6 +623,30 @@ class TestBuild:
 
         with pytest.raises(CapacityError, match="short"):
             LLM.from_config(config, tokenizer=tiny_tokenizer())
+
+    def test_a_dtype_the_gpu_cannot_compute_in_is_refused_before_loading(
+        self, checkpoint: TinyCheckpoint, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        turing = DeviceInfo(
+            kind="cuda",
+            index=0,
+            name="Turing",
+            total_bytes=8 * 2**30,
+            free_bytes=8 * 2**30,
+            compute_capability=(7, 5),
+        )
+        host = DeviceInfo(kind="cpu", index=0, name="cpu", total_bytes=2**34, free_bytes=2**33)
+        monkeypatch.setattr(device_info, "probe_devices", lambda: (turing, host))
+        config = replace(
+            tiny_engine_config(checkpoint.directory),
+            device=DeviceConfig(device="cuda:0", dtype=DType.BF16),
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            LLM.from_config(config, tokenizer=tiny_tokenizer())
+
+        assert caught.value.code == "DEVICE_CAPABILITY_MISSING"
+        assert "sm_75 has no bf16 arithmetic" in str(caught.value)
 
     def test_cuda_graphs_are_refused_until_capture_is_implemented(
         self, checkpoint: TinyCheckpoint

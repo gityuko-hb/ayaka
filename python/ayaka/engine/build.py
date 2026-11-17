@@ -4,6 +4,7 @@
 :class:`~ayaka.engine.core.EngineCore`. The order is the order of the dependencies::
 
     free memory of the device         measured first, before anything is allocated
+    device capabilities               the dtype the config asks for exists here
     ops backend                       from the config's backend list, for this device and dtype
     model                             resolve the source, check and load the weights
     memory plan                       plan_budget over the weights and the KV cost of the model
@@ -33,6 +34,7 @@ from ayaka.core.errors import (
     ConfigError,
     ModelLoadError,
 )
+from ayaka.device.capabilities import device_capabilities
 from ayaka.engine.core import EngineCore
 from ayaka.engine.input import InputProcessor
 from ayaka.engine.output import OutputProcessor
@@ -45,6 +47,7 @@ from ayaka.utils.math_utils import div_ceil
 if TYPE_CHECKING:
     from ayaka.configs.device import DeviceConfig
     from ayaka.configs.engine import EngineConfig
+    from ayaka.device.info import DeviceInfo
     from ayaka.models.base import CausalLM
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
@@ -70,9 +73,9 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         when done.
 
     Raises:
-        ConfigError: If CUDA graphs are requested (not implemented yet), the backend list cannot
-            serve the device and dtype, the KV reserve exceeds the model context, or the tokenizer
-            settings cannot work.
+        ConfigError: If CUDA graphs are requested (not implemented yet), the device cannot run
+            the dtype, the backend list cannot serve the device and dtype, the KV reserve exceeds
+            the model context, or the tokenizer settings cannot work.
         CapabilityError: If torch, the requested GPU, the Hub client or a tokenizer package is
             missing.
         ModelLoadError: If the source cannot be resolved, the checkpoint does not match the model,
@@ -93,7 +96,10 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         )
 
     device = config.device
-    baseline = _free_bytes(device)
+    info, baseline = _free_bytes(device)
+    capabilities = device_capabilities(info)
+    capabilities.check(device)
+    logger.info("device: %s", capabilities.describe())
     ops = load_backend(device.backends, device=device.device_type, dtype=device.dtype)
     model = load_model(config.source, device, ops=ops)
     model_config = model.config
@@ -185,8 +191,8 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
     )
 
 
-def _free_bytes(device: DeviceConfig) -> int:
-    """Memory free on the configured device before this engine takes any (the plan's baseline)."""
+def _free_bytes(device: DeviceConfig) -> tuple[DeviceInfo, int]:
+    """The configured device and its free memory before this engine takes any (the baseline)."""
     from ayaka.device.info import probe_devices
 
     wanted = device.device_index or 0
@@ -201,7 +207,7 @@ def _free_bytes(device: DeviceConfig) -> int:
                     "without it the memory plan has nothing to divide",
                     context={"device": device.device},
                 )
-            return free
+            return found, free
     raise CapabilityError(
         f"device.{device.device}",
         detail=f"no {device.device} device was found",

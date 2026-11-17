@@ -40,12 +40,16 @@ LINUX = frozenset({sys.platform})
 
 
 def _caps(name: str, families: tuple[str, ...] = ALL, **overrides: Any) -> BackendCaps:
+    """A record with every capability, unless ``overrides`` takes some away."""
     fields: dict[str, Any] = {
         "name": name,
         "families": frozenset(families),
         "platforms": LINUX,
         "devices": frozenset({"cpu", "cuda"}),
         "dtypes": frozenset(COMPUTE_DTYPES),
+        "graph_safe": frozenset(families),
+        "external_uniform": True,
+        "multi_row_attention": True,
     }
     return BackendCaps(**{**fields, **overrides})
 
@@ -245,6 +249,63 @@ class TestMissingCapabilities:
             load_backend(["broken", "fallback"], device="cpu", dtype=DType.FP32)
 
 
+class TestCapabilities:
+    def test_with_graphs_a_family_comes_only_from_a_graph_safe_backend(
+        self, loaders: _Loaders, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        loaders.add(_caps("fast", families=("attention",), graph_safe=frozenset()))
+        loaders.add(_caps("reference"))
+
+        with caplog.at_level(logging.INFO, logger=backend_module.logger.name):
+            eager = load_backend(["fast", "reference"], device="cuda", dtype=DType.FP16)
+            graphed = load_backend(
+                ["fast", "reference"], device="cuda", dtype=DType.FP16, cuda_graph=True
+            )
+
+        assert eager.providers["attention"] == "fast"
+        assert not eager.graph_safe
+        assert graphed.providers["attention"] == "reference"
+        assert graphed.graph_safe
+        assert "fast cannot run inside a CUDA graph; using reference" in caplog.text
+
+    def test_a_missing_graph_capability_is_listed(self, loaders: _Loaders) -> None:
+        loaders.add(_caps("eager", graph_safe=frozenset({"norm"})))
+
+        with pytest.raises(ConfigError) as excinfo:
+            load_backend(["eager"], device="cuda", dtype=DType.FP16, cuda_graph=True)
+
+        message = str(excinfo.value)
+        assert "inside a CUDA graph" in message
+        assert "sampling: eager cannot run inside a CUDA graph" in message
+        assert "norm:" not in message
+
+    def test_attention_needs_several_rows_per_request(self, loaders: _Loaders) -> None:
+        loaders.add(_caps("decode-only", families=("attention",), multi_row_attention=False))
+        loaders.add(_caps("reference"))
+
+        ops = load_backend(["decode-only", "reference"], device="cpu", dtype=DType.FP32)
+
+        assert ops.providers["attention"] == "reference"
+
+    def test_a_decode_only_attention_alone_is_refused(self, loaders: _Loaders) -> None:
+        loaders.add(_caps("decode-only", multi_row_attention=False))
+
+        with pytest.raises(
+            ConfigError, match="attention: decode-only serves only one query row per request"
+        ):
+            load_backend(["decode-only"], device="cpu", dtype=DType.FP32)
+
+    def test_sampling_must_take_its_random_numbers_from_outside(self) -> None:
+        with pytest.raises(ValueError, match="external_uniform=True"):
+            _caps("own-rng", external_uniform=False)
+
+        assert not _caps("no-sampling", families=("norm",), external_uniform=False).external_uniform
+
+    def test_graph_safe_must_be_a_subset_of_the_families(self) -> None:
+        with pytest.raises(ValueError, match=r"does not implement: \['attention'\]"):
+            _caps("x", families=("norm",), graph_safe=frozenset({"attention"}))
+
+
 class TestBackendList:
     @pytest.mark.usefixtures("loaders")
     def test_empty_list(self) -> None:
@@ -302,6 +363,8 @@ class TestTorchBackend:
         assert torch_caps.families == frozenset(ALL)
         assert torch_caps.devices == {"cpu", "cuda"}
         assert torch_caps.dtypes == frozenset(COMPUTE_DTYPES)
+        assert torch_caps.external_uniform
+        assert torch_caps.multi_row_attention
 
     def test_serves_every_family_on_cpu(self) -> None:
         pytest.importorskip("torch")
