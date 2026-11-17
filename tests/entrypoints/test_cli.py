@@ -399,4 +399,5 @@ class TestAsAProgram:
 
         assert result.returncode in (3, 4)
         assert "Traceback" not in result.stderr
-        assert result.stderr.startswith("ayaka: error: ")
+        # A library may log first, and a missing package adds a "fix:" line, so look for ours.
+        assert any(line.startswith("ayaka: error: ") for line in result.stderr.splitlines())
