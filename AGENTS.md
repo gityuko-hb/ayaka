@@ -78,6 +78,12 @@ does not export it.
   `ayaka.utils.import_utils.require_module`, so never import them at module top level.
 - Titles of PRs follow Conventional Commits with an icon in front (`<icon> type(scope): description`); see
   CONTRIBUTING.md.
+- Search past issues and PRs before writing a new one, and update what you find. Run
+  `gh issue list --state all --search "<keywords>"` and `gh pr list --state all --search "<keywords>"`, closed ones
+  included. If a thread already covers the work, add the new evidence or scope to it (a comment or an edit of its
+  checklist) instead of opening a second one. When earlier work is the starting point, link it by number in the
+  text (for example "M0 is done, see #10") rather than restating it. Say in the PR or issue which threads you
+  searched. Reading with `gh` is fine; creating or editing issues, PRs and labels needs the user's request.
 - Never report a measurement, test result or log you did not produce. Separate what you ran from what you did
   not run, and say so for GPU and CUDA checks in particular.
 
