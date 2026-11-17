@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cache
@@ -534,7 +535,10 @@ def no_device_sync(*, strict: bool = True) -> Generator[None]:
         yield
         return
     previous = module.cuda.get_sync_debug_mode()
-    setter("error" if strict else "warn")
+    with warnings.catch_warnings():
+        # PyTorch warns that the mode is a prototype every time it is switched on.
+        warnings.filterwarnings("ignore", message="Synchronization debug mode is a prototype")
+        setter("error" if strict else "warn")
     try:
         yield
     finally:
