@@ -1,6 +1,6 @@
 <!--
-The PR title must follow Conventional Commits: `type(scope): description`.
-Example: `fix(cli): keep the config file when the input is invalid`.
+The PR title must follow Conventional Commits with an icon in front: `<icon> type(scope): description`.
+Example: `🐛 fix(cli): keep the config file when the input is invalid`. The icons are listed in CONTRIBUTING.md.
 Read CONTRIBUTING.md first. Lead with the problem and the result, not a file-by-file list.
 Placeholders below are not results: replace them with what you observed, or write "none".
 -->

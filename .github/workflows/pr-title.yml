@@ -1,10 +1,12 @@
 name: PR title
 
-# Checks that a pull request title follows Conventional Commits: type(scope): description.
+# Checks that a pull request title follows Conventional Commits with a gitmoji in front:
+# <icon> type(scope): description, where the icon is the one that belongs to the type.
 # With squash merges the PR title becomes the commit message on main, so this keeps the history readable
 # and lets release tooling build a changelog later.
-# It reads the title only: no checkout, no token permissions, and the title never reaches a shell
-# as code (it is passed through an environment variable).
+# The rule lives in .github/scripts/check-title.sh, which the commit-msg hook of pre-commit runs too.
+# It reads the title only: no token permissions, and the title never reaches a shell as code (it is
+# passed through an environment variable).
 
 on:
   pull_request:
@@ -21,17 +23,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      # Only the checking script is fetched, not the rest of the tree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - name: Check the title
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          types='feat|fix|refactor|perf|docs|test|build|ci|chore'
-          conventional="^(${types})(\([a-z0-9._/-]+\))?!?: [^[:space:]]"
-          # GitHub's own "Revert" button titles the PR: Revert "feat: add x"
-          revert='^Revert ".+"$'
-          if [[ "$TITLE" =~ $conventional || "$TITLE" =~ $revert ]]; then
-            echo "Title OK: $TITLE"
-          else
-            echo "::error::The title must look like type(scope): description. Allowed types: feat, fix, refactor, perf, docs, test, build, ci, chore. Example: fix(cli): keep the config file when the input is invalid. Your title: $TITLE"
-            exit 1
-          fi
+        run: bash .github/scripts/check-title.sh

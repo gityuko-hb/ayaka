@@ -1,3 +1,6 @@
+# `pre-commit install` sets up both hook types, so one command also installs the commit message check.
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -16,3 +19,13 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+
+  # The same rule as the PR title check in CI (.github/workflows/pr-title.yml): "<icon> type(scope): description".
+  # Needs bash, which Git for Windows provides. Merge, fixup! and squash! messages are skipped.
+  - repo: local
+    hooks:
+      - id: commit-title
+        name: commit title (<icon> type(scope): description)
+        entry: bash .github/scripts/check-title.sh --file
+        language: system
+        stages: [commit-msg]

@@ -21,7 +21,7 @@ You need [uv](https://docs.astral.sh/uv/). It installs the Python version in `.p
 ```sh
 uv sync --extra cpu                  # creates .venv: the project, the dev tools and the CPU build of PyTorch
 uv sync --extra cu130                # ...or the CUDA 13.0 build, on Linux/Windows with an NVIDIA GPU
-uv run pre-commit install            # optional: run the checks below on every commit
+uv run pre-commit install            # optional: run the checks below, and the commit title check, on every commit
 
 uv run ruff check .                  # lint
 uv run ruff format --check .         # formatting (drop --check to apply it)
@@ -39,24 +39,29 @@ Commit `uv.lock` together with any change to dependencies (`uv add`, `uv remove`
 
 ## Titles
 
-Issue and pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/):
-`type(scope): description`. The scope is optional.
+Issue and pull request titles follow [Conventional Commits](https://www.conventionalcommits.org/) with an icon
+(a [gitmoji](https://gitmoji.dev/)) in front: `<icon> type(scope): description`. The scope is optional. The icon
+is fixed by the type, so a reader can tell the kind of change at a glance.
 
-| Type | Use for |
-| --- | --- |
-| `feat` | a new feature |
-| `fix` | a bug fix |
-| `refactor` | a change that is neither a fix nor a feature |
-| `perf` | a performance improvement |
-| `docs` | documentation only |
-| `test` | adding or correcting tests |
-| `build` | build system or dependencies |
-| `ci` | CI configuration and scripts |
-| `chore` | anything else that does not touch `python/` or `tests/` |
+| Icon | Type | Use for |
+| --- | --- | --- |
+| ✨ | `feat` | a new feature |
+| 🐛 | `fix` | a bug fix |
+| ♻️ | `refactor` | a change that is neither a fix nor a feature |
+| ⚡️ | `perf` | a performance improvement |
+| 📝 | `docs` | documentation only |
+| ✅ | `test` | adding or correcting tests |
+| 📦 | `build` | build system or dependencies |
+| 👷 | `ci` | CI configuration and scripts |
+| 🔧 | `chore` | anything else that does not touch `python/` or `tests/` |
 
-Examples: `fix(cli): keep the config file when the input is invalid`, `perf(kernels): fuse the softmax pass`.
-Add `!` before the colon for a breaking change (`feat(api)!: rename generate to run`). A check on GitHub fails a
-pull request whose title does not match. Pull requests are squash-merged, so the title becomes the commit message.
+Examples: `🐛 fix(cli): keep the config file when the input is invalid`,
+`⚡️ perf(kernels): fuse the softmax pass`. Add `!` before the colon for a breaking change
+(`✨ feat(api)!: rename generate to run`). A check on GitHub fails a pull request whose title does not match,
+including one with the wrong icon for its type. Pull requests are squash-merged, so the title becomes the commit
+message. Commits inside a branch are not checked on GitHub, but if you ran `uv run pre-commit install`, a hook
+checks each commit message locally with the same rule (merge, `fixup!` and `squash!` messages are skipped), so a
+commit can be reused as the title. The rule lives in `.github/scripts/check-title.sh`.
 
 ## Report a problem people can investigate
 

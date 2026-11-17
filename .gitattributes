@@ -1,5 +1,8 @@
 * text=auto
 
+# Shell scripts run under bash even on Windows, where autocrlf would otherwise turn them into CRLF and break them.
+*.sh text eol=lf
+
 *.7z filter=lfs diff=lfs merge=lfs -text
 *.arrow filter=lfs diff=lfs merge=lfs -text
 *.bin filter=lfs diff=lfs merge=lfs -text

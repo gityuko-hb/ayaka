@@ -1,6 +1,6 @@
 name: '🐛 Bug Report'
 description: 'Report a bug in ayaka'
-labels: ['bug', 'unconfirmed']
+labels: ['🐛 bug', '❓ unconfirmed']
 type: Bug
 body:
   - type: dropdown

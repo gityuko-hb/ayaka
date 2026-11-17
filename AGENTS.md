@@ -76,7 +76,8 @@ does not export it.
 - Tokenizer adapters are optional extras, not runtime dependencies: `hf` (transformers, tokenizers,
   huggingface-hub) and `tiktoken` (tiktoken, jinja2). The adapters import them lazily through
   `ayaka.utils.import_utils.require_module`, so never import them at module top level.
-- Titles of PRs follow Conventional Commits (`type(scope): description`); see CONTRIBUTING.md.
+- Titles of PRs follow Conventional Commits with an icon in front (`<icon> type(scope): description`); see
+  CONTRIBUTING.md.
 - Never report a measurement, test result or log you did not produce. Separate what you ran from what you did
   not run, and say so for GPU and CUDA checks in particular.
 
