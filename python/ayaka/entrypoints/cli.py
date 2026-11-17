@@ -3,16 +3,23 @@
 ::
 
     ayaka run MODEL -p "Once upon a time" --max-tokens 64
+    ayaka serve MODEL --port 8000 --tool-call-parser hermes
 
-``MODEL`` is a local directory or a Hugging Face repo id. The generated text goes to standard
-output as it is produced; everything else (the line that says what was started, warnings,
-errors) goes to standard error, so ``ayaka run ... > out.txt`` holds only the text. The line that
-says what was started names the values really used, which come from the flags and never from the
-environment.
+``MODEL`` is a local directory or a Hugging Face repo id. ``run`` writes the generated text to
+standard output as it is produced; everything else (the line that says what was started,
+warnings, errors) goes to standard error, so ``ayaka run ... > out.txt`` holds only the text. The
+line that says what was started names the values really used, which come from the flags and never
+from the environment.
+
+``serve`` answers OpenAI and Anthropic clients over HTTP (it needs the ``serve`` extra). Its
+settings come from the flags, then from the ``[server]`` table of ``--config FILE`` (TOML), then
+from the defaults; never from the environment. It prints where it listens and when it is ready,
+and stops on SIGINT or SIGTERM: new requests get 503, requests in flight get
+``--shutdown-timeout`` seconds, and a second signal exits at once.
 
 Exit codes are the contract of the command::
 
-    0    the text was generated
+    0    the text was generated, or the server stopped cleanly
     1    an unexpected error: a bug; ``-v`` prints its traceback
     2    the arguments or the request are wrong (a flag, a prompt too long, an unsupported option)
     3    the model or the tokenizer cannot be loaded
@@ -24,8 +31,8 @@ Exit codes are the contract of the command::
 
 A problem the user can fix is one line, ``ayaka: error: ...``, never a traceback.
 
-Importing this module does not import torch: ``--help`` and every argument error are answered
-without it, and torch loads only once an engine is built.
+Importing this module imports neither torch nor aiohttp: ``--help`` and every argument error are
+answered without them; torch loads once an engine is built, aiohttp once ``serve`` starts.
 """
 
 from __future__ import annotations
@@ -33,7 +40,9 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from typing import TYPE_CHECKING, Final, TextIO
+import tomllib
+from pathlib import Path
+from typing import TYPE_CHECKING, Final, TextIO, cast
 
 from ayaka.__version__ import __version__
 from ayaka.configs.cache import CacheConfig
@@ -41,6 +50,7 @@ from ayaka.configs.device import DeviceConfig
 from ayaka.configs.engine import EngineConfig
 from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.scheduler import SchedulerConfig
+from ayaka.configs.server import DEFAULT_PORT, ServerConfig
 from ayaka.core.errors import (
     AyakaError,
     CapabilityError,
@@ -53,6 +63,8 @@ from ayaka.core.errors import (
 from ayaka.core.params import SamplingParams
 from ayaka.core.types import FinishReason
 from ayaka.engine.llm import LLM
+from ayaka.entrypoints.parsers.reasoning import reasoning_format
+from ayaka.entrypoints.parsers.tool_calls import tool_call_format
 from ayaka.tokenizers.contracts import ChatMessage
 from ayaka.utils.dtypes import COMPUTE_DTYPES
 from ayaka.utils.logging import init_logger
@@ -91,12 +103,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_usage(sys.stderr)
-        _say("error: no command given; try 'ayaka run --help'")
+        _say("error: no command given; try 'ayaka run --help' or 'ayaka serve --help'")
         return EXIT_USAGE
     if args.verbose:
         init_logger("ayaka", level=logging.DEBUG if args.verbose > 1 else logging.INFO)
+    elif args.command == "serve":
+        # Request lines (ids, outcomes, token counts; never text) are part of serving.
+        init_logger("ayaka", level=logging.INFO)
     try:
-        return _run(args)
+        return _serve(args) if args.command == "serve" else _run(args)
     except KeyboardInterrupt:
         _say("interrupted")
         return EXIT_INTERRUPTED
@@ -157,7 +172,18 @@ def _parser() -> argparse.ArgumentParser:
         metavar="TEXT",
         help="stop when this text is generated and cut it from the output (repeatable)",
     )
-    where = run.add_argument_group("where and how it runs")
+    _engine_flags(run)
+    run.add_argument("-q", "--quiet", action="store_true", help="do not print the start-up line")
+    run.add_argument(
+        "-v", "--verbose", action="count", default=0, help="log progress; twice for debug"
+    )
+    _serve_parser(commands)
+    return parser
+
+
+def _engine_flags(command: argparse.ArgumentParser) -> None:
+    """The flags that say where and how the model runs, shared by ``run`` and ``serve``."""
+    where = command.add_argument_group("where and how it runs")
     where.add_argument(
         "--device", default="cpu", metavar="DEVICE", help="cpu, cuda or cuda:N (cpu)"
     )
@@ -191,11 +217,73 @@ def _parser() -> argparse.ArgumentParser:
     where.add_argument(
         "--offline", action="store_true", help="never use the network; read the local cache only"
     )
-    run.add_argument("-q", "--quiet", action="store_true", help="do not print the start-up line")
-    run.add_argument(
-        "-v", "--verbose", action="count", default=0, help="log progress; twice for debug"
+
+
+def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
+    serve = commands.add_parser(
+        "serve",
+        help="answer OpenAI and Anthropic clients over HTTP",
+        description="Load a model and answer OpenAI Chat Completions, Completions and Responses "
+        "and Anthropic Messages requests over HTTP. Needs the serve extra.",
     )
-    return parser
+    serve.add_argument("model", help="a local model directory or a Hugging Face repo id")
+    server = serve.add_argument_group("server (flags win over --config, which wins over defaults)")
+    server.add_argument("--config", type=Path, metavar="FILE", help="a TOML file with [server]")
+    server.add_argument("--host", help="address to bind (127.0.0.1: this machine only)")
+    server.add_argument("--port", type=int, help=f"TCP port ({DEFAULT_PORT}); 0 picks a free one")
+    server.add_argument("--api-key", help="require this key (Authorization: Bearer, or x-api-key)")
+    server.add_argument(
+        "--api-key-file",
+        type=Path,
+        metavar="FILE",
+        help="read the key from the first line of FILE (keeps it out of the process list)",
+    )
+    server.add_argument(
+        "--cors-origin",
+        action="append",
+        metavar="ORIGIN",
+        help="let browsers call from ORIGIN; * for any (repeatable)",
+    )
+    server.add_argument(
+        "--served-model-name",
+        action="append",
+        metavar="NAME",
+        help="a name clients may use for the model; the first is reported (repeatable)",
+    )
+    server.add_argument(
+        "--reasoning-parser",
+        metavar="NAME",
+        help="the model's reasoning format: think, deepseek_r1",
+    )
+    server.add_argument(
+        "--tool-call-parser", metavar="NAME", help="the model's tool-call format: hermes"
+    )
+    server.add_argument("--max-body-bytes", type=int, metavar="N", help="largest request body")
+    server.add_argument(
+        "--shutdown-timeout",
+        type=float,
+        metavar="S",
+        help="seconds requests in flight get after SIGINT/SIGTERM (30)",
+    )
+    server.add_argument(
+        "--sse-coalesce-ms", type=int, metavar="MS", help="wait this long to batch tokens (0)"
+    )
+    server.add_argument(
+        "--keepalive", type=float, metavar="S", help="idle seconds between keepalive frames (15)"
+    )
+    server.add_argument(
+        "--slow-client-timeout",
+        type=float,
+        metavar="S",
+        help="cancel a request whose client blocks a write this long (30)",
+    )
+    server.add_argument(
+        "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
+    )
+    _engine_flags(serve)
+    serve.add_argument(
+        "-v", "--verbose", action="count", default=0, help="log more; twice for debug"
+    )
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -225,8 +313,8 @@ def _run(args: argparse.Namespace) -> int:
         return _print(chunks, sys.stdout)
 
 
-def _engine_config(args: argparse.Namespace) -> EngineConfig:
-    """The engine configuration the flags describe, for one request."""
+def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> EngineConfig:
+    """The engine configuration the flags describe; ``run`` runs one request at a time."""
     cache = (
         CacheConfig() if args.memory_ratio is None else CacheConfig(memory_ratio=args.memory_ratio)
     )
@@ -241,9 +329,120 @@ def _engine_config(args: argparse.Namespace) -> EngineConfig:
             cuda_graph=args.cuda_graph,
         ),
         cache=cache,
-        # One request is all this command ever runs, so the cache is built for one.
-        scheduler=SchedulerConfig(max_running=1),
+        scheduler=SchedulerConfig(max_running=max_running),
     )
+
+
+_SERVER_FLAGS: Final = (
+    ("host", "host"),
+    ("port", "port"),
+    ("cors_origin", "cors_origins"),
+    ("served_model_name", "served_model_names"),
+    ("reasoning_parser", "reasoning_parser"),
+    ("tool_call_parser", "tool_call_parser"),
+    ("max_body_bytes", "max_body_bytes"),
+    ("shutdown_timeout", "shutdown_timeout"),
+    ("sse_coalesce_ms", "sse_coalesce_ms"),
+    ("keepalive", "keepalive_seconds"),
+    ("slow_client_timeout", "slow_client_seconds"),
+)
+
+
+def server_config(args: argparse.Namespace) -> ServerConfig:
+    """The server settings: the flags, then ``--config``'s ``[server]`` table, then defaults.
+
+    Raises:
+        ConfigError: If the file or a value is invalid.
+        InvalidRequestError: If the key file cannot be read.
+    """
+    values: dict[str, object] = {}
+    if args.config is not None:
+        values.update(_config_file(args.config))
+    for flag, key in _SERVER_FLAGS:
+        value: object = getattr(args, flag)
+        if isinstance(value, list):
+            values[key] = tuple(cast("list[object]", value))
+        elif value is not None:
+            values[key] = value
+    if args.api_key is not None and args.api_key_file is not None:
+        raise InvalidRequestError("give --api-key or --api-key-file, not both")
+    if args.api_key is not None:
+        values["api_key"] = args.api_key
+    elif args.api_key_file is not None:
+        values["api_key"] = _read_key(args.api_key_file)
+    config = ServerConfig.from_mapping(values)
+    # Unknown parser names fail here, before anything loads.
+    if config.reasoning_parser is not None:
+        reasoning_format(config.reasoning_parser)
+    if config.tool_call_parser is not None:
+        tool_call_format(config.tool_call_parser)
+    return config
+
+
+def _config_file(path: Path) -> dict[str, object]:
+    try:
+        with path.open("rb") as handle:
+            document = tomllib.load(handle)
+    except OSError as exc:
+        raise ConfigError("config", "UNREADABLE", f"cannot read {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError("config", "INVALID", f"{path} is not valid TOML: {exc}") from exc
+    unknown = sorted(set(document) - {"server"})
+    if unknown:
+        raise ConfigError("config", "UNKNOWN_KEY", f"{path}: unknown tables {unknown}")
+    table = document.get("server", {})
+    if not isinstance(table, dict):
+        raise ConfigError("config.server", "INVALID", "must be a table")
+    return cast("dict[str, object]", table)
+
+
+def _read_key(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise InvalidRequestError(f"cannot read the API key file {path}: {exc}") from exc
+    key = lines[0].strip() if lines else ""
+    if not key:
+        raise InvalidRequestError(f"the API key file {path} is empty")
+    return key
+
+
+def describe_server(config: ServerConfig, engine: EngineConfig, model: str) -> list[str]:
+    """The lines ``serve`` prints before it starts: the effective settings, never the key."""
+    device = engine.device
+    graphs = ", decode in CUDA graphs" if device.cuda_graph else ""
+    names = ", ".join(config.served_model_names) or model
+    lines = [
+        f"serving {model} as {names} on {device.device} in {device.dtype.label} "
+        f"(ops backends: {', '.join(device.backends)}{graphs})",
+        f"reasoning parser: {config.reasoning_parser or 'none'}; "
+        f"tool-call parser: {config.tool_call_parser or 'none (requests with tools get 400)'}; "
+        f"API key: {'required' if config.api_key else 'none'}; "
+        f"CORS: {', '.join(config.cors_origins) or 'off'}",
+    ]
+    if not config.is_loopback and config.api_key is None:
+        lines.append(
+            f"warning: {config.host} is reachable from other machines and no API key is set: "
+            "anyone who can reach this port can use the model; set --api-key-file"
+        )
+    return lines
+
+
+def _serve(args: argparse.Namespace) -> int:
+    """Start the server and run it until a signal stops it."""
+    import asyncio
+
+    from ayaka.utils.import_utils import require_module
+
+    config = server_config(args)
+    engine = _engine_config(args, max_running=args.max_running)
+    require_module("aiohttp", capability="ayaka serve", remedy="uv sync --extra serve")
+    from ayaka.entrypoints.serve import serve
+
+    for line in describe_server(config, engine, args.model):
+        _say(line)
+    asyncio.run(serve(config, engine, model_name=args.model, say=_say))
+    return EXIT_OK
 
 
 def _read_prompt(prompt: str | None) -> str:

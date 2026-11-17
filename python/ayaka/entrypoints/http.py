@@ -40,7 +40,7 @@ import hmac
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -416,7 +416,7 @@ _OUTCOMES: Final = frozenset({"cancelled", "request_timeout", "engine_dead"})
 
 @dataclass(slots=True)
 class Generation:
-    """One admitted request: its outputs and how to read them.
+    """One admitted request: its outputs, how to read them, and what it said so far.
 
     Attributes:
         request_id: The engine id.
@@ -424,6 +424,10 @@ class Generation:
         prompt_tokens: Length of the prompt.
         stream: The engine's outputs.
         parser: The request's output parser.
+        started: When it was admitted, on the monotonic clock.
+        usage: The token counts, once reported.
+        outcome: How it ended: a finish reason, an error code, ``slow_client`` or
+            ``client_gone``; ``unfinished`` until then.
     """
 
     request_id: RequestId
@@ -431,6 +435,22 @@ class Generation:
     prompt_tokens: int
     stream: RequestStream
     parser: OutputParser
+    started: float = field(default_factory=time.monotonic)
+    usage: UsageEvent | None = None
+    outcome: str = "unfinished"
+
+    def observe(self, events: Sequence[OutputEvent]) -> None:
+        """Remember the usage and the end from a batch of events."""
+        for event in events:
+            match event:
+                case UsageEvent():
+                    self.usage = event
+                case FinishEvent(reason):
+                    self.outcome = "tool_calls" if event.tool_calls else str(reason)
+                case ErrorEvent(code):
+                    self.outcome = code
+                case _:
+                    pass
 
 
 class Serving:
@@ -622,15 +642,17 @@ class Serving:
                 keepalive=config.keepalive_seconds,
                 coalesce=config.sse_coalesce_ms / 1000,
                 write_deadline=config.slow_client_seconds,
-                observe=self.metrics.observe,
+                observe=self._observer(generation),
             )
         except SlowClientError:
+            generation.outcome = "slow_client"
             self.metrics.finished.labels("slow_client").inc()
             _LOG.info("request %s: the client read too slowly; cancelled", request[REQUEST_ID])
             if request.transport is not None:
                 request.transport.close()
             return response
         except ConnectionError:
+            generation.outcome = "client_gone"
             self.metrics.finished.labels("client_gone").inc()
             return response
         await response.write_eof()
@@ -643,18 +665,41 @@ class Serving:
             AnswerFailedError: If the request ended with an error.
         """
         events = await collect_events(
-            generation.stream, generation.parser, observe=self.metrics.observe
+            generation.stream, generation.parser, observe=self._observer(generation)
         )
         answer = collect(events)
         if answer.error is not None:
             raise AnswerFailedError(answer.error)
         return answer
 
+    def _observer(self, generation: Generation) -> Callable[[Sequence[OutputEvent]], None]:
+        def observe(events: Sequence[OutputEvent]) -> None:
+            generation.observe(events)
+            self.metrics.observe(events)
+
+        return observe
+
     def finish(self, generation: Generation) -> None:
-        """Release a generation: cancel it in the engine if it has not ended."""
+        """Release a generation: cancel it in the engine if it has not ended, and log it.
+
+        The log line carries the request id, how it ended and token counts, never text.
+        """
         if not generation.stream.finished and self.llm is not None:
             self.llm.abort(generation.request_id)
+            if generation.outcome == "unfinished":
+                generation.outcome = "client_gone"
         self.metrics.running.dec()
+        seconds = time.monotonic() - generation.started
+        self.metrics.duration.observe(seconds)
+        usage = generation.usage
+        _LOG.info(
+            "request %s: %s, %d prompt and %d generated tokens in %.2f s",
+            generation.public_id,
+            generation.outcome,
+            usage.prompt_tokens if usage is not None else generation.prompt_tokens,
+            usage.completion_tokens if usage is not None else 0,
+            seconds,
+        )
 
 
 def sampling_params(**fields: object) -> SamplingParams:

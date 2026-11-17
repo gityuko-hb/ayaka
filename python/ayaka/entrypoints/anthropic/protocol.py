@@ -8,7 +8,10 @@ How the request maps (``OUT-9``):
 
 * ``system``, a string or text blocks, becomes the system prompt; blocks are joined like every
   multi-part text.
-* ``cache_control`` marks are accepted as hints only and change nothing in the prompt.
+* ``cache_control`` marks, on blocks or on the request, are accepted as hints only and change
+  nothing in the prompt.
+* ``output_format`` and ``output_config.format`` (structured output) are refused until it lands;
+  the other ``output_config`` fields are hints.
 * ``tool_use`` blocks become the assistant's tool calls, ``tool_result`` blocks tool turns;
   ``thinking`` blocks of earlier turns are dropped, as the chat templates of reasoning models do.
 * Images and documents are refused until vision lands.
@@ -116,6 +119,9 @@ _KEYS: Final = frozenset(
         "service_tier",
         "container",
         "mcp_servers",
+        "cache_control",
+        "output_format",
+        "output_config",
     }
 )
 
@@ -125,6 +131,11 @@ def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
     for field in ("container", "mcp_servers"):
         if body.has(field):
             raise _unsupported(field, "not available on this server")
+    if body.has("output_format"):
+        raise _unsupported("output_format", "structured output is not available yet")
+    output_config = body.child("output_config")
+    if output_config is not None and output_config.has("format"):
+        raise _unsupported("output_config.format", "structured output is not available yet")
     builder = ConversationBuilder()
     system = body.raw("system")
     if isinstance(system, str):
