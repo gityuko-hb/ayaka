@@ -112,6 +112,7 @@ def load_model(
     bound = _bind(model, directory)
     model.to_empty(device=target)
     model.tie_weights()
+    model.initialize_buffers()
     _stream(model, bound)
     model.eval()
     logger.info(

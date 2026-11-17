@@ -107,8 +107,8 @@ jobs:
       - run: uv run pytest -m integration
 
   # Real GPT-2 against `transformers` (greedy, token by token), plus the other tests that need torch and
-  # `transformers` together (tests/models, tests/model_loader). Needs the network the first time: see the note
-  # at the top. The extras come from uv.lock like everything else.
+  # `transformers` together (tests/models: GPT-2 and Llama; tests/layers: the rotary frequencies; tests/model_loader).
+  # Needs the network the first time: see the note at the top. The extras come from uv.lock like everything else.
   parity:
     name: parity
     runs-on: ubuntu-latest
@@ -133,7 +133,7 @@ jobs:
           path: ~/.cache/huggingface/hub
           key: hf-hub-openai-community-gpt2-v1  # the model id of tests/e2e/test_gpt2_parity.py; bump the suffix to refresh
       - run: uv sync --extra cpu --extra hf --extra tiktoken
-      - run: uv run pytest -m integration tests/e2e/test_gpt2_parity.py tests/models tests/model_loader
+      - run: uv run pytest -m integration tests/e2e/test_gpt2_parity.py tests/models tests/layers tests/model_loader
       - name: Save the Hugging Face cache
         if: github.ref == 'refs/heads/main' && steps.hf-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
