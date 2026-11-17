@@ -1,4 +1,4 @@
-"""The OpenAI protocols: Chat Completions and Completions (and Responses, later in M2).
+"""The OpenAI protocols: Chat Completions, Completions and Responses.
 
 Public names are resolved from the module that defines them on first access; importing this
 package loads neither aiohttp nor torch.
@@ -23,16 +23,26 @@ if TYPE_CHECKING:
         parse_chat_request,
         parse_completion_request,
     )
+    from ayaka.entrypoints.openai.responses import (
+        ResponsesRequest,
+        ResponsesStreamEncoder,
+        create_response,
+        parse_responses_request,
+    )
 
 __all__ = [
     "ChatRequest",
     "ChatStreamEncoder",
     "CompletionRequest",
     "CompletionStreamEncoder",
+    "ResponsesRequest",
+    "ResponsesStreamEncoder",
     "create_chat_completion",
     "create_completion",
+    "create_response",
     "parse_chat_request",
     "parse_completion_request",
+    "parse_responses_request",
 ]
 
 _EXPORTS = {
@@ -47,6 +57,12 @@ _EXPORTS = {
         "CompletionRequest",
         "parse_chat_request",
         "parse_completion_request",
+    ),
+    "responses": (
+        "ResponsesRequest",
+        "ResponsesStreamEncoder",
+        "create_response",
+        "parse_responses_request",
     ),
 }
 

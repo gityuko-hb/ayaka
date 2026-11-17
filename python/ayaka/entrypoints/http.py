@@ -13,6 +13,7 @@ Routes::
     GET  /v1/models             the loaded model and its aliases
     POST /v1/chat/completions   OpenAI Chat Completions
     POST /v1/completions        OpenAI Completions
+    POST /v1/responses          OpenAI Responses
     POST /v1/messages           Anthropic Messages
     POST /v1/messages/count_tokens   the prompt length of a Messages request
 
@@ -825,6 +826,7 @@ def create_app(serving: Serving) -> web.Application:
     """
     from ayaka.entrypoints.anthropic import messages as anthropic_messages
     from ayaka.entrypoints.openai import chat as openai_chat
+    from ayaka.entrypoints.openai import responses as openai_responses
 
     app = web.Application(middlewares=[_middleware], client_max_size=serving.config.max_body_bytes)
     app[SERVING] = serving
@@ -833,6 +835,7 @@ def create_app(serving: Serving) -> web.Application:
     app.router.add_get("/v1/models", _models)
     app.router.add_post("/v1/chat/completions", openai_chat.create_chat_completion)
     app.router.add_post("/v1/completions", openai_chat.create_completion)
+    app.router.add_post("/v1/responses", openai_responses.create_response)
     app.router.add_post("/v1/messages", anthropic_messages.create_message)
     app.router.add_post("/v1/messages/count_tokens", anthropic_messages.count_tokens)
     return app
