@@ -32,6 +32,7 @@ ALL: tuple[FamilyName, ...] = (
     "activation",
     "embedding",
     "linear",
+    "rope",
     "kvcache",
     "attention",
     "sampling",
@@ -110,6 +111,7 @@ class TestComposition:
             "activation": "full",
             "embedding": "full",
             "linear": "partial",
+            "rope": "full",
             "kvcache": "full",
             "attention": "full",
             "sampling": "full",
@@ -200,7 +202,7 @@ class TestMissingCapabilities:
         assert error.code == "BACKEND_CAPABILITY_MISSING"
         assert error.path == "ops.backends"
         assert (
-            "provides norm, activation, embedding, linear, kvcache, attention, sampling "
+            "provides norm, activation, embedding, linear, rope, kvcache, attention, sampling "
             "for device 'cpu' "
             "and dtype fp32" in str(error)
         )

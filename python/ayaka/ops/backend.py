@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from ayaka.ops.kvcache import KVCacheOps
     from ayaka.ops.linear import LinearOps
     from ayaka.ops.norm import NormOps
+    from ayaka.ops.rope import RopeOps
     from ayaka.ops.sampling import SamplingOps
 
 __all__ = [
@@ -53,6 +54,7 @@ type FamilyName = Literal[
     "activation",
     "embedding",
     "linear",
+    "rope",
     "kvcache",
     "attention",
     "sampling",
@@ -66,6 +68,7 @@ _FAMILIES: Final[tuple[FamilyName, ...]] = (
     "activation",
     "embedding",
     "linear",
+    "rope",
     "kvcache",
     "attention",
     "sampling",
@@ -88,6 +91,7 @@ class BackendFamilies(TypedDict, total=False):
     activation: ActivationOps
     embedding: EmbeddingOps
     linear: LinearOps
+    rope: RopeOps
     kvcache: KVCacheOps
     attention: AttentionOps
     sampling: SamplingOps
@@ -161,6 +165,7 @@ class OpsBackend:
     activation: ActivationOps
     embedding: EmbeddingOps
     linear: LinearOps
+    rope: RopeOps
     kvcache: KVCacheOps
     attention: AttentionOps
     sampling: SamplingOps
@@ -277,6 +282,7 @@ def load_backend(
         activation=cast("ActivationOps", chosen["activation"]),
         embedding=cast("EmbeddingOps", chosen["embedding"]),
         linear=cast("LinearOps", chosen["linear"]),
+        rope=cast("RopeOps", chosen["rope"]),
         kvcache=cast("KVCacheOps", chosen["kvcache"]),
         attention=cast("AttentionOps", chosen["attention"]),
         sampling=cast("SamplingOps", chosen["sampling"]),
@@ -356,6 +362,7 @@ def _load_torch() -> BackendFamilies:
         kvcache,
         linear,
         norm,
+        rope,
         sampling,
     )
 
@@ -364,6 +371,7 @@ def _load_torch() -> BackendFamilies:
         "activation": activation,
         "embedding": embedding,
         "linear": linear,
+        "rope": rope,
         "kvcache": kvcache,
         "attention": attention,
         "sampling": sampling,

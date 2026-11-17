@@ -272,6 +272,26 @@ class TestElementwise:
         reference.activation.gelu(x, expected, tanh=True)
         _close(out, expected, dtype)
 
+    def test_rope(self, target: Target, dtype: DType) -> None:
+        ops, reference, dt = target.ops(dtype), _reference(), _DTYPE[dtype]
+        inv = torch.tensor([10000.0 ** (-2 * i / 64) for i in range(32)], dtype=torch.float32)
+        cache, expected_cache = (
+            torch.empty(128, 64, device=target.device),
+            torch.empty(128, 64),
+        )
+        ops.rope.build_cache(inv.to(target.device), cache, attention_factor=1.0)
+        reference.rope.build_cache(inv, expected_cache, attention_factor=1.0)
+        torch.testing.assert_close(cache.cpu(), expected_cache, rtol=1e-5, atol=1e-5)
+        generator = torch.Generator().manual_seed(3)
+        positions = torch.randint(0, 128, (6,), generator=generator)
+        q = torch.randn(6, 4, 64, generator=generator).to(dt)
+        k = torch.randn(6, 2, 64, generator=generator).to(dt)
+        qd, kd = q.to(target.device, copy=True), k.to(target.device, copy=True)
+        ops.rope.apply(positions.to(target.device), qd, kd, cache, interleaved=False)
+        reference.rope.apply(positions, q, k, expected_cache, interleaved=False)
+        _close(qd, q, dtype)
+        _close(kd, k, dtype)
+
     def test_store_and_gather(self, target: Target, dtype: DType) -> None:
         ops, dt = target.ops(dtype), _DTYPE[dtype]
         paged = _paged(

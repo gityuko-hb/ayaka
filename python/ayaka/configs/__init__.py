@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from ayaka.configs.cache import CacheConfig
     from ayaka.configs.device import DeviceConfig
     from ayaka.configs.engine import EngineConfig
-    from ayaka.configs.model import ModelConfig
+    from ayaka.configs.model import ModelConfig, RopeScaling, RopeScalingKind
     from ayaka.configs.model_source import ModelSourceConfig, ModelTrustPolicy, RequestFormat
     from ayaka.configs.scheduler import SchedulerConfig, SchedulingPolicyName
     from ayaka.configs.tokenizer import (
@@ -49,6 +49,8 @@ __all__ = [
     "ModelSourceConfig",
     "ModelTrustPolicy",
     "RequestFormat",
+    "RopeScaling",
+    "RopeScalingKind",
     "SchedulerConfig",
     "SchedulingPolicyName",
     "SpecialTokenPolicyName",
@@ -70,7 +72,7 @@ _EXPORTS = {
     "cache": ("CacheConfig",),
     "device": ("DeviceConfig",),
     "engine": ("EngineConfig",),
-    "model": ("ModelConfig",),
+    "model": ("ModelConfig", "RopeScaling", "RopeScalingKind"),
     "model_source": ("ModelSourceConfig", "ModelTrustPolicy", "RequestFormat"),
     "scheduler": ("SchedulerConfig", "SchedulingPolicyName"),
     "tokenizer": (
