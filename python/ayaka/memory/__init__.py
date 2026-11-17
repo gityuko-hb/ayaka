@@ -1,7 +1,8 @@
-"""Where a device's memory goes: the budget ledger and the plan that fills it.
+"""Where a device's memory goes: the budget ledger, the plan that fills it, the step workspace.
 
 ``plan_budget`` is a pure function of integers, so planning needs no device and no
-torch; ``MemoryBudget`` is the ledger the engine reserves the result in. Public
+torch; ``MemoryBudget`` is the ledger the engine reserves the result in;
+``Workspace`` is the scratch buffer a step takes temporary memory from. Public
 names are resolved from their submodule on first access.
 """
 
@@ -23,9 +24,11 @@ if TYPE_CHECKING:
         MemoryBudget,
         plan_budget,
     )
+    from ayaka.memory.workspace import WORKSPACE_ALIGNMENT, Workspace
 
 __all__ = [
     "BUDGET_OWNERS",
+    "WORKSPACE_ALIGNMENT",
     "BudgetInputs",
     "BudgetOwner",
     "BudgetPlan",
@@ -33,6 +36,7 @@ __all__ = [
     "ExpertCost",
     "KVCost",
     "MemoryBudget",
+    "Workspace",
     "plan_budget",
 ]
 
@@ -48,6 +52,7 @@ _EXPORTS = {
         "MemoryBudget",
         "plan_budget",
     ),
+    "workspace": ("WORKSPACE_ALIGNMENT", "Workspace"),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())

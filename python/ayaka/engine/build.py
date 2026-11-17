@@ -7,10 +7,14 @@
     device capabilities               the dtype the config asks for exists here
     ops backend                       from the config's backend list, for this device and dtype
     model                             resolve the source, check and load the weights
-    memory plan                       plan_budget over the weights and the KV cost of the model
+    memory plan                       plan_budget over the weights, the KV cost of the model and,
+                                      on a GPU, the last start-up profile measured for this key
     KV cache                          tensors (KVPool) and bookkeeping (KVCacheManager)
     tokenizer                         checked against the model's vocabulary and context
     scheduler, runner, processors     and the engine that runs them
+    start-up run (GPU only)           measure activations and runtime memory, reserve it all in
+                                      the ledger, compare the ledger with the device, save the
+                                      profile for the next start-up
 
 Nothing here is a decision of its own except one: the memory plan hands the whole pool to the KV
 cache, which is right for a GPU that holds only this engine and wrong for the host's RAM, so on the
@@ -38,16 +42,29 @@ from ayaka.device.capabilities import device_capabilities
 from ayaka.engine.core import EngineCore
 from ayaka.engine.input import InputProcessor
 from ayaka.engine.output import OutputProcessor
+from ayaka.engine.profile import (
+    ProfileKey,
+    StartupReport,
+    load_profile,
+    measure_startup,
+    reconcile,
+    save_profile,
+)
 from ayaka.kvcache.manager import KVCacheManager
-from ayaka.memory.budget import BudgetInputs, KVCost, plan_budget
+from ayaka.memory.budget import BudgetInputs, KVCost, MemoryBudget, plan_budget
 from ayaka.scheduler.scheduler import Scheduler
 from ayaka.tokenizers.service import TokenizerService
 from ayaka.utils.math_utils import div_ceil
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from ayaka.configs.device import DeviceConfig
     from ayaka.configs.engine import EngineConfig
     from ayaka.device.info import DeviceInfo
+    from ayaka.execution.runner import ModelRunner
+    from ayaka.kvcache.storage.pool import KVPool
+    from ayaka.memory.budget import BudgetPlan
     from ayaka.models.base import CausalLM
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
@@ -96,6 +113,7 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         )
 
     device = config.device
+    baseline_reserved = _release_cached_device_memory(device)
     info, baseline = _free_bytes(device)
     capabilities = device_capabilities(info)
     capabilities.check(device)
@@ -121,6 +139,23 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
             "RESERVE_EXCEEDS_CONTEXT",
             f"kv_reserve_tokens={reserve_tokens} exceeds the model context of {context} tokens",
         )
+    key = ProfileKey.build(
+        device=f"{info.name} {capabilities.arch}",
+        model=model_config.fingerprint,
+        dtype=device.dtype.label,
+        providers=ops.providers.items(),
+        block_size=block_size,
+        libraries=_library_versions(ops.providers.values()),
+    )
+    previous = load_profile(key) if device.device_type == "cuda" else None
+    if previous is not None:
+        logger.info(
+            "planning with the startup profile measured before: %d bytes of runtime memory, "
+            "%d activation bytes per token, %d bytes of graphs",
+            previous.runtime_bytes,
+            previous.activation_bytes_per_token,
+            previous.graph_bytes,
+        )
     plan = plan_budget(
         BudgetInputs(
             baseline_bytes=baseline,
@@ -135,6 +170,11 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
             ),
             kv_reserve_tokens=reserve_tokens,
             kv_blocks_override=config.cache.num_blocks,
+            late_alloc_bytes=previous.runtime_bytes if previous else 0,
+            activation_bytes_per_token=previous.activation_bytes_per_token if previous else 0,
+            activation_fixed_bytes=(
+                max(previous.workspace_bytes - previous.activation_peak_bytes, 0) if previous else 0
+            ),
         )
     )
 
@@ -177,6 +217,19 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         ),
         device=device.device,
     )
+    startup = None
+    if device.device_type == "cuda":
+        startup = _startup_run(
+            config,
+            runner,
+            pool,
+            key=key,
+            plan=plan,
+            baseline=baseline,
+            baseline_reserved=baseline_reserved,
+            chunk_tokens=scheduler.token_budget,
+            running=scheduler.max_running,
+        )
     return EngineCore(
         scheduler=scheduler,
         runner=runner,
@@ -188,7 +241,97 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         tokenizer=service,
         model_config=model_config,
         plan=plan,
+        startup=startup,
     )
+
+
+def _startup_run(
+    config: EngineConfig,
+    runner: ModelRunner,
+    pool: KVPool,
+    *,
+    key: ProfileKey,
+    plan: BudgetPlan,
+    baseline: int,
+    baseline_reserved: int,
+    chunk_tokens: int,
+    running: int,
+) -> StartupReport:
+    """Measure, fill the ledger and check it against the device (GPU only)."""
+    from ayaka.device.context import Device
+
+    target = Device(config.device.device)
+    buckets = tuple(bucket for bucket in config.device.graph_buckets if bucket <= running) or (1,)
+    profile = measure_startup(
+        runner.model,
+        runner.kv_buffers,
+        key=key,
+        device=target,
+        baseline_bytes=baseline,
+        baseline_reserved_bytes=baseline_reserved,
+        kv_bytes=pool.nbytes,
+        chunk_tokens=chunk_tokens,
+        buckets=buckets,
+        block_size=pool.group.spec.block_size,
+        usable_blocks=pool.usable_blocks,
+    )
+    budget = MemoryBudget(baseline)
+    budget.reserve("weights", profile.weights_bytes)
+    budget.reserve("kv", profile.kv_bytes)
+    budget.reserve("runtime", min(profile.runtime_bytes, budget.free_bytes))
+    budget.reserve("workspace", min(profile.workspace_bytes, budget.free_bytes))
+    target.synchronize()
+    reconciliation = reconcile(
+        budget, baseline_bytes=baseline, reading=target.memory(), reused_bytes=profile.reused_bytes
+    )
+    log = logger.info if reconciliation.matches else logger.warning
+    log(
+        "memory ledger %d bytes, device lost %d bytes since the baseline (difference %d, "
+        "tolerance %d); plan: %d usable, %d headroom",
+        reconciliation.ledger_bytes,
+        reconciliation.measured_bytes,
+        reconciliation.difference_bytes,
+        reconciliation.tolerance_bytes,
+        plan.usable_bytes,
+        plan.headroom_bytes,
+    )
+    save_profile(profile)
+    return StartupReport(profile=profile, budget=budget, reconciliation=reconciliation)
+
+
+def _release_cached_device_memory(device: DeviceConfig) -> int:
+    """Give memory torch caches but no tensor uses back to the driver, before the baseline is read.
+
+    Only matters when this process already used the GPU (an earlier engine, a test): the baseline
+    must be what is free to this engine, not what an earlier one left in torch's cache. In a fresh
+    process torch is not imported yet and nothing happens.
+
+    Returns:
+        What torch's allocator still holds afterwards (tensors that are still alive), so the
+        start-up run counts only what this engine reserves on top; 0 in a fresh process.
+    """
+    torch = sys.modules.get("torch")
+    if device.device_type != "cuda" or torch is None or not torch.cuda.is_initialized():
+        return 0
+    import gc
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    return int(torch.cuda.memory_reserved(device.device_index or 0))
+
+
+def _library_versions(backends: Iterable[str]) -> dict[str, str]:
+    """Versions of torch and of every kernel library the ops come from, for the profile key."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    names = {"torch", *(f"{name}-python" for name in backends if name == "flashinfer")}
+    found: dict[str, str] = {}
+    for name in sorted(names):
+        try:
+            found[name] = version(name)
+        except PackageNotFoundError:
+            continue
+    return found
 
 
 def _free_bytes(device: DeviceConfig) -> tuple[DeviceInfo, int]:

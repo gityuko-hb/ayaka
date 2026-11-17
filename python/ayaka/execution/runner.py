@@ -116,6 +116,16 @@ class ModelRunner:
         """The input builder, whose fixed buffers tests inspect."""
         return self._builder
 
+    @property
+    def model(self) -> CausalLM:
+        """The model this runner executes."""
+        return self._model
+
+    @property
+    def kv_buffers(self) -> Mapping[int, KVBuffers]:
+        """The cache tensors of each layer, by layer id."""
+        return self._buffers
+
     def plan_lookahead(self) -> Mapping[RequestId, int]:
         """Ask for draft rows per request; none, because no draft proposer exists yet."""
         return {}
