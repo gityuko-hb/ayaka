@@ -24,6 +24,7 @@ from ayaka.entrypoints.conversation import (
     FinishEvent,
     ReasoningDelta,
     TextDelta,
+    ToolCallEnd,
     UsageEvent,
     merge_deltas,
 )
@@ -79,12 +80,16 @@ class OutputFormat:
             tool_markers=tool_fmt.markers(tokenizer) if tool_fmt else None,
         )
 
-    def parser(self, *, call_id_prefix: str, tools: bool) -> OutputParser:
+    def parser(
+        self, *, call_id_prefix: str, tools: bool, parallel_tool_calls: bool = True
+    ) -> OutputParser:
         """A parser for one request.
 
         Args:
             call_id_prefix: Prefix of the request's tool-call ids.
             tools: Whether the request offered tools; without them no call is looked for.
+            parallel_tool_calls: Whether the answer may hold several calls. When not, the answer
+                ends right after its first call (see :attr:`OutputParser.ended_early`).
         """
         reasoning = (
             ReasoningParser(self.reasoning, self.reasoning_markers)
@@ -98,7 +103,7 @@ class OutputFormat:
             if self.tool_calls is not None and tools
             else None
         )
-        return OutputParser(reasoning, calls)
+        return OutputParser(reasoning, calls, single_call=not parallel_tool_calls)
 
 
 class OutputParser:
@@ -107,15 +112,26 @@ class OutputParser:
     Args:
         reasoning: The reasoning parser, or ``None``.
         tool_calls: The tool-call parser, or ``None``.
+        single_call: End the answer right after its first function call: the events stop there
+            with a normal finish, and :attr:`ended_early` tells the caller to cancel the request
+            in the engine. The usage then counts the tokens this parser was given.
     """
 
     def __init__(
-        self, reasoning: ReasoningParser | None, tool_calls: ToolCallParser | None
+        self,
+        reasoning: ReasoningParser | None,
+        tool_calls: ToolCallParser | None,
+        *,
+        single_call: bool = False,
     ) -> None:
         self._reasoning = reasoning
         self._calls = tool_calls
+        self._single_call = single_call
         self._reasoning_tokens = 0
+        self._tokens = 0
         self._done = False
+        self.ended_early = False
+        """Whether the answer ended before the engine finished the request."""
 
     def feed(self, output: RequestOutput) -> list[OutputEvent]:
         """The events of the next fragment; the final fragment also ends the stream."""
@@ -124,6 +140,7 @@ class OutputParser:
         completion = output.outputs[0] if output.outputs else None
         token_ids = completion.token_ids if completion is not None else ()
         text = completion.text if completion is not None else ""
+        self._tokens += len(token_ids)
         events: list[OutputEvent] = []
         reasoning = self._reasoning
         if reasoning is not None:
@@ -136,6 +153,10 @@ class OutputParser:
         if self._calls is not None:
             self._calls.note_tokens(token_ids)
         self._route(pieces, events)
+        if self._single_call and not output.finished:
+            for position, event in enumerate(events):
+                if isinstance(event, ToolCallEnd):
+                    return self._end_early(output, events[: position + 1])
         if output.finished:
             self._done = True
             if reasoning is not None:
@@ -146,6 +167,21 @@ class OutputParser:
             if isinstance(terminal, FinishEvent):
                 events.append(self._usage(output))
             events.append(terminal)
+        return merge_deltas(events)
+
+    def _end_early(self, output: RequestOutput, events: list[OutputEvent]) -> list[OutputEvent]:
+        self._done = True
+        self.ended_early = True
+        usage = output.usage
+        events.append(
+            UsageEvent(
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=self._tokens,
+                cached_tokens=usage.cached_tokens,
+                reasoning_tokens=min(self._reasoning_tokens, self._tokens),
+            )
+        )
+        events.append(FinishEvent(FinishReason.STOP, tool_calls=True))
         return merge_deltas(events)
 
     def _route(self, pieces: list[tuple[bool, str]], events: list[OutputEvent]) -> None:

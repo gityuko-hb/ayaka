@@ -1,4 +1,4 @@
-"""Host-side configuration records for the model, tokenizer, device, cache, scheduler and engine.
+"""Host-side configuration records: model, tokenizer, device, cache, scheduler, engine and server.
 
 Every record is frozen and validated at construction. Importing this package is
 cheap: each public name is resolved from its submodule on first access.
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ayaka.configs.model import ModelConfig, RopeScaling, RopeScalingKind
     from ayaka.configs.model_source import ModelSourceConfig, ModelTrustPolicy, RequestFormat
     from ayaka.configs.scheduler import SchedulerConfig, SchedulingPolicyName
+    from ayaka.configs.server import DEFAULT_PORT, ServerConfig
     from ayaka.configs.tokenizer import (
         DetokBackend,
         DetokenizeParams,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "DEFAULT_PORT",
     "CacheConfig",
     "ConfigMixin",
     "DetokBackend",
@@ -53,6 +55,7 @@ __all__ = [
     "RopeScalingKind",
     "SchedulerConfig",
     "SchedulingPolicyName",
+    "ServerConfig",
     "SpecialTokenPolicyName",
     "TokenizerConfig",
     "TokenizerMode",
@@ -75,6 +78,7 @@ _EXPORTS = {
     "model": ("ModelConfig", "RopeScaling", "RopeScalingKind"),
     "model_source": ("ModelSourceConfig", "ModelTrustPolicy", "RequestFormat"),
     "scheduler": ("SchedulerConfig", "SchedulingPolicyName"),
+    "server": ("DEFAULT_PORT", "ServerConfig"),
     "tokenizer": (
         "DetokBackend",
         "DetokUpdate",

@@ -27,6 +27,7 @@ uv sync --extra cpu            # install the project, dev tools and CPU PyTorch 
 uv sync --extra cu130          # ...or CUDA 13.0 PyTorch on a machine with an NVIDIA GPU (not both)
 uv sync --extra cu130 --extra flashinfer   # Linux/WSL2 GPU: the flashinfer attention backend (needs nvcc on PATH)
 uv sync --extra cpu --extra hf --extra tiktoken   # add the tokenizer adapters (optional; the tests do not need them)
+uv sync --extra cpu --extra serve   # add the HTTP server (aiohttp); CI's lint and test jobs install it
 uv run ruff check .            # lint
 uv run ruff format .           # format
 uv run pyright                 # types: strict in python/, standard in tests/
