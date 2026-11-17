@@ -21,6 +21,7 @@ You need [uv](https://docs.astral.sh/uv/). It installs the Python version in `.p
 ```sh
 uv sync --extra cpu                  # creates .venv: the project, the dev tools and the CPU build of PyTorch
 uv sync --extra cu130                # ...or the CUDA 13.0 build, on Linux/Windows with an NVIDIA GPU
+uv sync --extra cu130 --extra flashinfer   # Linux/WSL2 GPU: also the flashinfer attention backend
 uv run pre-commit install            # optional: run the checks below, and the commit title check, on every commit
 
 uv run ruff check .                  # lint
@@ -30,6 +31,10 @@ uv run pytest -m "not gpu and not integration"   # unit tests that run anywhere 
 uv run pytest -m integration         # needs `uv sync --extra hf --extra tiktoken` (CI job `adapters`)
 uv run pytest -m gpu                 # tests that need a CUDA GPU (CI does not run these)
 ```
+
+flashinfer compiles its kernels the first time a shape is used (about 40 seconds per kernel module on an RTX 3050),
+which needs the CUDA toolkit's `nvcc` on `PATH`; later runs read flashinfer's own cache. The `gpu` tests skip, with the
+reason, where no GPU is usable; set `AYAKA_REQUIRE_GPU=1` when the run is meant to exercise one.
 
 Pick the PyTorch build once, with `uv sync`. `uv run` keeps whatever is installed, so you do not repeat the extra on
 every command. A later plain `uv sync` removes torch again, and `cpu` and `cu130` cannot be installed together:
