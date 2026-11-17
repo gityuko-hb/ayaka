@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from ayaka.core.types import RequestId
     from ayaka.engine.input import InputProcessor
     from ayaka.engine.output import OutputProcessor
+    from ayaka.engine.profile import StartupReport
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.manager import KVCacheManager
     from ayaka.memory.budget import BudgetPlan
@@ -61,6 +62,7 @@ class EngineCore:
         tokenizer: The tokenizer service, closed by :meth:`shutdown`.
         model_config: The architecture of the loaded model.
         plan: The memory plan the cache was sized from.
+        startup: What the start-up run measured and reserved on a GPU; ``None`` on the CPU.
     """
 
     def __init__(
@@ -74,6 +76,7 @@ class EngineCore:
         tokenizer: TokenizerService,
         model_config: ModelConfig,
         plan: BudgetPlan,
+        startup: StartupReport | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._runner = runner
@@ -83,6 +86,7 @@ class EngineCore:
         self._tokenizer = tokenizer
         self.model_config = model_config
         self.plan = plan
+        self.startup = startup
         self._dead: EngineDeadError | None = None
         self._closed = False
 
