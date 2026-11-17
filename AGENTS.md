@@ -34,6 +34,8 @@ uv run pyright                 # types: strict in python/, standard in tests/
 uv run pytest -m "not gpu and not integration"   # the unit tests: what the `test` job runs
 uv run pytest -m integration  # real tokenizers + worker processes; needs the hf and tiktoken extras (CI job `adapters`)
 uv run pytest -m gpu           # on the dev GPU only; AYAKA_REQUIRE_GPU=1 turns a missing GPU into a failure
+uv sync --extra cpu --extra serve --group sdk     # then: the server against the official SDKs (CI job `serving`)
+uv run pytest -m integration tests/e2e/test_serving.py   # the signal tests need POSIX (Linux, WSL2)
 uv build                       # build the sdist and wheel
 ```
 

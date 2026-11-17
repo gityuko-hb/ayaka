@@ -3,10 +3,11 @@ name: CI
 # Hosted runners have no GPU: GPU tests are marked `gpu` and skipped here (-m "not gpu").
 # Run them on your own machine and report them under "Validation" in the pull request.
 #
-# Three test jobs: `test` runs the unit tests with the CPU torch build, which includes the small end-to-end tests
+# Four test jobs: `test` runs the unit tests with the CPU torch build, which includes the small end-to-end tests
 # of tests/e2e (the tiny GPT-2 on the CPU, no network); `adapters` runs the integration tests (real HuggingFace
 # and tiktoken tokenizers, spawned worker processes) with the optional extras and no torch; `parity` runs the
-# integration tests that need torch and `transformers` together, among them real GPT-2 against `transformers`.
+# integration tests that need torch and `transformers` together, among them real GPT-2 against `transformers`;
+# `serving` runs the server against the official OpenAI and Anthropic SDKs and sends it real signals.
 # Keep them apart: the integration tests need packages that the unit tests must work without.
 #
 # Caching: only the uv cache is cached (keyed on uv.lock). Pyright ships bundled in its wheel and uses the
@@ -143,6 +144,26 @@ jobs:
           path: ~/.cache/huggingface/hub
           key: hf-hub-openai-community-gpt2-v1
 
+  # The HTTP server end to end: the official OpenAI and Anthropic SDKs (the `sdk` dependency group) against a
+  # server on the tiny GPT-2, and SIGINT/SIGTERM sent to `ayaka serve` in a child process. No network.
+  serving:
+    name: serving
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: serving
+          prune-cache: false  # keep the prebuilt torch wheel; see the note at the top
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+      - run: uv sync --extra cpu --extra serve --group sdk
+      - run: uv run pytest -m integration tests/e2e/test_serving.py
+
   build:
     name: build
     runs-on: ubuntu-latest
@@ -177,7 +198,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [lint, test, adapters, parity, build, workflows]
+    needs: [lint, test, adapters, parity, serving, build, workflows]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

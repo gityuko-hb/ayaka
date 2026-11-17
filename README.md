@@ -4,6 +4,18 @@ High-performance LLM inference engine with CUDA/C++ native extensions.
 
 > **Status:** early development. The API will change.
 
+## Serving
+
+`ayaka serve` answers OpenAI (Chat Completions, Completions, Responses) and Anthropic (Messages) clients over HTTP.
+It needs the `serve` extra:
+
+```sh
+uv sync --extra cpu --extra serve
+uv run ayaka serve path/to/model --tool-call-parser hermes --reasoning-parser think
+```
+
+It listens on `127.0.0.1:8000` unless told otherwise; `ayaka serve --help` lists the settings.
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/).
