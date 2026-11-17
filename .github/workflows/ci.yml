@@ -21,7 +21,8 @@ name: CI
 # Network: `parity` is the one job that needs it at run time, to download the GPT-2 checkpoint (about 0.5 GB) from
 # the Hugging Face Hub. The Hub cache is restored by model id, and saved only from main (like the uv cache). The
 # job sets AYAKA_REQUIRE_REAL_MODEL=1, so a download that fails turns the job red instead of skipping the test.
-# Actions are pinned to a full commit SHA; dependabot keeps the SHA and the version comment up to date.
+# Actions are pinned to a full commit SHA with the version in a comment. There is no dependabot: a maintainer
+# bumps the pins by hand, reads the diff and commits it.
 
 on:
   push:

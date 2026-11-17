@@ -2,8 +2,9 @@ name: PR title
 
 # Checks that a pull request title follows Conventional Commits with a gitmoji in front:
 # <icon> type(scope): description, where the icon is the one that belongs to the type.
-# With squash merges the PR title becomes the commit message on main, so this keeps the history readable
-# and lets release tooling build a changelog later.
+# The title is what the pull request list and a later changelog read, and with a squash merge it becomes the
+# commit message on main. A merge commit or a rebase merge lands the commits inside the branch instead, and
+# those are not checked.
 # The rule lives in .github/scripts/check-title.sh, which the commit-msg hook of pre-commit runs too.
 # It reads the title only: no token permissions, and the title never reaches a shell as code (it is
 # passed through an environment variable).
