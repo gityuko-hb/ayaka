@@ -43,3 +43,21 @@ def test_importing_the_package_does_not_load_torch() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_importing_ayaka_and_the_protocol_facades_loads_neither_torch_nor_aiohttp() -> None:
+    code = (
+        "import sys\n"
+        "import ayaka, ayaka.engine, ayaka.configs, ayaka.entrypoints\n"
+        "import ayaka.entrypoints.openai, ayaka.entrypoints.parsers\n"
+        "from ayaka.entrypoints.conversation import Conversation\n"
+        "from ayaka.configs.server import ServerConfig\n"
+        "loaded = sorted({'torch', 'aiohttp'} & set(sys.modules))\n"
+        "assert not loaded, loaded\n"
+    )
+
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-I", "-c", code], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr

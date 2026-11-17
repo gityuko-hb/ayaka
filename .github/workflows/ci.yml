@@ -12,6 +12,8 @@ name: CI
 # Caching: only the uv cache is cached (keyed on uv.lock). Pyright ships bundled in its wheel and uses the
 # runner's Node.js, and ruff runs in milliseconds, so neither needs a cache of its own.
 #
+# The HTTP server's tests and types need aiohttp, so lint and test also install the `serve` extra.
+#
 # PyTorch: lint, test and parity install the CPU build (`--extra cpu`); hosted runners have no GPU, and the CPU
 # wheel avoids the ~15 nvidia-* packages the default Linux build pulls in. adapters, build and workflows install
 # no torch. The uv cache is not pruned in those three jobs: pruning drops prebuilt wheels, so torch would be downloaded
@@ -61,7 +63,7 @@ jobs:
           prune-cache: false  # keep the prebuilt torch wheel; see the note at the top
           # PRs restore the cache that main saved but do not save their own, which keeps the 10 GB repo quota free.
           save-cache: ${{ github.ref == 'refs/heads/main' }}
-      - run: uv sync --extra cpu
+      - run: uv sync --extra cpu --extra serve
       - run: uv run ruff check . --output-format=github
       - run: uv run ruff format --check .
       - run: uv run pyright
@@ -83,7 +85,7 @@ jobs:
           cache-suffix: test
           prune-cache: false  # keep the prebuilt torch wheel; see the note at the top
           save-cache: ${{ github.ref == 'refs/heads/main' }}
-      - run: uv sync --extra cpu
+      - run: uv sync --extra cpu --extra serve
       - run: uv run pytest -m "not gpu and not integration" --cov --cov-report=term-missing
       - run: uv run pytest --doctest-modules python/ayaka
 
