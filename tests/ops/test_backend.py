@@ -378,6 +378,14 @@ class TestTorchBackend:
         with pytest.raises(ConfigError, match="has no fp8_e4m3 support"):
             load_backend(["torch"], device="cpu", dtype=DType.FP8_E4M3)
 
+    def test_flashinfer_is_registered_for_attention_on_linux_gpus_only(self) -> None:
+        caps = next(caps for caps in available_backends() if caps.name == "flashinfer")
+
+        assert caps.families == {"attention"}
+        assert caps.platforms == {"linux"}
+        assert caps.devices == {"cuda"}
+        assert caps.dtypes == {DType.FP16, DType.BF16}
+
     def test_without_torch_the_backend_is_reported_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
