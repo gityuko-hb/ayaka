@@ -13,6 +13,8 @@ Routes::
     GET  /v1/models             the loaded model and its aliases
     POST /v1/chat/completions   OpenAI Chat Completions
     POST /v1/completions        OpenAI Completions
+    POST /v1/messages           Anthropic Messages
+    POST /v1/messages/count_tokens   the prompt length of a Messages request
 
 Errors are mapped here, once, from the typed errors of :mod:`ayaka.core.errors`; each protocol
 only renders the result in its own shape::
@@ -691,6 +693,11 @@ type Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
 def _renderer(path: str) -> ErrorRenderer:
+    """Errors on the Anthropic routes in Anthropic's shape, everywhere else in OpenAI's."""
+    if path.startswith("/v1/messages"):
+        from ayaka.entrypoints.anthropic.protocol import anthropic_error
+
+        return anthropic_error
     from ayaka.entrypoints.openai.protocol import openai_error
 
     return openai_error
@@ -793,6 +800,10 @@ async def _metrics(request: web.Request) -> web.Response:
 
 async def _models(request: web.Request) -> web.Response:
     serving = request.app[SERVING]
+    if "anthropic-version" in request.headers:
+        from ayaka.entrypoints.anthropic.messages import models_listing
+
+        return web.json_response(models_listing(serving.model_names, serving.created))
     data = [
         {
             "id": name,
@@ -812,6 +823,7 @@ def create_app(serving: Serving) -> web.Application:
     Args:
         serving: The shared state; attach an engine to it to start answering.
     """
+    from ayaka.entrypoints.anthropic import messages as anthropic_messages
     from ayaka.entrypoints.openai import chat as openai_chat
 
     app = web.Application(middlewares=[_middleware], client_max_size=serving.config.max_body_bytes)
@@ -821,4 +833,6 @@ def create_app(serving: Serving) -> web.Application:
     app.router.add_get("/v1/models", _models)
     app.router.add_post("/v1/chat/completions", openai_chat.create_chat_completion)
     app.router.add_post("/v1/completions", openai_chat.create_completion)
+    app.router.add_post("/v1/messages", anthropic_messages.create_message)
+    app.router.add_post("/v1/messages/count_tokens", anthropic_messages.count_tokens)
     return app
