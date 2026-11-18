@@ -22,10 +22,10 @@ The result is saved under the cache directory, keyed by the device, the model,
 the dtype, the backends and the library versions, and read back by the next
 start-up, which plans with the measured numbers instead of zeros
 (:func:`load_profile`). :func:`reconcile` then compares the ledger the engine
-reserved with what the device reports. Since
-``runtime_bytes`` is what the allocator does not hold, the check is in effect
-that the allocator holds what the ledger's owners say (weights, KV, the
-activation peak, the graphs), plus its own rounding.
+reserved with what the allocator holds: the bytes it reserved since the baseline
+plus ``reused_bytes``, and the ``runtime_bytes`` the ledger records outside the
+allocator. The driver's free memory is kept as a diagnostic only, because
+another process on the device can move it without the ledger changing.
 
 The dummy steps write keys and values into blocks that are free: a request that
 gets one of them later writes its own keys and values before it reads any, and
@@ -267,22 +267,31 @@ class StartupReport:
 
 @dataclass(frozen=True, slots=True)
 class Reconciliation:
-    """The ledger against the device, after start-up.
+    """The ledger against the allocator, after start-up.
 
     Attributes:
         ledger_bytes: What the engine reserved in its :class:`~ayaka.memory.budget.MemoryBudget`.
-        measured_bytes: What the device lost since the baseline was read.
+        measured_bytes: What the allocator reserved since the baseline plus ``reused_bytes``, and
+            the ledger's ``runtime`` bytes, which the allocator does not hold.
         tolerance_bytes: The largest difference that still counts as a match.
+        device_bytes: What the driver reports the device lost since the baseline. Diagnostic only:
+            another process on the device can return or take memory between the readings.
     """
 
     ledger_bytes: int
     measured_bytes: int
     tolerance_bytes: int
+    device_bytes: int = 0
 
     @property
     def difference_bytes(self) -> int:
-        """``measured - ledger``: positive when the device lost more than the ledger says."""
+        """``measured - ledger``: positive when the device holds more than the ledger says."""
         return self.measured_bytes - self.ledger_bytes
+
+    @property
+    def device_difference_bytes(self) -> int:
+        """``device - ledger``: the driver's view, kept out of :attr:`matches`."""
+        return self.device_bytes - self.ledger_bytes
 
     @property
     def matches(self) -> bool:
@@ -296,22 +305,33 @@ def reconcile(
     baseline_bytes: int,
     reading: MemoryReading,
     reused_bytes: int = 0,
+    baseline_reserved_bytes: int = 0,
     tolerance_ratio: float = 0.05,
     tolerance_floor: int = 64 * 2**20,
 ) -> Reconciliation:
-    """Compare the ledger with the device: ``baseline - free now`` against the reserved bytes.
+    """Compare the ledger with what the allocator holds, not with free device memory.
 
-    ``reused_bytes`` (:attr:`StartupProfile.reused_bytes`) is added to what the device lost:
-    tensors of this engine that sit in memory the process held before the baseline.
+    ``baseline_reserved_bytes`` is what the allocator already held at the baseline; only what it
+    reserved since is this engine's. ``reused_bytes`` (:attr:`StartupProfile.reused_bytes`) adds
+    tensors that landed in that pre-baseline reservation. The ledger's ``runtime`` owner is added
+    back because it is memory outside the allocator.
+
+    ``baseline_bytes`` is read before anything was allocated and becomes
+    :attr:`Reconciliation.device_bytes`, the driver's diagnostic view. It does not decide the match:
+    another process can return or take memory between the two readings, and under WSL2 the driver
+    and CUDA can report different free values.
 
     The tolerance is the larger of ``tolerance_ratio`` of the measured bytes and
-    ``tolerance_floor``: the allocator rounds every block up and keeps a cache, and other
-    processes on the device move ``free`` a little.
+    ``tolerance_floor``: the allocator rounds every block up and keeps a cache.
     """
-    measured = max(baseline_bytes - reading.free, 0) + reused_bytes
+    allocator = max(reading.reserved - baseline_reserved_bytes, 0) + reused_bytes
+    measured = allocator + budget.held("runtime")
     tolerance = max(int(measured * tolerance_ratio), tolerance_floor)
     return Reconciliation(
-        ledger_bytes=budget.reserved_bytes, measured_bytes=measured, tolerance_bytes=tolerance
+        ledger_bytes=budget.reserved_bytes,
+        measured_bytes=measured,
+        tolerance_bytes=tolerance,
+        device_bytes=max(baseline_bytes - reading.free, 0),
     )
 
 

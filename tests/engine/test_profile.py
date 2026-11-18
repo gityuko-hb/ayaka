@@ -115,17 +115,28 @@ class TestFile:
 
 
 class TestReconcile:
-    def _reading(self, free: int) -> MemoryReading:
-        return MemoryReading(free=free, total=4096 * MIB, allocated=0, reserved=0, peak_allocated=0)
+    def _reading(self, free: int, *, reserved: int = 0) -> MemoryReading:
+        return MemoryReading(
+            free=free,
+            total=4096 * MIB,
+            allocated=0,
+            reserved=reserved,
+            peak_allocated=0,
+        )
 
-    def test_a_ledger_that_explains_the_device_matches(self) -> None:
+    def test_a_ledger_that_explains_the_allocator_matches(self) -> None:
         budget = MemoryBudget(3000 * MIB)
         budget.reserve("weights", 1000 * MIB)
         budget.reserve("kv", 500 * MIB)
 
-        result = reconcile(budget, baseline_bytes=3000 * MIB, reading=self._reading(1480 * MIB))
+        result = reconcile(
+            budget,
+            baseline_bytes=3000 * MIB,
+            reading=self._reading(1480 * MIB, reserved=1520 * MIB),
+        )
 
         assert result.measured_bytes == 1520 * MIB
+        assert result.device_bytes == 1520 * MIB
         assert result.difference_bytes == 20 * MIB
         assert result.tolerance_bytes == 76 * MIB  # 5 % of 1520 MiB
         assert result.matches
@@ -134,10 +145,72 @@ class TestReconcile:
         budget = MemoryBudget(3000 * MIB)
         budget.reserve("weights", 1000 * MIB)
 
-        result = reconcile(budget, baseline_bytes=3000 * MIB, reading=self._reading(1500 * MIB))
+        result = reconcile(
+            budget,
+            baseline_bytes=3000 * MIB,
+            reading=self._reading(1500 * MIB, reserved=1500 * MIB),
+        )
 
         assert not result.matches
         assert result.difference_bytes == 500 * MIB
+
+    def test_another_process_returning_memory_does_not_break_the_match(self) -> None:
+        budget = MemoryBudget(3000 * MIB)
+        budget.reserve("weights", 1000 * MIB)
+
+        result = reconcile(
+            budget,
+            baseline_bytes=3000 * MIB,
+            reading=self._reading(3500 * MIB, reserved=1000 * MIB),
+        )
+
+        assert result.measured_bytes == 1000 * MIB
+        assert result.device_bytes == 0
+        assert result.device_difference_bytes == -1000 * MIB
+        assert result.matches
+
+    def test_another_process_taking_memory_does_not_break_the_match(self) -> None:
+        budget = MemoryBudget(3000 * MIB)
+        budget.reserve("weights", 1000 * MIB)
+
+        result = reconcile(
+            budget,
+            baseline_bytes=3000 * MIB,
+            reading=self._reading(2500 * MIB, reserved=1000 * MIB),
+        )
+
+        assert result.measured_bytes == 1000 * MIB
+        assert result.device_bytes == 500 * MIB
+        assert result.matches
+
+    def test_weights_in_pre_baseline_memory_are_counted(self) -> None:
+        budget = MemoryBudget(3000 * MIB)
+        budget.reserve("weights", 1000 * MIB)
+
+        result = reconcile(
+            budget,
+            baseline_bytes=3000 * MIB,
+            baseline_reserved_bytes=500 * MIB,
+            reading=self._reading(2500 * MIB, reserved=1000 * MIB),
+            reused_bytes=500 * MIB,
+        )
+
+        assert result.measured_bytes == 1000 * MIB  # (1000 - 500) + 500
+        assert result.matches
+
+    def test_the_runtime_owner_is_added_back(self) -> None:
+        budget = MemoryBudget(3000 * MIB)
+        budget.reserve("weights", 800 * MIB)
+        budget.reserve("runtime", 200 * MIB)
+
+        result = reconcile(
+            budget,
+            baseline_bytes=3000 * MIB,
+            reading=self._reading(2200 * MIB, reserved=800 * MIB),
+        )
+
+        assert result.measured_bytes == 1000 * MIB
+        assert result.matches
 
 
 def test_the_dummy_run_measures_on_the_cpu() -> None:
