@@ -79,6 +79,8 @@ class RequestEvent:
         stop_reason: The stop token id that ended the request, if one did.
         error: Why the request ended with ``ERROR``, ``TIMEOUT``, or ``LENGTH`` because of memory.
         logprobs: Logprobs of ``token_ids`` when the runner supplied them.
+        cached_tokens: Prompt tokens whose KV came from the prefix cache; known once the
+            request runs, 0 before.
     """
 
     request_id: RequestId
@@ -87,6 +89,7 @@ class RequestEvent:
     stop_reason: TokenId | None = None
     error: ErrorInfo | None = None
     logprobs: tuple[TokenLogprob, ...] | None = None
+    cached_tokens: int = 0
 
     @property
     def finished(self) -> bool:
@@ -112,6 +115,9 @@ class Request:
         pending: The last sampled token: emitted, but not yet run through the model.
         abort_reason: Set by ``abort`` while the request is inside a step; applied at ``update``.
         finish_reason: Set when the request finishes.
+        cache_salt: Isolation salt of the prefix cache.
+        prefix_cache: Whether the request may reuse and share cached blocks.
+        cached_tokens: Prompt tokens whose KV was attached from the prefix cache at admission.
     """
 
     request_id: RequestId
@@ -126,6 +132,9 @@ class Request:
     pending: TokenId | None = None
     abort_reason: FinishReason | None = None
     finish_reason: FinishReason | None = None
+    cache_salt: str | None = None
+    prefix_cache: bool = True
+    cached_tokens: int = 0
     _status: RequestStatus = field(default=RequestStatus.WAITING, init=False)
 
     @classmethod
@@ -140,6 +149,8 @@ class Request:
             priority=request.priority,
             arrival=arrival,
             deadline=deadline,
+            cache_salt=request.cache_salt,
+            prefix_cache=request.prefix_cache,
         )
 
     @property
@@ -161,6 +172,14 @@ class Request:
     def abort_requested(self) -> bool:
         """Whether an abort is waiting for the step that holds this request to end."""
         return self.abort_reason is not None
+
+    def tokens_between(self, start: int, stop: int) -> tuple[TokenId, ...]:
+        """Tokens ``start .. stop`` of the prompt followed by the output."""
+        prompt = self.prompt
+        if stop <= len(prompt):
+            return prompt[start:stop]
+        tail = tuple(self.output[max(0, start - len(prompt)) : stop - len(prompt)])
+        return prompt[start:] + tail if start < len(prompt) else tail
 
     def move_to(self, status: RequestStatus) -> None:
         """Change the status along a move of :data:`LEGAL_TRANSITIONS`.

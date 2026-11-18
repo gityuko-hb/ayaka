@@ -55,6 +55,7 @@ class _State:
     tokens: list[TokenId] = field(default_factory=list[int])
     text: list[str] = field(default_factory=list[str])
     first_token_at: float | None = None
+    cached_tokens: int = 0
 
 
 class OutputProcessor:
@@ -150,6 +151,7 @@ class OutputProcessor:
         reason = event.finish_reason
         stop_reason: TokenId | str | None = event.stop_reason
         error = event.error
+        state.cached_tokens = max(state.cached_tokens, event.cached_tokens)
         if kept and state.first_token_at is None:
             state.first_token_at = now
         detokenizer = state.detokenizer
@@ -213,7 +215,11 @@ class OutputProcessor:
             prompt_token_ids=state.prompt,
             outputs=(completion,),
             finished=finished,
-            usage=Usage(prompt_tokens=len(state.prompt), completion_tokens=len(state.tokens)),
+            usage=Usage(
+                prompt_tokens=len(state.prompt),
+                completion_tokens=len(state.tokens),
+                cached_tokens=min(state.cached_tokens, len(state.prompt)),
+            ),
             metrics=self._metrics(state) if finished else None,
             error=error,
         )

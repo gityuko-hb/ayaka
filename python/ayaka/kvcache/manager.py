@@ -6,13 +6,17 @@ request holds and never touches a tensor, so it runs and is tested without torch
 engine builds the matching :class:`~ayaka.kvcache.storage.pool.KVPool` tensors from the
 same groups and block counts.
 
-There is no prefix reuse yet: every block belongs to one request and returns to the free
-queue when the request is freed.
+With a :class:`~ayaka.kvcache.prefix.base.PrefixCache`, full blocks are shared. A new request
+attaches the blocks of the longest prefix an earlier request computed (:meth:`match_prefix`,
+then :meth:`allocate` with the match), and every block a request fills completely is registered
+under its chain digest (:meth:`cache_blocks`) so later requests can attach it. A shared block
+holds one reference per request. When the last one frees it, it returns to the free queue still
+matchable, and it loses its digest only when the queue hands it out again.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ayaka.core.errors import EngineError
@@ -24,7 +28,8 @@ from ayaka.utils.validation import require_int
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ayaka.core.types import RequestId
+    from ayaka.core.types import RequestId, TokenId
+    from ayaka.kvcache.prefix.base import PrefixCache, PrefixMatch
     from ayaka.kvcache.storage.spec import KVGroup
 
 __all__ = ["KVCacheManager", "KVCacheStats"]
@@ -37,14 +42,20 @@ class KVCacheStats:
     Attributes:
         num_requests: Requests that hold blocks.
         usable_blocks: Blocks a request can own, per group (the padding block excluded).
-        free_blocks: Blocks not held by any request, per group.
-        evictions: Cached blocks reused and so forgotten; always 0 until prefix reuse exists.
+        free_blocks: Blocks not held by any request, per group; cached blocks included.
+        evictions: Cached blocks handed out again and so forgotten.
+        cached_blocks: Free blocks that can still be matched, per group.
+        lookups: Requests admitted with a prefix lookup.
+        hit_tokens: Prompt tokens those requests reused, in total.
     """
 
     num_requests: int
     usable_blocks: tuple[int, ...]
     free_blocks: tuple[int, ...]
     evictions: int
+    cached_blocks: tuple[int, ...] = ()
+    lookups: int = 0
+    hit_tokens: int = 0
 
     @property
     def used_blocks(self) -> tuple[int, ...]:
@@ -65,6 +76,15 @@ class KVCacheStats:
         )
 
 
+@dataclass(slots=True)
+class _Chain:
+    """The digests of a request's full blocks, and how many of its blocks are registered."""
+
+    parent: bytes
+    digests: list[bytes] = field(default_factory=list[bytes])
+    registered: int = 0
+
+
 class KVCacheManager:
     """Hands blocks to requests, all groups or none.
 
@@ -80,6 +100,7 @@ class KVCacheManager:
             normally ``BudgetPlan.kv_blocks``.
         max_requests: Requests that can hold blocks at once.
         max_blocks_per_request: Longest context a request can reach, in blocks.
+        prefix: The prefix cache that names full blocks, or ``None`` for no reuse.
 
     Raises:
         ValueError: If there is no group, the counts do not match the groups, the block
@@ -93,6 +114,7 @@ class KVCacheManager:
         *,
         max_requests: int,
         max_blocks_per_request: int,
+        prefix: PrefixCache | None = None,
     ) -> None:
         if not groups:
             raise ValueError("at least one KV group is required")
@@ -105,9 +127,18 @@ class KVCacheManager:
             raise ValueError(f"every group must use the same block_size, got {sorted(sizes)}")
         self._groups = tuple(groups)
         self._block_size = sizes.pop()
+        if prefix is not None and prefix.block_size != self._block_size:
+            raise ValueError(
+                f"the prefix cache hashes blocks of {prefix.block_size} tokens, "
+                f"the groups use {self._block_size}"
+            )
         self._pools = tuple(BlockPool(count) for count in num_blocks)
         self._table = BlockTable(len(self._groups), max_requests, max_blocks_per_request)
         self._committed: dict[RequestId, int] = {}
+        self._prefix = prefix
+        self._chains: dict[RequestId, _Chain] = {}
+        self._lookups = 0
+        self._hit_tokens = 0
 
     # -- reading ---------------------------------------------------------------------------
 
@@ -125,6 +156,11 @@ class KVCacheManager:
     def table(self) -> BlockTable:
         """The block table; read it to build a step's block rows. Only the manager writes it."""
         return self._table
+
+    @property
+    def prefix_caching(self) -> bool:
+        """Whether full blocks are shared between requests."""
+        return self._prefix is not None
 
     @property
     def max_tokens_per_request(self) -> int:
@@ -176,17 +212,41 @@ class KVCacheManager:
             usable_blocks=tuple(pool.num_blocks - 1 for pool in self._pools),
             free_blocks=tuple(pool.free_count for pool in self._pools),
             evictions=sum(pool.evictions for pool in self._pools),
+            cached_blocks=tuple(pool.cached_count for pool in self._pools),
+            lookups=self._lookups,
+            hit_tokens=self._hit_tokens,
         )
+
+    def match_prefix(self, token_ids: Sequence[TokenId], salt: str | None) -> PrefixMatch | None:
+        """The longest prefix of ``token_ids`` whose blocks are cached; changes no block.
+
+        The match is valid until the next call that allocates or frees, so pass it to
+        :meth:`allocate` in the same scheduling pass.
+
+        Returns:
+            ``None`` without a prefix cache; otherwise a match, possibly of zero blocks, that
+            also carries the digests of every full prompt block.
+        """
+        if self._prefix is None:
+            return None
+        return self._prefix.match(self._pools, token_ids, salt)
 
     # -- changing --------------------------------------------------------------------------
 
-    def allocate(self, request_id: RequestId, num_tokens: int) -> bool:
+    def allocate(
+        self, request_id: RequestId, num_tokens: int, prefix: PrefixMatch | None = None
+    ) -> bool:
         """Make room for ``num_tokens`` more tokens of a request, in every group or in none.
 
         ``num_tokens`` counts every row the coming step will write, **look-ahead rows of
         a speculative step included**: ``1 + k`` for a decode step with ``k`` drafts. The
         room is measured from the committed length, so asking again before
         :meth:`commit` does not allocate twice. A new request gets a block table row.
+
+        ``prefix``, a result of :meth:`match_prefix`, is only for a request that holds nothing
+        yet. Its matched blocks are attached first and count as committed, and ``num_tokens``
+        is measured after them. It also makes the request's full blocks cacheable through
+        :meth:`cache_blocks`; a request admitted without one never registers a block.
 
         The call never evicts, never waits and never raises for a shortage. It returns
         ``False`` when any group has too few free blocks, when the request would outgrow a
@@ -196,6 +256,7 @@ class KVCacheManager:
         Args:
             request_id: The request.
             num_tokens: Rows to make room for beyond the committed tokens; may be 0.
+            prefix: The match to attach to a new request.
 
         Returns:
             ``True`` once the request has room; ``False`` if it could not be given.
@@ -203,20 +264,44 @@ class KVCacheManager:
         Raises:
             TypeError: If ``num_tokens`` is not an ``int``.
             ValueError: If ``num_tokens`` is negative.
+            EngineError: If ``prefix`` is passed for a request that already holds blocks.
         """
-        need = self.blocks_needed(request_id, num_tokens)
         known = request_id in self._committed
+        if prefix is not None and known:
+            raise EngineError(f"request {request_id!r} already holds blocks; a prefix needs none")
+        shared = prefix.num_blocks if prefix is not None else 0
+        need = self.blocks_needed(request_id, num_tokens)
+        if shared:
+            need = div_ceil(shared * self._block_size + num_tokens, self._block_size) - shared
         if not known and self._table.free_rows == 0:
             return False
-        have = self._table.num_blocks(request_id, 0) if known else 0
+        have = self._table.num_blocks(request_id, 0) if known else shared
         if have + need > self._table.max_blocks_per_request:
             return False
-        if any(pool.free_count < need for pool in self._pools):
+        if prefix is not None and shared:
+            # Attaching a cached block takes it out of the free queue, so it no longer counts.
+            for pool, ids in zip(self._pools, prefix.blocks, strict=True):
+                revived = sum(1 for block_id in ids if pool.is_free(block_id))
+                if pool.free_count - revived < need:
+                    return False
+        elif any(pool.free_count < need for pool in self._pools):
             return False
         # Every check is done: from here on the call cannot fail, so no group is left half done.
         if not known:
             self._table.acquire(request_id)
             self._committed[request_id] = 0
+            if prefix is not None and self._prefix is not None:
+                self._lookups += 1
+                self._hit_tokens += prefix.num_tokens
+                self._chains[request_id] = _Chain(
+                    parent=prefix.root, digests=list(prefix.digests), registered=shared
+                )
+        if prefix is not None and shared:
+            for group, (pool, ids) in enumerate(zip(self._pools, prefix.blocks, strict=True)):
+                for block_id in ids:
+                    pool.touch(block_id)
+                self._table.append(request_id, group, ids)
+            self._committed[request_id] = prefix.num_tokens
         if need:
             for group, pool in enumerate(self._pools):
                 self._table.append(request_id, group, [pool.allocate() for _ in range(need)])
@@ -242,6 +327,71 @@ class KVCacheManager:
             )
         self._committed[request_id] = committed
 
+    def cacheable_blocks(self, request_id: RequestId) -> tuple[int, int]:
+        """``(registered, full)``: blocks of the request already named, and blocks now full.
+
+        A block is full once all its tokens are committed. When ``full`` passes ``registered``,
+        the caller hands :meth:`cache_blocks` the tokens of blocks ``registered .. full``. A
+        request that cannot cache (no prefix cache, or admitted without a match) gives
+        ``(0, 0)``.
+
+        Raises:
+            KeyError: If the request is unknown.
+        """
+        committed = self._committed[request_id]
+        chain = self._chains.get(request_id)
+        if chain is None:
+            return 0, 0
+        return chain.registered, committed // self._block_size
+
+    def cache_blocks(self, request_id: RequestId, token_ids: Sequence[TokenId]) -> int:
+        """Register the request's newly full blocks so later requests can attach them.
+
+        Args:
+            request_id: The request.
+            token_ids: The tokens of blocks ``registered .. full`` (see :meth:`cacheable_blocks`),
+                from the first block not yet registered. A partial last block is ignored.
+
+        Returns:
+            Blocks registered by this call. A block whose digest another block already holds
+            stays private to the request: there is no deduplication.
+
+        Raises:
+            KeyError: If the request is unknown.
+            EngineError: If ``token_ids`` cover blocks that are not full yet.
+        """
+        chain = self._chains.get(request_id)
+        if chain is None or self._prefix is None:
+            return 0
+        start = chain.registered
+        full = self._committed[request_id] // self._block_size
+        count = len(token_ids) // self._block_size
+        if start + count > full:
+            raise EngineError(
+                f"request {request_id!r}: only {full} blocks are full, cannot cache "
+                f"blocks {start}..{start + count}"
+            )
+        if count == 0:
+            return 0
+        known = len(chain.digests)
+        if known < start + count:
+            parent = chain.digests[known - 1] if known else chain.parent
+            offset = (known - start) * self._block_size
+            chain.digests.extend(
+                self._prefix.digests(parent, token_ids[offset : count * self._block_size])
+            )
+        rows = self.blocks(request_id)
+        added = 0
+        for index in range(start, start + count):
+            digest = chain.digests[index]
+            if any(pool.lookup(digest) is not None for pool in self._pools):
+                continue
+            for pool, ids in zip(self._pools, rows, strict=True):
+                pool.register(ids[index], digest)
+            added += 1
+        chain.registered = start + count
+        return added
+
     def free(self, request_id: RequestId) -> None:
         """Give back every block of a request, last block first, and its table row.
 
@@ -254,6 +404,7 @@ class KVCacheManager:
             pool.free_chain(self._table.blocks(request_id, group))
         self._table.release(request_id)
         del self._committed[request_id]
+        self._chains.pop(request_id, None)
 
     # -- checking --------------------------------------------------------------------------
 
@@ -261,10 +412,11 @@ class KVCacheManager:
         """Verify the books against the table.
 
         Runs each pool's own check, then confirms that every group's reference counts equal
-        how often each block appears in the table, that no block is held without a request
-        or referenced twice (no sharing exists yet), that each request holds the same number
-        of blocks in every group and enough room for its committed tokens, and that the
-        table and the request set agree. It is for tests and debug builds, not the hot path.
+        how often each block appears in the table (a shared block once per request holding
+        it), that no request holds a block twice, that a request's registered blocks carry its
+        chain digests in every group, that each request holds the same number of blocks in
+        every group and enough room for its committed tokens, and that the table and the
+        request set agree. It is for tests and debug builds, not the hot path.
 
         Raises:
             EngineError: Listing every problem found.
@@ -277,7 +429,10 @@ class KVCacheManager:
                 problems.append(f"group {group}: {exc}")
             seen: dict[int, int] = {}
             for request_id in self._committed:
-                for block_id in self._table.blocks(request_id, group):
+                chain = self._table.blocks(request_id, group)
+                if len(set(chain)) != len(chain):
+                    problems.append(f"group {group}: request {request_id!r} holds a block twice")
+                for block_id in chain:
                     seen[block_id] = seen.get(block_id, 0) + 1
             for block_id in range(1, pool.num_blocks):
                 if pool.ref_count(block_id) != seen.get(block_id, 0):
@@ -285,8 +440,6 @@ class KVCacheManager:
                         f"group {group} block {block_id}: {pool.ref_count(block_id)} references, "
                         f"{seen.get(block_id, 0)} in the table"
                     )
-                if seen.get(block_id, 0) > 1:
-                    problems.append(f"group {group} block {block_id} is held by two requests")
         for request_id, committed in self._committed.items():
             counts = {self._table.num_blocks(request_id, g) for g in range(len(self._groups))}
             if len(counts) != 1:
@@ -295,6 +448,23 @@ class KVCacheManager:
                 problems.append(
                     f"request {request_id!r} committed more tokens than it has room for"
                 )
+        for request_id, chain in self._chains.items():
+            if request_id not in self._committed:
+                problems.append(f"request {request_id!r} has a digest chain but no blocks")
+                continue
+            rows = self.blocks(request_id)
+            for index in range(min(chain.registered, len(chain.digests))):
+                held = {
+                    pool.digest_of(ids[index]) for pool, ids in zip(self._pools, rows, strict=True)
+                }
+                if len(held) != 1:
+                    problems.append(
+                        f"request {request_id!r} block {index} has different digests per group"
+                    )
+                elif None not in held and held != {chain.digests[index]}:
+                    problems.append(
+                        f"request {request_id!r} block {index} is registered under another digest"
+                    )
         in_use = self._table.max_requests - self._table.free_rows
         if in_use != len(self._committed):
             problems.append(f"{in_use} table rows in use for {len(self._committed)} requests")

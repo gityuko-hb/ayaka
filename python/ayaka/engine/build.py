@@ -10,7 +10,8 @@
     model                             resolve the source, check and load the weights
     memory plan                       plan_budget over the weights, the KV cost of the model and,
                                       on a GPU, the last start-up profile measured for this key
-    KV cache                          tensors (KVPool) and bookkeeping (KVCacheManager)
+    KV cache                          tensors (KVPool), bookkeeping (KVCacheManager) and, unless
+                                      the config turns it off, the prefix cache
     tokenizer                         checked against the model's vocabulary and context
     scheduler, runner, processors     and the engine that runs them
     start-up run (GPU only)           measure activations and runtime memory, capture the decode
@@ -53,6 +54,8 @@ from ayaka.engine.profile import (
     save_profile,
 )
 from ayaka.kvcache.manager import KVCacheManager
+from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
+from ayaka.kvcache.prefix.hashing import ChainRoot
 from ayaka.memory.budget import BudgetInputs, KVCost, MemoryBudget, plan_budget
 from ayaka.scheduler.scheduler import Scheduler
 from ayaka.tokenizers.service import TokenizerService
@@ -204,7 +207,19 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         min(context, (blocks - 1) * block_size),
     )
 
-    kv = KVCacheManager([group], [blocks], max_requests=running, max_blocks_per_request=max_blocks)
+    prefix = None
+    if config.cache.prefix_cache:
+        prefix = HashPrefixCache(
+            ChainRoot(
+                model_id=f"{config.source.fingerprint}/{model_config.fingerprint}",
+                dtype=group.spec.dtype.label,
+                codec=group.spec.codec,
+                block_size=block_size,
+            )
+        )
+    kv = KVCacheManager(
+        [group], [blocks], max_requests=running, max_blocks_per_request=max_blocks, prefix=prefix
+    )
     pool = KVPool(group, blocks, device=device.device)
 
     service = _tokenizer_service(config, model_config.vocab_size, context, tokenizer)

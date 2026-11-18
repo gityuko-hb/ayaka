@@ -108,6 +108,31 @@ def _base(client: TestClient[Any, Any]) -> str:
 
 
 class TestOpenAISdk:
+    def test_a_repeated_prompt_reports_cached_tokens(self, checkpoint: TinyCheckpoint) -> None:
+        """Two requests at once both finish; a third with the same prefix reports a cache hit."""
+        text = "tell me about the printing press and the history of books"
+        expected = _expected(checkpoint, text, 4)
+
+        async def body(base: str) -> None:
+            client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY)
+
+            async def ask() -> Any:
+                return await client.chat.completions.create(
+                    model="tiny",
+                    messages=[{"role": "user", "content": text}],
+                    max_tokens=4,
+                    temperature=0,
+                )
+
+            together = await asyncio.gather(ask(), ask())
+            again = await ask()
+            for answer in (*together, again):
+                assert answer.choices[0].message.content == expected
+            assert again.usage.prompt_tokens_details.cached_tokens > 0
+            assert again.usage.prompt_tokens_details.cached_tokens < again.usage.prompt_tokens
+
+        _run(checkpoint, body)
+
     def test_chat_completions_stream_text(self, checkpoint: TinyCheckpoint) -> None:
         expected = _expected(checkpoint, "hi", 8)
 

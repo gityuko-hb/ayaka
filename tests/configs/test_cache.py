@@ -30,6 +30,7 @@ class TestCacheConfig:
             "num_blocks": 9,
             "memory_ratio": 0.9,
             "kv_reserve_tokens": None,
+            "prefix_cache": True,
         }
         assert config.fingerprint != CacheConfig(block_size=4, num_blocks=10).fingerprint
 
