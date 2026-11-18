@@ -16,6 +16,10 @@ uv run ayaka serve path/to/model --tool-call-parser hermes --reasoning-parser th
 
 It listens on `127.0.0.1:8000` unless told otherwise; `ayaka serve --help` lists the settings.
 
+JSON answers (`response_format`, `text.format`, `output_format`), forced tool calls (`tool_choice`) and strict
+tool arguments need the `structured` extra (llguidance): `uv sync --extra cpu --extra serve --extra structured`.
+With it, a request that offers tools also gets its calls checked by a grammar while the rest of the answer stays free.
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/).

@@ -28,13 +28,14 @@ uv sync --extra cu130          # ...or CUDA 13.0 PyTorch on a machine with an NV
 uv sync --extra cu130 --extra flashinfer   # Linux/WSL2 GPU: the flashinfer attention backend (needs nvcc on PATH)
 uv sync --extra cpu --extra hf --extra tiktoken   # add the tokenizer adapters (optional; the tests do not need them)
 uv sync --extra cpu --extra serve   # add the HTTP server (aiohttp); CI's lint and test jobs install it
+uv sync --extra cpu --extra serve --extra structured   # plus structured output (llguidance), as CI does
 uv run ruff check .            # lint
 uv run ruff format .           # format
 uv run pyright                 # types: strict in python/, standard in tests/
 uv run pytest -m "not gpu and not integration"   # the unit tests: what the `test` job runs
 uv run pytest -m integration  # real tokenizers + worker processes; needs the hf and tiktoken extras (CI job `adapters`)
 uv run pytest -m gpu           # on the dev GPU only; AYAKA_REQUIRE_GPU=1 turns a missing GPU into a failure
-uv sync --extra cpu --extra serve --group sdk     # then: the server against the official SDKs (CI job `serving`)
+uv sync --extra cpu --extra serve --extra structured --group sdk   # the server against the official SDKs (CI job `serving`)
 uv run pytest -m integration tests/e2e/test_serving.py   # the signal tests need POSIX (Linux, WSL2)
 uv build                       # build the sdist and wheel
 ```
@@ -83,6 +84,8 @@ does not export it.
   build (and ~15 `nvidia-*` packages) into hosted Linux CI. Keep both extras on the same torch version range.
   The `flashinfer` extra (Linux only) also takes torch from the cu130 index and conflicts with `cpu`; its
   version is pinned exactly and upgraded in a PR of its own with the `gpu` parity and end-to-end results.
+- Structured output is the optional `structured` extra (llguidance, no dependencies of its own). It is imported
+  only when a request asks for a constraint (`ayaka.sampling.structured.compiler`); never at module top level.
 - Tokenizer adapters are optional extras, not runtime dependencies: `hf` (transformers, tokenizers,
   huggingface-hub) and `tiktoken` (tiktoken, jinja2). The adapters import them lazily through
   `ayaka.utils.import_utils.require_module`, so never import them at module top level.

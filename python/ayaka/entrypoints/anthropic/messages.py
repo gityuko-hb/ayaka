@@ -241,6 +241,12 @@ async def create_message(request: web.Request) -> web.StreamResponse:
         public_id=public_id,
         tools=message.tools,
         parallel_tool_calls=message.parallel_tool_calls,
+        structured=serving.constraint(
+            message.output,
+            message.conversation,
+            tools=message.tools,
+            parallel_tool_calls=message.parallel_tool_calls,
+        ),
     )
     message_id = f"msg_{public_id}"
     try:

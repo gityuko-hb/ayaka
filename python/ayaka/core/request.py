@@ -17,6 +17,7 @@ from .errors import InvalidRequestError
 from .params import SamplingParams
 
 if TYPE_CHECKING:
+    from .constraints import StructuredParams
     from .types import RequestId, TokenId
 
 __all__ = ["MAX_CACHE_SALT_LEN", "GenerateRequest", "TokenizedRequest"]
@@ -61,6 +62,7 @@ class GenerateRequest:
         priority: Scheduler priority; higher values are served first.
         cache_salt: Isolation salt for the prefix-cache hash chain.
         prefix_cache: Whether this request may reuse cached prompt blocks.
+        structured: The output constraint, or ``None``.
     """
 
     request_id: RequestId
@@ -70,6 +72,7 @@ class GenerateRequest:
     priority: int = 0
     cache_salt: str | None = None
     prefix_cache: bool = True
+    structured: StructuredParams | None = None
 
     def __post_init__(self) -> None:
         _validate_envelope(
@@ -113,6 +116,9 @@ class TokenizedRequest:
         prefix_cache: Whether this request may reuse cached prompt blocks.
         sequence_index: Which output sequence of a parent request with ``n > 1`` this is; it
             selects the random stream. 0 for an ordinary request.
+        structured: The output constraint, or ``None``.
+        constraint_id: The key under which the engine compiled ``structured``; the compiled
+            grammar lives in the engine, never in the request.
     """
 
     request_id: RequestId
@@ -123,6 +129,8 @@ class TokenizedRequest:
     cache_salt: str | None = None
     prefix_cache: bool = True
     sequence_index: int = 0
+    structured: StructuredParams | None = None
+    constraint_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_envelope(

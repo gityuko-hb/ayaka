@@ -19,13 +19,17 @@ tokenizer's.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from ayaka.configs.device import DeviceConfig
+from ayaka.core.constraints import ConstraintKind, StructuredParams
 from ayaka.core.params import SamplingParams
+from ayaka.core.request import GenerateRequest
+from ayaka.core.types import RequestId
 from ayaka.utils.dtypes import DType
 
 torch: Any = pytest.importorskip("torch")
@@ -235,6 +239,49 @@ def test_sampling_controls_run_on_the_gpu_beside_graphs(
             if graphs:
                 assert llm.engine.runner.graph is not None
                 assert llm.engine.runner.graph.replays > 0  # the plain request still replays
+            results.append([out.outputs[0].token_ids for out in outs])
+            assert_cache_released(llm.engine)
+
+    assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("backends", [("torch",), ("flashinfer", "torch")], ids=["torch", "fi"])
+def test_a_json_constraint_holds_on_the_gpu_beside_graphs(
+    gpt2: tuple[Path, ModelConfig, dict[str, Any]], backends: tuple[str, ...]
+) -> None:
+    """A schema-constrained request runs eagerly and always parses; the plain one keeps graphs."""
+    pytest.importorskip("llguidance", reason="the structured extra is not installed")
+    directory, _, _ = gpt2
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer", "minimum": 0, "maximum": 9}},
+        "required": ["n"],
+        "additionalProperties": False,
+    }
+    constrained = GenerateRequest(
+        request_id=RequestId("json"),
+        prompt=PROMPTS[0],
+        sampling=SamplingParams(temperature=1.0, seed=3, max_tokens=12),
+        structured=StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema),
+    )
+    results = []
+    for graphs in (False, True):
+        with _llm(directory, backends=backends, dtype=DType.FP16, graphs=graphs) as llm:
+            outs = llm.generate(
+                [
+                    constrained,
+                    GenerateRequest(
+                        request_id=RequestId("plain"), prompt=PROMPTS[1], sampling=_greedy()
+                    ),
+                ]
+            )
+            assert isinstance(outs, list)
+            for out in outs:
+                assert out.error is None, out.error
+            assert set(json.loads(outs[0].outputs[0].text)) == {"n"}
+            if graphs:
+                assert llm.engine.runner.graph is not None
+                assert llm.engine.runner.graph.replays > 0
             results.append([out.outputs[0].token_ids for out in outs])
             assert_cache_released(llm.engine)
 

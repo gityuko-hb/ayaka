@@ -254,3 +254,69 @@ def make_service() -> TokenizerService:
 def make_rendered_service() -> TokenizerService:
     """A service whose tokenizer also turns control tokens in rendered prompts into ids."""
     return _service(RenderedFake())
+
+
+OPEN_CALL, CLOSE_CALL = 260, 261
+_CALL_MARKERS = {"<tool_call>": OPEN_CALL, "</tool_call>": CLOSE_CALL}
+_TOOL_TABLE: tuple[bytes, ...] = (*_TABLE, b"<tool_call>", b"</tool_call>")
+
+
+class ToolTokenizer(FakeTokenizer):
+    """The byte tokenizer plus the Hermes tool-call markers as ordinary (not special) tokens.
+
+    ``<tool_call>`` is id 260 and ``</tool_call>`` id 261, so a parser and a grammar can match
+    them by id, as with Qwen and Hermes vocabularies.
+    """
+
+    @property
+    def vocab_size(self) -> int:
+        return 262
+
+    @property
+    def max_token_id(self) -> int:
+        return 261
+
+    @property
+    def valid_token_ids(self) -> frozenset[int]:
+        return frozenset(range(262))
+
+    def encode(self, text: str, *, add_special_tokens: bool = True) -> list[int]:
+        self.encode_calls += 1
+        ids: list[int] = []
+        i = 0
+        while i < len(text):
+            for marker, ident in _CALL_MARKERS.items():
+                if text.startswith(marker, i):
+                    ids.append(ident)
+                    i += len(marker)
+                    break
+            else:
+                ids.extend(text[i].encode())
+                i += 1
+        return [BOS, *ids] if add_special_tokens else ids
+
+    def decode(
+        self,
+        ids: Sequence[int] | int,
+        *,
+        skip_special_tokens: bool = False,
+        spaces_between_special_tokens: bool = True,
+    ) -> str:
+        del spaces_between_special_tokens
+        sequence = [ids] if isinstance(ids, int) else list(ids)
+        special = set(SPECIALS.values())
+        return b"".join(
+            _TOOL_TABLE[i] for i in sequence if not (skip_special_tokens and i in special)
+        ).decode("utf-8", errors="replace")
+
+    def new_decode_stream(self, *, skip_special_tokens: bool = False) -> DecodeStreamLike | None:
+        return None
+
+    def get_vocab(self) -> dict[str, int]:
+        return {**{str(i): i for i in range(260)}, **_CALL_MARKERS}
+
+    def get_decoded_vocab(self) -> tuple[bytes, ...]:
+        return _TOOL_TABLE
+
+    def token_bytes_table(self) -> tuple[bytes, ...]:
+        return _TOOL_TABLE

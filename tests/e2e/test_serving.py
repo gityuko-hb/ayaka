@@ -108,6 +108,31 @@ def _base(client: TestClient[Any, Any]) -> str:
 
 
 class TestOpenAISdk:
+    def test_a_json_schema_response_format_parses(self, checkpoint: TinyCheckpoint) -> None:
+        pytest.importorskip("llguidance", reason="the structured extra is not installed")
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        }
+
+        async def body(base: str) -> None:
+            client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY)
+            answer = await client.chat.completions.create(
+                model="tiny",
+                messages=[{"role": "user", "content": "x"}],
+                max_tokens=20,
+                temperature=1.0,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "flag", "schema": schema, "strict": True},
+                },
+            )
+            assert isinstance(json.loads(answer.choices[0].message.content)["ok"], bool)
+
+        _run(checkpoint, body)
+
     def test_logprobs_with_five_alternatives_parse(self, checkpoint: TinyCheckpoint) -> None:
         async def body(base: str) -> None:
             client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY)
@@ -320,7 +345,7 @@ class TestOpenAISdk:
                 await client.chat.completions.create(
                     model="tiny",
                     messages=[{"role": "user", "content": "x"}],
-                    response_format={"type": "json_object"},
+                    modalities=["text", "audio"],
                 )
             assert caught.value.code == "unsupported_feature"
             wrong = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key="nope", max_retries=0)
@@ -382,7 +407,8 @@ class TestAnthropicSdk:
                     tool_choice={"type": "any"},
                     tools=[{"name": "f", "input_schema": {"type": "object"}}],
                 )
-            assert "forcing a tool call" in str(caught.value)
+            # This server was started without a tool-call parser, so it cannot read calls at all.
+            assert "tool-call parser" in str(caught.value)
 
         _run(checkpoint, body)
 

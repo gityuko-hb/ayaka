@@ -134,8 +134,13 @@ class TestReading:
             ),
             (
                 {"messages": [{"role": "user", "content": "x"}], "tool_choice": {"type": "any"}},
-                UnsupportedFeatureError,
-                "forcing",
+                InvalidRequestError,
+                "no tools",
+            ),
+            (
+                {"output_format": {"type": "regex", "pattern": "a+"}},
+                InvalidRequestError,
+                "json_schema",
             ),
             (
                 {

@@ -10,8 +10,8 @@ How the request maps (``OUT-9``):
   multi-part text.
 * ``cache_control`` marks, on blocks or on the request, are accepted as hints only and change
   nothing in the prompt.
-* ``output_format`` and ``output_config.format`` (structured output) are refused until it lands;
-  the other ``output_config`` fields are hints.
+* A ``json_schema`` ``output_format`` (or ``output_config.format``) and a forced ``tool_choice``
+  (``any``, ``tool``) become output constraints; the other ``output_config`` fields are hints.
 * ``tool_use`` blocks become the assistant's tool calls, ``tool_result`` blocks tool turns;
   ``thinking`` blocks of earlier turns are dropped, as the chat templates of reasoning models do.
 * Images and documents are refused until vision lands.
@@ -23,16 +23,26 @@ How the request maps (``OUT-9``):
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 
+from ayaka.core.constraints import ConstraintKind
 from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
 from ayaka.core.types import FinishReason
-from ayaka.entrypoints.conversation import PART_SEPARATOR, ConversationBuilder, ToolCall, ToolSpec
+from ayaka.entrypoints.conversation import (
+    PART_SEPARATOR,
+    ConversationBuilder,
+    OutputRequest,
+    ToolCall,
+    ToolSpec,
+)
 from ayaka.entrypoints.http import JsonObject, sampling_params
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ayaka.core.params import SamplingParams
     from ayaka.entrypoints.conversation import Conversation, FinishEvent, UsageEvent
     from ayaka.entrypoints.http import ApiFailure
@@ -90,6 +100,7 @@ class MessagesRequest:
         stream: Whether to answer with server-sent events.
         tools: Whether the model may call the tools.
         parallel_tool_calls: Whether it may call several in one answer.
+        output: The shape the answer must have (``output_format``, ``tool_choice``).
     """
 
     model: str | None
@@ -99,6 +110,7 @@ class MessagesRequest:
     stream: bool
     tools: bool
     parallel_tool_calls: bool
+    output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
 
 
 _KEYS: Final = frozenset(
@@ -127,6 +139,24 @@ _KEYS: Final = frozenset(
 )
 
 
+def _output_format(body: JsonObject) -> tuple[ConstraintKind | None, Mapping[str, object] | None]:
+    """A JSON answer from ``output_format`` or ``output_config.format`` (``json_schema``)."""
+    output_config = body.child("output_config")
+    found = body.child("output_format")
+    where = "output_format"
+    if found is None and output_config is not None:
+        found = output_config.child("format")
+        where = "output_config.format"
+    if found is None:
+        return None, None
+    if found.string("type") != "json_schema":
+        raise _invalid(where, "the only output format is json_schema")
+    schema = found.child("schema")
+    if schema is None:
+        raise _invalid(found.where("schema"), "a json_schema output needs a schema")
+    return ConstraintKind.JSON_SCHEMA, schema.data
+
+
 def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
     """The conversation, whether the model may call tools, and whether several at once."""
     for field in ("container", "mcp_servers"):
@@ -134,11 +164,6 @@ def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
             raise _unsupported(field, "not available on this server")
     if body.has("n") and body.raw("n") != 1:
         raise _unsupported("n", "Messages returns one answer per request")
-    if body.has("output_format"):
-        raise _unsupported("output_format", "structured output is not available yet")
-    output_config = body.child("output_config")
-    if output_config is not None and output_config.has("format"):
-        raise _unsupported("output_config.format", "structured output is not available yet")
     builder = ConversationBuilder()
     system = body.raw("system")
     if isinstance(system, str):
@@ -154,7 +179,7 @@ def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
         raise _unsupported(
             "messages", "continuing a final assistant message (prefill) is not available"
         )
-    tools, parallel = _tools(body, builder)
+    tools, parallel, _ = _tools(body, builder)
     return builder.build(), tools, parallel
 
 
@@ -174,6 +199,8 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
         raise _invalid("max_tokens", "must be >= 1")
     _thinking(body.child("thinking"), max_tokens)
     conversation, tools, parallel = _conversation(body)
+    response, schema = _output_format(body)
+    _, _, choice = _tools(body, ConversationBuilder())
     stop = body.array("stop_sequences")
     if stop is not None and not all(isinstance(item, str) for item in stop):
         raise _invalid("stop_sequences", "must be an array of strings")
@@ -192,6 +219,7 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
         stream=body.flag("stream"),
         tools=tools,
         parallel_tool_calls=parallel,
+        output=OutputRequest(response=response, schema=schema, tool_choice=choice),
     )
 
 
@@ -282,17 +310,27 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
         builder.user(PART_SEPARATOR.join(texts))
 
 
-def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool]:
+def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, str]:
+    """Add the tools; return ``(offered, parallel, choice)``.
+
+    The choice is ``"auto"``, ``"required"`` (``any``) or the one tool's name (``tool``).
+    """
     choice = body.child("tool_choice")
     kind = choice.string("type") if choice is not None else "auto"
     parallel = not (choice is not None and choice.flag("disable_parallel_tool_use"))
-    if kind in ("any", "tool"):
-        raise _unsupported("tool_choice", "forcing a tool call needs structured output")
-    if kind not in ("auto", "none"):
+    if kind not in ("auto", "none", "any", "tool"):
         raise _invalid("tool_choice", "must be auto, any, tool or none")
+    constrained = "auto"
+    if kind == "any":
+        constrained = "required"
+    elif kind == "tool":
+        assert choice is not None  # noqa: S101  # kind came from it
+        constrained = choice.text("name")
     tools = body.objects("tools")
     if kind == "none" or not tools:
-        return False, parallel
+        if constrained != "auto":
+            raise _invalid("tool_choice", "forces a tool call but the request has no tools")
+        return False, parallel, "auto"
     offered = False
     for tool in tools:
         schema = tool.child("input_schema")
@@ -301,7 +339,7 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool]:
             continue
         builder.tool(ToolSpec(tool.text("name"), tool.string("description"), schema.data))
         offered = True
-    return offered, parallel
+    return offered, parallel, constrained
 
 
 # -- answers ----------------------------------------------------------------------------------

@@ -19,6 +19,14 @@ from typing import TYPE_CHECKING
 from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
+    from .constraints import (
+        MAX_SCHEMA_BYTES,
+        ConstraintKind,
+        StructuredParams,
+        ToolCallSyntax,
+        ToolSchema,
+        as_schema,
+    )
     from .errors import (
         AyakaError,
         BackendError,
@@ -60,6 +68,7 @@ __all__ = [
     "LOGIT_BIAS_LIMIT",
     "MAX_CACHE_SALT_LEN",
     "MAX_LOGPROB_TOKEN_IDS",
+    "MAX_SCHEMA_BYTES",
     "TOP_K_DISABLED",
     "AyakaError",
     "BackendError",
@@ -68,6 +77,7 @@ __all__ = [
     "CapacityError",
     "CompletionOutput",
     "ConfigError",
+    "ConstraintKind",
     "EngineDeadError",
     "EngineError",
     "ErrorInfo",
@@ -88,14 +98,26 @@ __all__ = [
     "RequestTimeout",
     "SamplingParams",
     "SequenceIndex",
+    "StructuredParams",
     "TokenId",
     "TokenLogprob",
     "TokenizedRequest",
+    "ToolCallSyntax",
+    "ToolSchema",
     "UnsupportedFeatureError",
     "Usage",
+    "as_schema",
 ]
 
 _EXPORTS = {
+    "constraints": (
+        "MAX_SCHEMA_BYTES",
+        "ConstraintKind",
+        "StructuredParams",
+        "ToolCallSyntax",
+        "ToolSchema",
+        "as_schema",
+    ),
     "errors": (
         "AyakaError",
         "BackendError",

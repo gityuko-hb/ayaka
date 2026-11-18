@@ -54,6 +54,7 @@ from prometheus_client import (
     generate_latest,
 )
 
+from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolCallSyntax, ToolSchema
 from ayaka.core.errors import (
     AyakaError,
     CapacityError,
@@ -78,6 +79,7 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
 from ayaka.entrypoints.stream import SlowClientError, collect_events, pump
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
+from ayaka.utils.import_utils import has_module
 from ayaka.utils.parsing import parse_json_strict
 
 if TYPE_CHECKING:
@@ -85,7 +87,12 @@ if TYPE_CHECKING:
 
     from ayaka.configs.server import ServerConfig
     from ayaka.engine.async_llm import AsyncLLM, RequestStream
-    from ayaka.entrypoints.conversation import Collected, Conversation, OutputEvent
+    from ayaka.entrypoints.conversation import (
+        Collected,
+        Conversation,
+        OutputEvent,
+        OutputRequest,
+    )
     from ayaka.entrypoints.parsers.output import EventParser
     from ayaka.entrypoints.stream import StreamEncoder
     from ayaka.tokenizers.contracts import EncodeInput
@@ -584,6 +591,49 @@ class Serving:
             _LOG.debug("max_tokens %d capped to the %d tokens the context leaves", requested, room)
         return min(requested, room)
 
+    def constraint(
+        self,
+        output: OutputRequest,
+        conversation: Conversation | None = None,
+        *,
+        tools: bool = False,
+        parallel_tool_calls: bool = True,
+    ) -> StructuredParams | None:
+        """The output constraint a request asked for, with this model's syntax; ``None`` if none.
+
+        A JSON answer is constrained from its first token, or from the end of the reasoning
+        block when the model reasons. A request with tools gets a lazy tool-call constraint
+        when the structured extra is installed and the model's opening marker is one token, so
+        a call it writes is a valid call and free text stays free; a request that forces a
+        call or asks for strict arguments needs that constraint and is refused without it.
+
+        Raises:
+            UnsupportedFeatureError: If the request needs a constraint this server cannot make.
+        """
+        fmt = self.output_format
+        start_after = fmt.reasoning_markers[1].token_id if fmt.reasoning_markers else None
+        if output.response is not None:
+            schema = output.schema if output.response is ConstraintKind.JSON_SCHEMA else None
+            return StructuredParams(kind=output.response, schema=schema, start_after=start_after)
+        if not tools or conversation is None or not conversation.tools:
+            return None
+        markers = fmt.tool_markers
+        if fmt.tool_calls is None or markers is None:
+            return None  # start() refuses tools without a tool-call parser
+        opening, closing = markers
+        wanted = output.wants_constraint
+        if not wanted and (opening.token_id is None or not has_module("llguidance")):
+            return None  # free text, as without the structured extra
+        return StructuredParams(
+            kind=ConstraintKind.TOOL_CALL,
+            tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),
+            syntax=ToolCallSyntax(opening.text, closing.text, opening.token_id, closing.token_id),
+            tool_choice=output.tool_choice,
+            strict=output.strict,
+            parallel=parallel_tool_calls,
+            start_after=start_after,
+        )
+
     async def start(
         self,
         prompt: tuple[int, ...],
@@ -592,6 +642,7 @@ class Serving:
         public_id: str,
         tools: bool,
         parallel_tool_calls: bool = True,
+        structured: StructuredParams | None = None,
     ) -> Generation:
         """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
 
@@ -608,7 +659,9 @@ class Serving:
                 context={"features": ("tools",), "param": "tools"},
             )
         request_id = RequestId(f"ayaka-{public_id}")
-        request = GenerateRequest(request_id=request_id, prompt=prompt, sampling=sampling)
+        request = GenerateRequest(
+            request_id=request_id, prompt=prompt, sampling=sampling, structured=structured
+        )
         try:
             stream = await llm.add_request(request)
         except EngineError as exc:

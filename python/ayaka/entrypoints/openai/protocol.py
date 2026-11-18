@@ -13,15 +13,18 @@ Reading follows one policy for every field (``OUT-9``):
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 
+from ayaka.core.constraints import ConstraintKind
 from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
 from ayaka.core.types import FinishReason
 from ayaka.entrypoints.conversation import (
     PART_SEPARATOR,
     ConversationBuilder,
+    OutputRequest,
     ToolCall,
     ToolSpec,
     parse_arguments,
@@ -29,7 +32,7 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.http import JsonObject, sampling_params
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.params import SamplingParams
@@ -187,6 +190,8 @@ class ChatRequest:
         include_usage: Whether a streamed answer ends with a usage chunk.
         tools: Whether the model may call the tools.
         parallel_tool_calls: Whether it may call several in one answer.
+        output: The shape the answer must have (``response_format``, ``tool_choice``,
+            ``strict``).
     """
 
     model: str | None
@@ -197,6 +202,7 @@ class ChatRequest:
     include_usage: bool
     tools: bool
     parallel_tool_calls: bool
+    output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
 
 
 _CHAT_KEYS: Final = _SAMPLING_KEYS | {
@@ -236,7 +242,7 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
     modalities = body.array("modalities")
     if modalities is not None and any(item != "text" for item in modalities):
         raise _unsupported("modalities", "only text output is available")
-    _check_response_format(body.child("response_format"), "response_format")
+    response, schema = response_format(body.child("response_format"), "response_format")
     if body.has("reasoning_effort"):
         _LOG.debug("chat completions: reasoning_effort is a hint; the model reasons as trained")
 
@@ -248,7 +254,7 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         )
     for message in messages:
         _chat_message(message, builder)
-    tools = _chat_tools(body, builder)
+    tools, choice, strict = _chat_tools(body, builder)
 
     max_tokens = body.integer("max_completion_tokens")
     if max_tokens is None:
@@ -265,17 +271,42 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         include_usage=_stream_options(body),
         tools=tools,
         parallel_tool_calls=body.flag("parallel_tool_calls", default=True),
+        output=OutputRequest(response=response, schema=schema, tool_choice=choice, strict=strict),
     )
 
 
-def _check_response_format(value: JsonObject | None, field: str) -> None:
+def response_format(
+    value: JsonObject | None, field: str
+) -> tuple[ConstraintKind | None, Mapping[str, object] | None]:
+    """A JSON answer an OpenAI request asks for: ``(kind, schema)``, or ``(None, None)`` for text.
+
+    Reads Chat Completions' ``response_format`` and Responses' ``text.format``:
+    ``{"type": "json_object"}``, or ``{"type": "json_schema", "schema": {...}}`` with the schema
+    at the top (Responses) or under ``json_schema`` (Chat Completions). A schema is always
+    enforced; ``strict`` changes nothing.
+
+    Raises:
+        InvalidRequestError: For an unknown type or a missing schema, naming the field.
+    """
     if value is None:
-        return
+        return None, None
     kind = value.string("type")
-    if kind not in (None, "text"):
-        raise _unsupported(
-            field, f"{kind} needs structured output, which this server does not have yet"
+    if kind in (None, "text"):
+        return None, None
+    if kind == "json_object":
+        return ConstraintKind.JSON_OBJECT, None
+    if kind != "json_schema":
+        raise InvalidRequestError(
+            f"{field}.type: must be text, json_object or json_schema", context={"param": field}
         )
+    holder = value.child("json_schema") or value
+    schema = holder.child("schema")
+    if schema is None:
+        raise InvalidRequestError(
+            f"{holder.where('schema')}: a json_schema answer needs a schema",
+            context={"param": field},
+        )
+    return ConstraintKind.JSON_SCHEMA, schema.data
 
 
 def _text_parts(message: JsonObject, key: str, *, allow_null: bool) -> str:
@@ -342,24 +373,42 @@ def _chat_tool_call(call: JsonObject) -> ToolCall:
     )
 
 
-def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> bool:
-    """Add the request's tools; return whether the model may call them."""
+def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, str, bool]:
+    """Add the request's tools; return whether the model may call them, the choice and strict.
+
+    The choice is ``"auto"``, ``"required"`` or the name of the one function to call.
+    """
     tools = body.objects("tools")
-    choice = body.raw("tool_choice")
-    if isinstance(choice, dict) or choice == "required":
-        raise _unsupported("tool_choice", "forcing a tool call needs structured output")
-    if choice not in (None, "auto", "none"):
+    raw = body.raw("tool_choice")
+    choice = "auto"
+    if isinstance(raw, dict):
+        picked = body.child("tool_choice")
+        function = picked.child("function") if picked is not None else None
+        if function is None or not function.string("name"):
+            raise InvalidRequestError(
+                "tool_choice: a named choice is {type: function, function: {name}}",
+                context={"param": "tool_choice"},
+            )
+        choice = function.text("name")
+    elif raw == "required":
+        choice = "required"
+    elif raw not in (None, "auto", "none"):
         raise InvalidRequestError("tool_choice: must be auto, none, required or a function")
-    if not tools or choice == "none":
-        return False
+    if not tools or raw == "none":
+        if choice != "auto":
+            raise InvalidRequestError(
+                "tool_choice: forces a call but the request has no tools",
+                context={"param": "tool_choice"},
+            )
+        return False, "auto", False
+    strict = False
     for tool in tools:
         if tool.string("type") != "function":
             raise _unsupported(tool.where("type"), "only function tools are available")
         function = tool.child("function")
         if function is None:
             raise InvalidRequestError(f"{tool.where('function')}: is required")
-        if function.flag("strict"):
-            raise _unsupported(function.where("strict"), "strict schemas need structured output")
+        strict = strict or function.flag("strict")
         builder.tool(
             ToolSpec(
                 name=function.text("name"),
@@ -367,7 +416,7 @@ def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> bool:
                 parameters=(function.child("parameters") or JsonObject({})).data,
             )
         )
-    return True
+    return True, choice, strict
 
 
 # -- completions ------------------------------------------------------------------------------
