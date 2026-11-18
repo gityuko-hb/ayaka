@@ -87,10 +87,12 @@ class AppliedRule:
 
 # -- the rules the recorded sessions justify ---------------------------------------------------
 
-#: Claude Code opens its system prompt with the build it runs: the values change with the
-#: client's version, they are metadata the model never acts on, and everything after them is
-#: the same across versions. Recorded: ``x-anthropic-billing-header: cc_version=2.1.327.a8f;
-#: cc_entrypoint=sdk-cli;``.
+#: Claude Code opens its system prompt with a billing header whose values change with every
+#: session, not only with the client's version: three sessions of 2.1.327 sent
+#: ``cc_version=2.1.327.a8f``, ``.e78`` and ``.e0f`` (``cc_entrypoint=sdk-cli;`` after it). They
+#: are metadata the model never acts on, and everything after them was the same, so without the
+#: rule a new session reads only the block before the header from the cache (measured in
+#: docs/EXPERIMENTS.md: 0.2% without, 84.5% with it).
 _CLAUDE_BILLING: Final[NormalizeRule] = NormalizeRule(
     rule_id="claude-code.billing-header",
     client="claude-code",

@@ -41,3 +41,39 @@ not a real difference: with a full session the last partial block costs well und
 Not added, with the reason recorded: a rule for the Codex CLI's per-session skill paths (they
 are what the model is told to open with its tools, so rewriting them would break the calls)
 and for OpenCode (its recorded sessions showed no churn in a normalizable field).
+
+### Re-measurement on a templated model with the real session (2026-11-19)
+
+Why again: the run above used the sanitized fixture (every text replaced by a placeholder) on a
+model without a chat template, so its prompt was 82 tokens and carried no tool section. Two new
+Claude Code 2.1.327 sessions recorded on 2026-11-19 (same folder, same version, two prompts)
+also show that the churn is per session, not per build: their headers read
+`cc_version=2.1.327.e78` and `cc_version=2.1.327.e0f` (the first recording read `.a8f`), at
+character 75 of the system prompt; the tools and the rest of the system prompt were identical.
+
+- Setup, written before the run: `ayaka serve` on unsloth/Llama-3.2-1B-Instruct (its chat
+  template renders the 14 tools), CUDA fp16, flashinfer, prefix cache on, `--memory-ratio 0.86`;
+  the two raw session requests (not committed: they hold private text), sent as recorded with
+  `stream: false`, `max_tokens: 32`, `temperature: 0` and the client's `user-agent`. Each pair k
+  gives both sessions a fresh build suffix of three hex digits, so no pair reads another pair's
+  blocks; order A B B A, five pairs, once with `--no-normalize` and once with normalisation on.
+  The measured value is the cached-token share of the first B of each pair.
+- Threshold, written before the run: keep `claude-code.billing-header` when the median share
+  of the first B improves by at least 25 percentage points with normalisation on. The answer
+  check compares the answers to the same request with and without normalisation at
+  temperature 0 and reports whether they are equal; a difference is reported, not hidden.
+
+| first request of a new session (first B of each pair) | cached-token share, median of 5 |
+| --- | --- |
+| normalisation off (`--no-normalize`) | 0.2% (32 of 13,614 tokens: the block before the header) |
+| normalisation on | 84.5% (11,505 of 13,610 tokens: everything up to the session's own question) |
+
+All five pairs gave the same values; the repeats (second B, second A) read 99.9% in both
+settings. Answers: 20 of 20 requests answered identically with and without normalisation
+(temperature 0, the same `max_tokens` stop reason). The 1B model answers these prompts with a
+tool call written as plain JSON, which says nothing about quality, only that the prompt change
+does not change the answer.
+
+- Decision: **keep** `claude-code.billing-header` (84.3 percentage points, above the 25-point
+  threshold). The value it rewrites changes with every session of the same client version, so
+  without the rule every new Claude Code session reads almost nothing from the cache.

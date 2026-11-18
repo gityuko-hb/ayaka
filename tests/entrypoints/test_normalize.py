@@ -167,6 +167,23 @@ class TestRules:
         assert first.system == second.system
         assert first.system != _claude_session(_BILLING_V1).system
 
+    def test_the_recorded_sessions_of_one_build_normalize_to_the_same_prompt(self) -> None:
+        """Three sessions of Claude Code 2.1.327 sent three different header values."""
+        systems = {
+            Normalizer(rules=RULES)
+            .normalize(
+                _claude_session(
+                    f"x-anthropic-billing-header: cc_version=2.1.327.{suffix}; "
+                    "cc_entrypoint=sdk-cli;"
+                ),
+                "claude-code",
+            )[0]
+            .system
+            for suffix in ("a8f", "e78", "e0f")
+        }
+
+        assert len(systems) == 1
+
     def test_an_unknown_client_gets_the_original(self) -> None:
         conversation = _claude_session(_BILLING_V1)
 
