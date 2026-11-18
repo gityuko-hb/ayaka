@@ -162,7 +162,7 @@ class InputBuilder:
         self._logit_rows = _Mirrored((rows,), torch.int64, target)
         self._seeds = _Mirrored((rows,), torch.int64, target)
         self._positions = _Mirrored((rows,), torch.int64, target)
-        self._sequences = _Mirrored((rows,), torch.int32, target)  # always 0: one sequence each
+        self._sequences = _Mirrored((rows,), torch.int32, target)  # the output sequence (n > 1)
         self._temperature = _Mirrored((rows,), torch.float32, target)
         self._top_k = _Mirrored((rows,), torch.int32, target)
         self._top_p = _Mirrored((rows,), torch.float32, target)
@@ -306,6 +306,7 @@ class InputBuilder:
         for buffer, neutral in (
             (self._seeds, 0),
             (self._positions, 0),
+            (self._sequences, 0),
             (self._temperature, 1.0),
             (self._top_k, 0),
             (self._top_p, 1.0),
@@ -455,6 +456,7 @@ class InputBuilder:
                 first = step.start_positions[index] + step.rows_per_request[index]
             span = slice(written, written + taken)
             self._seeds.array[span] = seed
+            self._sequences.array[span] = step.sequence_index(index)
             self._positions.array[span] = np.arange(first, first + taken)
             if params.is_greedy:
                 temperature, top_k, top_p, min_p = 0.0, 0, 1.0, 0.0
@@ -470,6 +472,7 @@ class InputBuilder:
         for buffer in (
             self._seeds,
             self._positions,
+            self._sequences,
             self._temperature,
             self._top_k,
             self._top_p,

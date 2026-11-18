@@ -43,7 +43,6 @@ __all__ = ["InputProcessor", "require_supported"]
 #: What the sampler and the output path cannot do yet: a name for the message and a test that says
 #: whether a request asks for it. A feature leaves this table when its implementation lands.
 _UNSUPPORTED: Final[tuple[tuple[str, Callable[[SamplingParams], bool]], ...]] = (
-    ("n > 1 (several sequences per request)", lambda p: p.n > 1),
     ("repetition_penalty", lambda p: p.repetition_penalty != 1.0),
     ("frequency_penalty", lambda p: p.frequency_penalty != 0.0),
     ("presence_penalty", lambda p: p.presence_penalty != 0.0),

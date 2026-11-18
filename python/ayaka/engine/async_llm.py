@@ -67,13 +67,26 @@ DEFAULT_MAX_PENDING: Final = 64
 def merge_outputs(first: RequestOutput, second: RequestOutput) -> RequestOutput:
     """One streaming fragment that says what ``first`` then ``second`` said.
 
-    The text and token ids are concatenated; everything that describes the end of the request
-    (finished, finish reason, usage, metrics, error) comes from ``second``, the newer fragment.
+    The text and token ids of each sequence are concatenated, sequence by sequence (a request
+    with ``n > 1`` has fragments of several); a sequence's finish reason comes from its newer
+    fragment, and everything that describes the end of the request (finished, usage, metrics,
+    error) comes from ``second``.
     """
-    [a] = first.outputs or (CompletionOutput(index=0),)
-    [b] = second.outputs or (CompletionOutput(index=0),)
-    merged = replace(b, token_ids=a.token_ids + b.token_ids, text=a.text + b.text)
-    return replace(second, outputs=(merged,))
+    merged: dict[int, CompletionOutput] = {piece.index: piece for piece in first.outputs}
+    for piece in second.outputs:
+        earlier = merged.get(piece.index)
+        merged[piece.index] = (
+            piece
+            if earlier is None
+            else replace(
+                piece,
+                token_ids=earlier.token_ids + piece.token_ids,
+                text=earlier.text + piece.text,
+            )
+        )
+    if not merged:
+        merged[0] = CompletionOutput(index=0)
+    return replace(second, outputs=tuple(merged[index] for index in sorted(merged)))
 
 
 class RequestStream:

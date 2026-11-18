@@ -108,6 +108,41 @@ def _base(client: TestClient[Any, Any]) -> str:
 
 
 class TestOpenAISdk:
+    def test_two_choices_whole_and_streamed(self, checkpoint: TinyCheckpoint) -> None:
+        async def body(base: str) -> None:
+            client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY)
+            options: dict[str, Any] = {
+                "model": "tiny",
+                "messages": [{"role": "user", "content": "hi"}],
+                "n": 2,
+                "temperature": 1.0,
+                "seed": 5,
+                "max_tokens": 5,
+                # top_k keeps the draws among tokens the fixture's tokenizer decodes.
+                "extra_body": {"top_k": 4, "min_tokens": 5},
+            }
+            whole = await client.chat.completions.create(**options)
+            assert [choice.index for choice in whole.choices] == [0, 1]
+            assert whole.usage is not None
+            assert whole.usage.completion_tokens == 10
+
+            stream = await client.chat.completions.create(
+                **options, stream=True, stream_options={"include_usage": True}
+            )
+            text = {0: "", 1: ""}
+            usage = None
+            async for chunk in stream:
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                for choice in chunk.choices:
+                    text[choice.index] += choice.delta.content or ""
+            assert text[0] == whole.choices[0].message.content
+            assert text[1] == whole.choices[1].message.content
+            assert usage is not None
+            assert usage.prompt_tokens == whole.usage.prompt_tokens
+
+        _run(checkpoint, body)
+
     def test_a_repeated_prompt_reports_cached_tokens(self, checkpoint: TinyCheckpoint) -> None:
         """Two requests at once both finish; a third with the same prefix reports a cache hit."""
         text = "tell me about the printing press and the history of books"

@@ -143,6 +143,7 @@ _KEYS: Final = frozenset(
         "prompt",
         "top_logprobs",
         "max_tool_calls",
+        "n",
     }
 )
 
@@ -167,6 +168,8 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
     for field in ("background", "prompt", "max_tool_calls"):
         if body.has(field):
             raise _unsupported(field, "not available on this server")
+    if body.has("n") and body.raw("n") != 1:
+        raise _unsupported("n", "the Responses API returns one answer; use Chat Completions")
     if body.has("top_logprobs"):
         raise _unsupported("top_logprobs", "logprobs are not available yet")
     if body.string("truncation") not in (None, "disabled"):

@@ -172,6 +172,11 @@ class KVCacheManager:
         """Blocks a request could still be given in the scarcest group."""
         return min(pool.free_count for pool in self._pools)
 
+    @property
+    def free_counts(self) -> tuple[int, ...]:
+        """Free blocks per group; cheap, unlike :meth:`stats`, which walks the free queues."""
+        return tuple(pool.free_count for pool in self._pools)
+
     def has(self, request_id: RequestId) -> bool:
         """Whether a request holds a block table row."""
         return request_id in self._committed

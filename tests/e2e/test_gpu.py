@@ -186,6 +186,25 @@ def test_graphs_draw_what_eager_draws(
     assert graph_sampled == eager_sampled
 
 
+@pytest.mark.parametrize("backends", [("torch",), ("flashinfer", "torch")], ids=["torch", "fi"])
+def test_several_sequences_draw_the_same_in_graphs_and_eager(
+    gpt2: tuple[Path, ModelConfig, dict[str, Any]], backends: tuple[str, ...]
+) -> None:
+    """The sequence index reaches the sampler through the graph's fixed buffer as well."""
+    directory, _, _ = gpt2
+    results: list[list[tuple[int, ...]]] = []
+    for graphs in (False, True):
+        with _llm(directory, backends=backends, dtype=DType.FP16, graphs=graphs) as llm:
+            out = llm.generate(PROMPTS[0], replace(_sampled(), n=3))
+            assert not isinstance(out, list)
+            assert out.error is None, out.error
+            results.append([completion.token_ids for completion in out.outputs])
+            assert_cache_released(llm.engine)
+
+    assert results[0] == results[1]
+    assert len(set(results[0])) > 1  # the sequences drew from independent streams
+
+
 def test_flashinfer_and_torch_agree_on_greedy_tokens_in_fp16(
     gpt2: tuple[Path, ModelConfig, dict[str, Any]],
 ) -> None:

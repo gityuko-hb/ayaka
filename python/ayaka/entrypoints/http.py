@@ -67,13 +67,15 @@ from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import RequestId
 from ayaka.entrypoints.conversation import (
+    ChoiceEvent,
     ErrorEvent,
     FinishEvent,
     ToolCallEnd,
     UsageEvent,
     collect,
+    collect_choices,
 )
-from ayaka.entrypoints.parsers.output import OutputFormat
+from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
 from ayaka.entrypoints.stream import SlowClientError, collect_events, pump
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
 from ayaka.utils.parsing import parse_json_strict
@@ -84,7 +86,7 @@ if TYPE_CHECKING:
     from ayaka.configs.server import ServerConfig
     from ayaka.engine.async_llm import AsyncLLM, RequestStream
     from ayaka.entrypoints.conversation import Collected, Conversation, OutputEvent
-    from ayaka.entrypoints.parsers.output import OutputParser
+    from ayaka.entrypoints.parsers.output import EventParser
     from ayaka.entrypoints.stream import StreamEncoder
     from ayaka.tokenizers.contracts import EncodeInput
 
@@ -400,7 +402,7 @@ class ServingMetrics:
         """Count what a batch of events says."""
         for event in events:
             match event:
-                case ToolCallEnd(_, valid):
+                case ToolCallEnd(_, valid) | ChoiceEvent(_, ToolCallEnd(_, valid)):
                     self.tool_calls.labels("true" if valid else "false").inc()
                 case UsageEvent():
                     self.prompt_tokens.inc(event.prompt_tokens)
@@ -440,7 +442,7 @@ class Generation:
     public_id: str
     prompt_tokens: int
     stream: RequestStream
-    parser: OutputParser
+    parser: EventParser
     started: float = field(default_factory=time.monotonic)
     usage: UsageEvent | None = None
     outcome: str = "unfinished"
@@ -591,7 +593,7 @@ class Serving:
         tools: bool,
         parallel_tool_calls: bool = True,
     ) -> Generation:
-        """Admit a tokenized request.
+        """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
 
         Raises:
             UnsupportedFeatureError, InvalidRequestError, OverloadedError: As the engine's
@@ -613,11 +615,15 @@ class Serving:
             if self.status is not Readiness.READY or not llm.is_running:
                 raise NotReadyError(f"the server is {self.status.value}; retry later") from exc
             raise
-        parser = self.output_format.parser(
-            call_id_prefix=f"call_{public_id[:24]}",
-            tools=tools,
-            parallel_tool_calls=parallel_tool_calls,
-        )
+        parsers = [
+            self.output_format.parser(
+                call_id_prefix=f"call_{public_id[:24]}" + (f"_{index}" if sampling.n > 1 else ""),
+                tools=tools,
+                parallel_tool_calls=parallel_tool_calls,
+            )
+            for index in range(sampling.n)
+        ]
+        parser: EventParser = parsers[0] if sampling.n == 1 else ChoicesParser(parsers)
         self.metrics.running.inc()
         return Generation(request_id, public_id, len(prompt), stream, parser)
 
@@ -677,6 +683,21 @@ class Serving:
         if answer.error is not None:
             raise AnswerFailedError(answer.error)
         return answer
+
+    async def collect_choices(self, generation: Generation, count: int) -> list[Collected]:
+        """Every choice of a request with ``n > 1``, answered in one response.
+
+        Raises:
+            AnswerFailedError: If the request ended with an error.
+        """
+        events = await collect_events(
+            generation.stream, generation.parser, observe=self._observer(generation)
+        )
+        answers = collect_choices(events, count)
+        for answer in answers:
+            if answer.error is not None:
+                raise AnswerFailedError(answer.error)
+        return answers
 
     def _observer(self, generation: Generation) -> Callable[[Sequence[OutputEvent]], None]:
         def observe(events: Sequence[OutputEvent]) -> None:

@@ -19,6 +19,12 @@ request finishing.
 With a prefix cache, a request is matched when it leaves the queue, not when it arrives, so the
 blocks it attaches cannot be evicted in between: its prefill starts after the matched tokens. After
 every commit the request's newly full blocks are registered so later requests can attach them.
+The sequences of a request with ``n > 1`` arrive as sibling requests; a sibling may wait in the
+queue until the first one has prefilled the shared prompt (``blocked_on``), the one exception to
+strict queue order, so it attaches the prompt instead of computing it again.
+
+Every :meth:`Scheduler.update` leaves a :class:`~ayaka.scheduler.stats.SchedulerStats` for
+:meth:`Scheduler.take_stats`.
 
 Every end of a request goes through one method of the private roster: it sets the reason, frees
 the KV, releases the batch row and queues the last event.
@@ -40,6 +46,7 @@ from ayaka.core.errors import (
 from ayaka.core.types import FinishReason, ForwardMode
 from ayaka.scheduler.queue import RequestQueue, resolve_policy
 from ayaka.scheduler.request import Request, RequestEvent, RequestStatus
+from ayaka.scheduler.stats import SchedulerStats
 from ayaka.scheduler.step import StepInput
 from ayaka.utils.validation import require_int
 
@@ -66,6 +73,7 @@ class _InFlight:
     mode: ForwardMode
     request_ids: tuple[RequestId, ...]
     rows: tuple[int, ...]
+    max_queue_delay: float = 0.0
 
 
 class _Roster:
@@ -83,6 +91,17 @@ class _Roster:
         self.running: dict[RequestId, Request] = {}
         self.awaiting: dict[RequestId, Request] = {}
         self.events: list[RequestEvent] = []
+        # Ends and frees since the last stats were taken.
+        self.finished = 0
+        self.aborted = 0
+        self.failed = 0
+        self.settled = 0
+
+    def take_counts(self) -> tuple[int, int, int, int]:
+        """``(finished, aborted, failed, settled)`` since the last call, and reset them."""
+        counts = (self.finished, self.aborted, self.failed, self.settled)
+        self.finished = self.aborted = self.failed = self.settled = 0
+        return counts
 
     def take_events(self) -> tuple[RequestEvent, ...]:
         events, self.events = self.events, []
@@ -93,6 +112,7 @@ class _Roster:
         for request_id in request_ids:
             if self.awaiting.pop(request_id, None) is not None:
                 self._kv.free(request_id)
+                self.settled += 1
 
     def finish(
         self,
@@ -127,8 +147,15 @@ class _Roster:
         if holds_kv:
             if release:
                 self._kv.free(request_id)
+                self.settled += 1
             else:
                 self.awaiting[request_id] = request
+        if reason is FinishReason.CANCELLED:
+            self.aborted += 1
+        elif reason in (FinishReason.ERROR, FinishReason.TIMEOUT):
+            self.failed += 1
+        else:
+            self.finished += 1
         self.events.append(
             RequestEvent(
                 request_id=request_id,
@@ -241,6 +268,8 @@ class Scheduler:
         self._flight: _InFlight | None = None
         self._steps = 0
         self._prefill_streak = 0
+        self._admit_delay = 0.0
+        self._stats: SchedulerStats | None = None
 
     # -- reading ---------------------------------------------------------------------------
 
@@ -287,14 +316,28 @@ class Scheduler:
         """Return the events since the last call, oldest first, and forget them."""
         return self._roster.take_events()
 
+    def take_stats(self) -> SchedulerStats | None:
+        """The counts of the last :meth:`update`, once; ``None`` if no step ran since."""
+        stats, self._stats = self._stats, None
+        return stats
+
     # -- admission and abort ---------------------------------------------------------------
 
-    def add_request(self, request: TokenizedRequest, *, deadline: float | None = None) -> None:
+    def add_request(
+        self,
+        request: TokenizedRequest,
+        *,
+        deadline: float | None = None,
+        blocked_on: RequestId | None = None,
+    ) -> None:
         """Queue a request, after the admission checks, in order, and before it holds anything.
 
         Args:
             request: A validated, tokenized request.
             deadline: Absolute clock reading after which the request times out, or ``None``.
+            blocked_on: A sibling queued before this request (a sequence of the same ``n > 1``
+                parent); this request is not admitted while that one is waiting or prefilling,
+                so it can attach the shared prompt from the prefix cache.
 
         Raises:
             InvalidRequestError: If the id is in use, the prompt and ``max_tokens`` exceed the
@@ -310,7 +353,9 @@ class Scheduler:
             raise OverloadedError(
                 f"the waiting queue is full ({self._config.max_waiting} requests); retry later"
             )
-        live = Request.from_tokenized(request, arrival=self._clock(), deadline=deadline)
+        live = Request.from_tokenized(
+            request, arrival=self._clock(), deadline=deadline, blocked_on=blocked_on
+        )
         self._requests[request_id] = live
         self._queue.push(live)
 
@@ -387,9 +432,10 @@ class Scheduler:
                     chunks.append((request, size))
                     budget -= size
         else:
+            now = self._clock()
             while budget > 0 and len(self._running) < self._max_running:
                 head = self._queue.peek()
-                if head is None:
+                if head is None or self._waits_for_sibling(head):
                     break
                 match = (
                     self._kv.match_prefix(head.prompt, head.cache_salt)
@@ -406,6 +452,8 @@ class Scheduler:
                 if not size:
                     break
                 head.computed = head.cached_tokens = start
+                head.blocked_on = None
+                self._admit_delay = max(self._admit_delay, now - head.arrival)
                 self._queue.pop()
                 head.row = self._kv.table.row_of(head.request_id)
                 head.move_to(RequestStatus.RUNNING)
@@ -426,6 +474,15 @@ class Scheduler:
                 )
                 for r, size in chunks
             ],
+        )
+
+    def _waits_for_sibling(self, request: Request) -> bool:
+        """Whether a sibling this request waits for is still queued or prefilling."""
+        if request.blocked_on is None:
+            return False
+        sibling = self._requests.get(request.blocked_on)
+        return sibling is not None and (
+            sibling.status is RequestStatus.WAITING or sibling.is_prefilling
         )
 
     def _plan_decode(self, lookahead: Mapping[RequestId, int]) -> StepInput | None:
@@ -467,13 +524,16 @@ class Scheduler:
             need_logits=tuple(logits for _, _, _, logits in entries),
             sampling_params=tuple(r.params for r, _, _, _ in entries),
             table_updates=tuple(self._kv.table.take_dirty()),
+            sequence_indices=tuple(r.sequence_index for r, _, _, _ in entries),
         )
         self._flight = _InFlight(
             step_id=step.step_id,
             mode=mode,
             request_ids=step.request_ids,
             rows=step.rows_per_request,
+            max_queue_delay=self._admit_delay,
         )
+        self._admit_delay = 0.0
         return step
 
     # -- update ----------------------------------------------------------------------------
@@ -505,8 +565,9 @@ class Scheduler:
             output.request_ids if output.releasable is None else output.releasable
         )
         now = self._clock()
+        emitted = 0
         for index, request_id in enumerate(flight.request_ids):
-            self._apply(
+            emitted += self._apply(
                 self._requests[request_id],
                 flight,
                 index,
@@ -514,6 +575,23 @@ class Scheduler:
                 now,
                 release=request_id in releasable,
             )
+        finished, aborted, failed, settled = self._roster.take_counts()
+        self._stats = SchedulerStats(
+            step_id=flight.step_id,
+            mode=flight.mode,
+            num_running=len(self._running),
+            num_waiting=len(self._queue),
+            num_preempted=0,
+            num_scheduled_tokens=sum(flight.rows),
+            num_new_tokens=emitted,
+            num_finished=finished,
+            num_aborted=aborted,
+            num_failed=failed,
+            num_settled=settled,
+            prefill_streak=self._prefill_streak,
+            max_queue_delay=flight.max_queue_delay,
+            kv_free_blocks=self._kv.free_counts,
+        )
 
     def _apply(
         self,
@@ -524,10 +602,11 @@ class Scheduler:
         now: float,
         *,
         release: bool,
-    ) -> None:
+    ) -> int:
+        """Apply one request's answer; returns the tokens it emitted."""
         if output.error is not None:
             self._roster.finish(request, FinishReason.ERROR, error=output.error, release=release)
-            return
+            return 0
         produced = output.tokens[index]
         rows = flight.rows[index]
         emitted: tuple[TokenId, ...] = ()
@@ -591,6 +670,7 @@ class Scheduler:
                     cached_tokens=request.cached_tokens,
                 )
             )
+        return len(emitted)
 
     def _cache_full_blocks(self, request: Request) -> None:
         """Register the blocks the last commit filled, so later requests can attach them."""

@@ -13,6 +13,15 @@ It is not thread safe and takes no locks: the caller that owns the engine calls 
 :class:`~ayaka.engine.llm.LLM` is the synchronous caller; an asynchronous one would put a queue in
 front of it.
 
+A request with ``n > 1`` is tokenized once and queued as ``n`` sibling requests, ``<id>:0`` to
+``<id>:<n-1>``, that share the prompt, the seed and every other parameter and differ only in their
+sequence index, which picks an independent random stream. With the prefix cache the siblings wait
+for the first one to prefill the prompt and then attach it. The outputs carry the parent id, and
+aborting the parent aborts every sibling.
+
+After every step the scheduler's counts and the time the runner took go to the stat loggers, when
+the engine has them; an idle cycle records nothing.
+
 Failure follows two rules. A request that fails, by a backend error in its step, a deadline or a
 decoding problem, ends with an error in its own output and the engine goes on, as long as the KV
 bookkeeping still passes its integrity check. Anything else, an exception nobody planned for or a
@@ -22,26 +31,31 @@ call that found out and from every call after it, rather than keep running on st
 
 from __future__ import annotations
 
+import time
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from ayaka.core.errors import EngineDeadError, EngineError
-from ayaka.core.types import FinishReason
+from ayaka.core.errors import EngineDeadError, EngineError, InvalidRequestError
+from ayaka.core.types import FinishReason, RequestId
+from ayaka.metrics.stats import IterationStats
+from ayaka.sampling.rng import resolve_seed
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from ayaka.configs.model import ModelConfig
     from ayaka.core.outputs import RequestOutput
     from ayaka.core.params import SamplingParams
     from ayaka.core.request import GenerateRequest, TokenizedRequest
-    from ayaka.core.types import RequestId
     from ayaka.engine.input import InputProcessor
     from ayaka.engine.output import OutputProcessor
     from ayaka.engine.profile import StartupReport
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.manager import KVCacheManager
     from ayaka.memory.budget import BudgetPlan
+    from ayaka.metrics.manager import StatLoggerManager
     from ayaka.scheduler.scheduler import Scheduler
+    from ayaka.scheduler.stats import SchedulerStats
     from ayaka.tokenizers.contracts import ChatMessage
     from ayaka.tokenizers.service import TokenizerService
 
@@ -63,6 +77,8 @@ class EngineCore:
         model_config: The architecture of the loaded model.
         plan: The memory plan the cache was sized from.
         startup: What the start-up run measured and reserved on a GPU; ``None`` on the CPU.
+        stats: The stat loggers each step is recorded to, or ``None``.
+        clock: A monotonic clock in seconds, for the step time.
     """
 
     def __init__(
@@ -77,6 +93,8 @@ class EngineCore:
         model_config: ModelConfig,
         plan: BudgetPlan,
         startup: StartupReport | None = None,
+        stats: StatLoggerManager | None = None,
+        clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._scheduler = scheduler
         self._runner = runner
@@ -87,6 +105,9 @@ class EngineCore:
         self.model_config = model_config
         self.plan = plan
         self.startup = startup
+        self._stats = stats
+        self._clock = clock
+        self._families: dict[RequestId, tuple[RequestId, ...]] = {}
         self._dead: EngineDeadError | None = None
         self._closed = False
 
@@ -109,6 +130,11 @@ class EngineCore:
     def kv(self) -> KVCacheManager:
         """The cache manager, for reading its statistics and checking its integrity."""
         return self._kv
+
+    @property
+    def stats(self) -> StatLoggerManager | None:
+        """The stat loggers each step is recorded to."""
+        return self._stats
 
     @property
     def has_unfinished(self) -> bool:
@@ -159,9 +185,18 @@ class EngineCore:
             ``False`` if the request is unknown or already finished.
         """
         self._require_running()
-        return self._scheduler.abort(request_id, FinishReason.CANCELLED)
+        siblings = self._families.get(request_id)
+        if siblings is None:
+            return self._scheduler.abort(request_id, FinishReason.CANCELLED)
+        found = [self._scheduler.abort(sibling, FinishReason.CANCELLED) for sibling in siblings]
+        return any(found)
 
     def _admit(self, request: TokenizedRequest, stream: bool) -> None:
+        if request.sampling.n > 1:
+            self._admit_family(request, stream)
+            return
+        if request.request_id in self._families:
+            raise InvalidRequestError(f"request id {request.request_id!r} is already in use")
         # The scheduler checks the id first: registering a duplicate would replace the output
         # state of the request that already has it.
         self._scheduler.add_request(request)
@@ -170,6 +205,37 @@ class EngineCore:
         except BaseException:
             self._scheduler.abort(request.request_id, FinishReason.CANCELLED)
             raise
+
+    def _admit_family(self, request: TokenizedRequest, stream: bool) -> None:
+        """Queue the ``n`` sequences of a request as siblings; all of them or none."""
+        parent = request.request_id
+        if parent in self._families or self._scheduler.get(parent) is not None:
+            raise InvalidRequestError(f"request id {parent!r} is already in use")
+        sampling = replace(request.sampling, n=1, seed=resolve_seed(parent, request.sampling.seed))
+        children = tuple(
+            replace(
+                request,
+                request_id=RequestId(f"{parent}:{index}"),
+                sampling=sampling,
+                sequence_index=index,
+            )
+            for index in range(request.sampling.n)
+        )
+        # Waiting for the first sibling only pays when the others can attach its prompt.
+        wait = self._kv.prefix_caching and request.prefix_cache
+        added: list[RequestId] = []
+        try:
+            for child in children:
+                blocked_on = children[0].request_id if wait and added else None
+                self._scheduler.add_request(child, blocked_on=blocked_on)
+                added.append(child.request_id)
+            self._output.register_family(parent, children, stream=stream)
+        except BaseException:
+            for child_id in added:
+                self._scheduler.abort(child_id, FinishReason.CANCELLED)
+            self._output.discard(children[0].request_id)
+            raise
+        self._families[parent] = tuple(added)
 
     # -- the loop --------------------------------------------------------------------------
 
@@ -201,8 +267,14 @@ class EngineCore:
                     "requests are unfinished"
                 )
             return outputs
+        started = self._clock()
         answer = self._runner.execute(step)
+        seconds = self._clock() - started
         scheduler.update(answer)
+        counts = scheduler.take_stats()
+        if self._stats is not None and counts is not None:
+            self._stats.record(_iteration(counts, seconds))
+            self._stats.maybe_log()
         outputs += self._deliver()
         if answer.error is not None:
             self._kv.check_integrity()
@@ -217,6 +289,10 @@ class EngineCore:
         outputs: list[RequestOutput] = []
         while events := self._scheduler.take_events():
             outputs += self._output.process(events)
+        if self._families:
+            for output in outputs:
+                if output.finished:
+                    self._families.pop(output.request_id, None)
         return outputs
 
     # -- life cycle ------------------------------------------------------------------------
@@ -238,3 +314,20 @@ class EngineCore:
         error = EngineDeadError(f"the engine stopped after an unexpected error: {cause}")
         self._dead = error
         return error
+
+
+def _iteration(counts: SchedulerStats, seconds: float) -> IterationStats:
+    """The loggers' record of a step: the scheduler's counts and the runner's time."""
+    return IterationStats(
+        step_id=counts.step_id,
+        num_running=counts.num_running,
+        num_waiting=counts.num_waiting,
+        num_preempted=counts.num_preempted,
+        num_scheduled_tokens=counts.num_scheduled_tokens,
+        num_new_tokens=counts.num_new_tokens,
+        num_finished=counts.num_finished,
+        num_aborted=counts.num_aborted,
+        num_failed=counts.num_failed,
+        num_settled=counts.num_settled,
+        step_seconds=seconds,
+    )

@@ -16,10 +16,12 @@ reaches them and the usage counts only the tokens that were emitted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
+from ayaka.core.outputs import RequestOutput
 from ayaka.core.types import FinishReason
 from ayaka.entrypoints.conversation import (
+    ChoiceEvent,
     ErrorEvent,
     FinishEvent,
     ReasoningDelta,
@@ -32,14 +34,23 @@ from ayaka.entrypoints.parsers.reasoning import ReasoningParser, reasoning_forma
 from ayaka.entrypoints.parsers.tool_calls import ToolCallParser, tool_call_format
 
 if TYPE_CHECKING:
-    from ayaka.core.outputs import RequestOutput
+    from collections.abc import Sequence
+
     from ayaka.entrypoints.conversation import OutputEvent
     from ayaka.entrypoints.parsers.markers import Marker
     from ayaka.entrypoints.parsers.reasoning import ReasoningFormat
     from ayaka.entrypoints.parsers.tool_calls import ToolCallFormat
     from ayaka.tokenizers.ports import TokenizerLike
 
-__all__ = ["OutputFormat", "OutputParser"]
+__all__ = ["ChoicesParser", "EventParser", "OutputFormat", "OutputParser"]
+
+
+class EventParser(Protocol):
+    """Turns a request's outputs into events: :class:`OutputParser`, :class:`ChoicesParser`."""
+
+    def feed(self, output: RequestOutput) -> list[OutputEvent]:
+        """The events of the next fragment; the final fragment also ends the stream."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +144,11 @@ class OutputParser:
         self.ended_early = False
         """Whether the answer ended before the engine finished the request."""
 
+    @property
+    def done(self) -> bool:
+        """Whether the parser has emitted its terminal event."""
+        return self._done
+
     def feed(self, output: RequestOutput) -> list[OutputEvent]:
         """The events of the next fragment; the final fragment also ends the stream."""
         if self._done:
@@ -221,3 +237,69 @@ class OutputParser:
         if reason is FinishReason.CANCELLED:
             return ErrorEvent("cancelled", "the request was cancelled")
         return ErrorEvent("engine_error", "the request failed")
+
+
+class ChoicesParser:
+    """The parser of a request with several sequences: one :class:`OutputParser` per choice.
+
+    Each choice's events come wrapped in :class:`~ayaka.entrypoints.conversation.ChoiceEvent`,
+    its own finish included. The request's usage and terminal event follow, unwrapped, once the
+    engine finished the request, or as soon as every choice has ended (a choice that ends right
+    after its first tool call does not wait for the engine).
+
+    Args:
+        parsers: One parser per choice, in index order.
+    """
+
+    def __init__(self, parsers: Sequence[OutputParser]) -> None:
+        self._parsers = tuple(parsers)
+        self._done = False
+        self._tool_calls = False
+        self._cancelled = False
+
+    @property
+    def count(self) -> int:
+        """Choices of the request."""
+        return len(self._parsers)
+
+    def feed(self, output: RequestOutput) -> list[OutputEvent]:
+        """The events of the next fragment, per choice, then the request's end."""
+        if self._done:
+            return []
+        events: list[OutputEvent] = []
+        for completion in output.outputs:
+            parser = self._parsers[completion.index]
+            ended = completion.finish_reason is not None
+            if completion.finish_reason is FinishReason.CANCELLED:
+                self._cancelled = True
+            view = RequestOutput(
+                request_id=output.request_id,
+                outputs=(completion,),
+                finished=ended or output.finished,
+                usage=output.usage,
+                error=output.error if output.finished else None,
+            )
+            for event in parser.feed(view):
+                if isinstance(event, UsageEvent):
+                    continue
+                if isinstance(event, FinishEvent) and event.tool_calls:
+                    self._tool_calls = True
+                events.append(ChoiceEvent(completion.index, event))
+        if output.finished or all(parser.done for parser in self._parsers):
+            self._done = True
+            usage = output.usage
+            events.append(
+                UsageEvent(
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    cached_tokens=usage.cached_tokens,
+                )
+            )
+            error = output.error if output.finished else None
+            if error is not None:
+                events.append(ErrorEvent(error.code, error.message, retryable=error.retryable))
+            elif self._cancelled:
+                events.append(ErrorEvent("cancelled", "the request was cancelled"))
+            else:
+                events.append(FinishEvent(FinishReason.STOP, tool_calls=self._tool_calls))
+        return events
