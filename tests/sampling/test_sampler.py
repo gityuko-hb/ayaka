@@ -198,6 +198,8 @@ class TestSampler:
                 min_p: Any,
                 u: Any,
                 out: Any,
+                *,
+                kept_logprobs: Any = None,
             ) -> None:
                 real.sample(logits, temperature, top_k, top_p, min_p, u, out)
 

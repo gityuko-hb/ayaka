@@ -25,17 +25,26 @@ cancelled alone leaves the others running.
 The incremental decoder never emits half of a UTF-8 character: text for a token that ends inside a
 character arrives with the token that completes it. At the end of a sequence whatever the decoder
 and the stop checker still hold is flushed.
+
+Logprobs arrive with the tokens; this is where each token and each listed alternative gets its text
+(one token decoded alone), and where ``cumulative_logprob`` is summed over the tokens kept.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final
 
 from ayaka.configs.tokenizer import DetokenizeParams
 from ayaka.core.errors import ErrorInfo
-from ayaka.core.outputs import CompletionOutput, RequestMetrics, RequestOutput, Usage
+from ayaka.core.outputs import (
+    CompletionOutput,
+    RequestMetrics,
+    RequestOutput,
+    TokenLogprob,
+    Usage,
+)
 from ayaka.core.types import FinishReason
 
 if TYPE_CHECKING:
@@ -88,6 +97,12 @@ class _Sequence:
     tokens: list[TokenId] = field(default_factory=list[int])
     text: list[str] = field(default_factory=list[str])
     cached_tokens: int = 0
+    logprobs: list[TokenLogprob] = field(default_factory=list[TokenLogprob])
+
+    def cumulative(self) -> float | None:
+        if not self.logprobs:
+            return None
+        return sum(entry.logprob for entry in self.logprobs)
 
 
 class OutputProcessor:
@@ -255,12 +270,16 @@ class OutputProcessor:
                 self._abort(sequence.request_id, FinishReason.STOP)
         sequence.tokens.extend(kept)
         sequence.text.append(text)
+        fresh = self._named(event.logprobs[: len(kept)]) if event.logprobs else ()
+        sequence.logprobs.extend(fresh)
         fragment = CompletionOutput(
             index=sequence.index,
             token_ids=kept,
             text=text,
             finish_reason=reason,
             stop_reason=stop_reason,
+            logprobs=fresh or None,
+            cumulative_logprob=sequence.cumulative(),
         )
         if reason is None:
             if family.stream and (kept or text):
@@ -287,6 +306,29 @@ class OutputProcessor:
             text="".join(sequence.text),
             finish_reason=reason,
             stop_reason=stop_reason,
+            logprobs=tuple(sequence.logprobs) or None,
+            cumulative_logprob=sequence.cumulative(),
+        )
+
+    def _named(self, entries: tuple[TokenLogprob, ...]) -> tuple[TokenLogprob, ...]:
+        """The entries with the text of each token and of each alternative."""
+        tokenizer = self._service.tokenizer
+        if tokenizer is None:
+            return entries
+
+        def text(token: TokenId) -> str:
+            try:
+                return tokenizer.decode([token])
+            except (ValueError, KeyError, IndexError):
+                return ""
+
+        return tuple(
+            replace(
+                entry,
+                decoded=text(entry.token_id),
+                top_decoded=tuple(text(token) for token, _ in entry.top),
+            )
+            for entry in entries
         )
 
     def _final(

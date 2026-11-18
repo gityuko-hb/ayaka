@@ -128,6 +128,7 @@ class TokenLogprob:
     rank: int | None = None
     decoded: str | None = None
     top: tuple[tuple[TokenId, float], ...] = ()
+    top_decoded: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         require_int(self.token_id, "token_id", minimum=0)
@@ -135,6 +136,8 @@ class TokenLogprob:
         if self.rank is not None:
             require_int(self.rank, "rank", minimum=0)
         object.__setattr__(self, "top", _require_top_logprobs(self.top))
+        if self.top_decoded and len(self.top_decoded) != len(self.top):
+            raise InvalidRequestError("top_decoded must have one entry per top logprob")
 
 
 @dataclass(frozen=True, slots=True)

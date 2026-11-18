@@ -117,18 +117,24 @@ class TestRefusals:
             processor.process(_request("x", return_sampling_support=True))
 
     def test_every_unsupported_feature_of_a_request_is_named(self) -> None:
-        sampling = SamplingParams(repetition_penalty=1.3, logprobs=2, frequency_penalty=0.1)
+        sampling = SamplingParams(return_sampling_support=True, prompt_logprobs=2)
 
         with pytest.raises(UnsupportedFeatureError) as info:
             require_supported(sampling)
 
-        assert info.value.context["features"] == (
-            "repetition_penalty",
-            "frequency_penalty",
-            "logprobs",
-        )
+        assert info.value.context["features"] == ("prompt_logprobs", "return_sampling_support")
 
     def test_the_defaults_and_the_plain_samplers_are_supported(self) -> None:
         require_supported(SamplingParams())
         require_supported(SamplingParams(temperature=0.7, top_k=40, top_p=0.9, min_p=0.05, seed=1))
+        require_supported(
+            SamplingParams(
+                repetition_penalty=1.2,
+                frequency_penalty=0.5,
+                presence_penalty=0.5,
+                logit_bias={1: 2.0},
+                allowed_token_ids=frozenset({1, 2}),
+                logprobs=3,
+            )
+        )
         require_supported(SamplingParams(stop=("x",), ignore_eos=True, min_tokens=2))

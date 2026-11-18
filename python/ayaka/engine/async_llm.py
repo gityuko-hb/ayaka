@@ -82,6 +82,11 @@ def merge_outputs(first: RequestOutput, second: RequestOutput) -> RequestOutput:
                 piece,
                 token_ids=earlier.token_ids + piece.token_ids,
                 text=earlier.text + piece.text,
+                logprobs=(
+                    (earlier.logprobs or ()) + (piece.logprobs or ())
+                    if earlier.logprobs or piece.logprobs
+                    else None
+                ),
             )
         )
     if not merged:

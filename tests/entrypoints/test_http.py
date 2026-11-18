@@ -199,8 +199,7 @@ class TestErrors:
         [
             ({"messages": []}, 400, "invalid_request", "messages"),
             ({"messages": [{"role": "user", "content": 3}]}, 400, "invalid_request", None),
-            (_chat("x", 2, logprobs=True), 400, "unsupported_feature", None),
-            (_chat("x", 2, presence_penalty=0.5), 400, "unsupported_feature", None),
+            (_chat("x", 2, top_logprobs=50, logprobs=True), 400, "invalid_request", None),
             (
                 _chat("x", 2, response_format={"type": "json_object"}),
                 400,

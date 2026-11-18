@@ -22,6 +22,10 @@ aborting the parent aborts every sibling.
 After every step the scheduler's counts and the time the runner took go to the stat loggers, when
 the engine has them; an idle cycle records nothing.
 
+The runner's penalty counts follow the requests: a request that uses a penalty gets its counts
+when it is queued, every token it emits is counted before the next step, and the counts are
+dropped when it ends.
+
 Failure follows two rules. A request that fails, by a backend error in its step, a deadline or a
 decoding problem, ends with an error in its own output and the engine goes on, as long as the KV
 bookkeeping still passes its integrity check. Anything else, an exception nobody planned for or a
@@ -202,6 +206,9 @@ class EngineCore:
         self._scheduler.add_request(request)
         try:
             self._output.register(request, stream=stream)
+            self._runner.penalties.admit(
+                request.request_id, request.prompt_token_ids, request.sampling
+            )
         except BaseException:
             self._scheduler.abort(request.request_id, FinishReason.CANCELLED)
             raise
@@ -230,6 +237,10 @@ class EngineCore:
                 self._scheduler.add_request(child, blocked_on=blocked_on)
                 added.append(child.request_id)
             self._output.register_family(parent, children, stream=stream)
+            for child in children:
+                self._runner.penalties.admit(
+                    child.request_id, child.prompt_token_ids, child.sampling
+                )
         except BaseException:
             for child_id in added:
                 self._scheduler.abort(child_id, FinishReason.CANCELLED)
@@ -287,7 +298,14 @@ class EngineCore:
         taken and ignored in the same cycle instead of surfacing a cycle later.
         """
         outputs: list[RequestOutput] = []
+        penalties = self._runner.penalties
         while events := self._scheduler.take_events():
+            if len(penalties):
+                for event in events:
+                    if event.finished:
+                        penalties.drop(event.request_id)
+                    elif event.token_ids:
+                        penalties.commit(event.request_id, event.token_ids)
             outputs += self._output.process(events)
         if self._families:
             for output in outputs:

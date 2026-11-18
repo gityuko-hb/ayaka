@@ -8,7 +8,7 @@ Reading follows one policy for every field (``OUT-9``):
 * A known field that would change the answer and that Ayaka cannot honour is refused with 400,
   naming it. Nothing is accepted and then quietly done differently.
 * Sampling fields go to ``SamplingParams`` as they are; the engine refuses the ones it cannot
-  serve yet (penalties, ``logit_bias``, ``logprobs``) with ``UnsupportedFeatureError``.
+  serve yet (``prompt_logprobs``) with ``UnsupportedFeatureError``.
 """
 
 from __future__ import annotations
@@ -29,6 +29,9 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.http import JsonObject, sampling_params
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from ayaka.core.outputs import TokenLogprob
     from ayaka.core.params import SamplingParams
     from ayaka.entrypoints.conversation import (
         Collected,
@@ -442,6 +445,49 @@ def chat_finish_reason(finish: FinishEvent) -> str:
     if finish.tool_calls:
         return "tool_calls"
     return "length" if finish.reason is FinishReason.LENGTH else "stop"
+
+
+def chat_logprobs(entries: Sequence[TokenLogprob]) -> dict[str, object]:
+    """The ``logprobs`` of a Chat Completions choice: one item per token, with alternatives."""
+
+    def item(text: str, logprob: float) -> dict[str, object]:
+        return {"token": text, "logprob": logprob, "bytes": list(text.encode())}
+
+    content: list[dict[str, object]] = []
+    for entry in entries:
+        names = entry.top_decoded or ("",) * len(entry.top)
+        body = item(entry.decoded or "", entry.logprob)
+        body["top_logprobs"] = [
+            item(name, logprob) for name, (_, logprob) in zip(names, entry.top, strict=True)
+        ]
+        content.append(body)
+    return {"content": content, "refusal": None}
+
+
+def completion_logprobs(entries: Sequence[TokenLogprob], offset: int = 0) -> dict[str, object]:
+    """The legacy ``logprobs`` object of a Completions choice; ``offset`` is the text before."""
+    tokens: list[str] = []
+    offsets: list[int] = []
+    for entry in entries:
+        offsets.append(offset)
+        text = entry.decoded or ""
+        tokens.append(text)
+        offset += len(text)
+    return {
+        "tokens": tokens,
+        "token_logprobs": [entry.logprob for entry in entries],
+        "top_logprobs": [
+            dict(
+                zip(
+                    entry.top_decoded or ("",) * len(entry.top),
+                    (lp for _, lp in entry.top),
+                    strict=True,
+                )
+            )
+            for entry in entries
+        ],
+        "text_offset": offsets,
+    }
 
 
 def openai_usage(usage: UsageEvent | None) -> dict[str, object] | None:

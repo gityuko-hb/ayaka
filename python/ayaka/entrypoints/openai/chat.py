@@ -33,6 +33,7 @@ from ayaka.entrypoints.conversation import (
     FinishEvent,
     ReasoningDelta,
     TextDelta,
+    TokenLogprobs,
     ToolCallDelta,
     ToolCallStart,
     UsageEvent,
@@ -45,7 +46,9 @@ from ayaka.entrypoints.http import (
 )
 from ayaka.entrypoints.openai.protocol import (
     chat_finish_reason,
+    chat_logprobs,
     chat_message,
+    completion_logprobs,
     openai_error,
     openai_usage,
     parse_chat_request,
@@ -54,6 +57,7 @@ from ayaka.entrypoints.openai.protocol import (
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
 
 if TYPE_CHECKING:
+    from ayaka.core.outputs import TokenLogprob
     from ayaka.entrypoints.conversation import Collected, OutputEvent
     from ayaka.entrypoints.http import Generation, Serving
 
@@ -83,7 +87,13 @@ class ChatStreamEncoder:
         self._choices = choices
         self._usage: UsageEvent | None = None
 
-    def _chunk(self, delta: dict[str, object], finish: str | None = None, index: int = 0) -> bytes:
+    def _chunk(
+        self,
+        delta: dict[str, object],
+        finish: str | None = None,
+        index: int = 0,
+        logprobs: dict[str, object] | None = None,
+    ) -> bytes:
         return sse_json(
             {
                 "id": self._meta.id,
@@ -92,7 +102,7 @@ class ChatStreamEncoder:
                 "model": self._meta.model,
                 "system_fingerprint": None,
                 "choices": [
-                    {"index": index, "delta": delta, "logprobs": None, "finish_reason": finish}
+                    {"index": index, "delta": delta, "logprobs": logprobs, "finish_reason": finish}
                 ],
             }
         )
@@ -152,6 +162,8 @@ class ChatStreamEncoder:
                 return self._chunk({"tool_calls": [piece]}, index=index)
             case FinishEvent():
                 return self._chunk({}, chat_finish_reason(event), index=index)
+            case TokenLogprobs(entries):
+                return self._chunk({}, index=index, logprobs=chat_logprobs(entries))
             case _:
                 return b""
 
@@ -170,8 +182,17 @@ class CompletionStreamEncoder:
         self._include_usage = include_usage
         self._choices = choices
         self._usage: UsageEvent | None = None
+        self._offsets: dict[int, int] = {}
 
-    def _chunk(self, text: str, finish: str | None = None, index: int = 0, **more: object) -> bytes:
+    def _chunk(
+        self,
+        text: str,
+        finish: str | None = None,
+        index: int = 0,
+        logprobs: dict[str, object] | None = None,
+        **more: object,
+    ) -> bytes:
+        self._offsets[index] = self._offsets.get(index, 0) + len(text)
         return sse_json(
             {
                 "id": self._meta.id,
@@ -179,10 +200,15 @@ class CompletionStreamEncoder:
                 "created": self._meta.created,
                 "model": self._meta.model,
                 "choices": [
-                    {"index": index, "text": text, "logprobs": None, "finish_reason": finish}
+                    {"index": index, "text": text, "logprobs": logprobs, "finish_reason": finish}
                 ],
                 **more,
             }
+        )
+
+    def _logprobs(self, entries: tuple[TokenLogprob, ...], index: int) -> bytes:
+        return self._chunk(
+            "", index=index, logprobs=completion_logprobs(entries, self._offsets.get(index, 0))
         )
 
     def start(self) -> bytes:
@@ -194,8 +220,12 @@ class CompletionStreamEncoder:
                 return self._chunk(text, index=index)
             case ChoiceEvent(index, FinishEvent() as finish):
                 return self._chunk("", chat_finish_reason(finish), index=index)
+            case ChoiceEvent(index, TokenLogprobs(entries)):
+                return self._logprobs(entries, index)
             case TextDelta(text) | ReasoningDelta(text):
                 return self._chunk(text)
+            case TokenLogprobs(entries):
+                return self._logprobs(entries, 0)
             case UsageEvent():
                 self._usage = event
                 return b""
@@ -213,10 +243,11 @@ class CompletionStreamEncoder:
                     }
                 )
             case FinishEvent():
-                more: dict[str, object] = (
-                    {"usage": openai_usage(self._usage)} if self._include_usage else {}
-                )
-                return self._chunk("", chat_finish_reason(event), 0, **more)
+                if self._include_usage:
+                    return self._chunk(
+                        "", chat_finish_reason(event), 0, usage=openai_usage(self._usage)
+                    )
+                return self._chunk("", chat_finish_reason(event))
             case ErrorEvent():
                 return _error_chunk(event, self._meta.id)
             case _:
@@ -270,7 +301,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
                     {
                         "index": index,
                         "message": chat_message(answer),
-                        "logprobs": None,
+                        "logprobs": chat_logprobs(answer.logprobs) if answer.logprobs else None,
                         "finish_reason": _finish(answer),
                     }
                     for index, answer in enumerate(answers)
@@ -312,7 +343,9 @@ async def create_completion(request: web.Request) -> web.StreamResponse:
                     {
                         "index": index,
                         "text": answer.reasoning + answer.text,
-                        "logprobs": None,
+                        "logprobs": (
+                            completion_logprobs(answer.logprobs) if answer.logprobs else None
+                        ),
                         "finish_reason": _finish(answer),
                     }
                     for index, answer in enumerate(answers)

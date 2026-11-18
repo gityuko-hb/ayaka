@@ -525,6 +525,7 @@ class Scheduler:
             sampling_params=tuple(r.params for r, _, _, _ in entries),
             table_updates=tuple(self._kv.table.take_dirty()),
             sequence_indices=tuple(r.sequence_index for r, _, _, _ in entries),
+            output_lengths=tuple(len(r.output) for r, _, _, _ in entries),
         )
         self._flight = _InFlight(
             step_id=step.step_id,
