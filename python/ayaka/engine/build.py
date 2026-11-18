@@ -117,6 +117,18 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
     ops = load_backend(
         device.backends, device=device.device_type, dtype=device.dtype, cuda_graph=device.cuda_graph
     )
+    if device.device_type == "cuda":
+        # Cross-check the pre-start-up NVML baseline against CUDA's first reading. The difference
+        # is the CUDA context, backend allocations and, under WSL2, the gap between the two
+        # reporters; logging it keeps an over-report visible instead of silently planning with it.
+        from ayaka.device.context import Device
+
+        cuda_free = Device(device.device).memory().free
+        logger.info(
+            "device free cross-check: NVML %d bytes before the backend, CUDA %d bytes after it",
+            baseline,
+            cuda_free,
+        )
     model = load_model(config.source, device, ops=ops)
     model_config = model.config
 
@@ -286,17 +298,25 @@ def _startup_run(
         budget.reserve("graph", min(graph_bytes, budget.free_bytes))
         profile = replace(profile, graph_bytes=graph_bytes)
     target.synchronize()
+    reading = target.memory()
     reconciliation = reconcile(
-        budget, baseline_bytes=baseline, reading=target.memory(), reused_bytes=profile.reused_bytes
+        budget,
+        baseline_bytes=baseline,
+        baseline_reserved_bytes=baseline_reserved,
+        reading=reading,
+        reused_bytes=profile.reused_bytes,
     )
     log = logger.info if reconciliation.matches else logger.warning
     log(
-        "memory ledger %d bytes, device lost %d bytes since the baseline (difference %d, "
-        "tolerance %d); plan: %d usable, %d headroom",
+        "memory ledger %d bytes, allocator plus runtime %d bytes (difference %d, tolerance %d); "
+        "the driver reports %d bytes lost since the baseline (diagnostic difference %d); "
+        "plan: %d usable, %d headroom",
         reconciliation.ledger_bytes,
         reconciliation.measured_bytes,
         reconciliation.difference_bytes,
         reconciliation.tolerance_bytes,
+        reconciliation.device_bytes,
+        reconciliation.device_difference_bytes,
         plan.usable_bytes,
         plan.headroom_bytes,
     )

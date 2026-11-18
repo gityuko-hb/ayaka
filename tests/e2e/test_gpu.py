@@ -10,7 +10,8 @@ fp16 and bf16. The oracles:
   eager kernels, so it must draw exactly what eager draws, sampled requests included.
 
 After every run the KV pool must be entirely free, and on the GPU the start-up run must have
-filled a memory ledger that matches what the device reports.
+filled a memory ledger that matches what the allocator holds; the driver's free memory is logged
+as a diagnostic, not used for the match.
 
 Every model here has heads of 64 so that flashinfer has kernels for it; the vocabulary is the byte
 tokenizer's.

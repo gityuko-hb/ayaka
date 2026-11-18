@@ -2,9 +2,9 @@
 
 Disabled unless ``AYAKA_GPU_DIAG`` names a file, so a normal run never pays for it. Enabled, it
 appends one line per test start, per test end and per outcome, each with the device's free, total,
-allocated and reserved bytes. A GPU test that compares a memory ledger with the device (as the
-end-to-end ones do) fails intermittently when *another* process moves ``free``; these lines say
-whether that happened, and the timestamps line up with a sampled ``nvidia-smi``.
+allocated and reserved bytes. The ledger check uses the allocator's reserved bytes; these lines
+still show whether another process moved the driver's free memory, and the timestamps line up with
+a sampled ``nvidia-smi``.
 
 Run it as::
 
