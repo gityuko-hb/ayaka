@@ -57,10 +57,19 @@ class _Compiled:
 class _Vocabulary:
     """What llguidance's ``TokenizerWrapper`` reads: token bytes, specials, EOS, a tokenizer."""
 
-    def __init__(self, tokenizer: TokenizerLike, vocab_size: int, eos: Collection[int]) -> None:
+    def __init__(
+        self,
+        tokenizer: TokenizerLike,
+        vocab_size: int,
+        eos: Collection[int],
+        reserved: Collection[int] = (),
+    ) -> None:
         self._tokenizer = tokenizer
         table: list[bytes] = list(_byte_table(tokenizer))
-        specials = set(tokenizer.all_special_ids)
+        # Marker tokens are declared special: llguidance then never lets them form ordinary text
+        # (a closing marker inside a JSON string would end the call for the parser), and a
+        # grammar can still demand one by id.
+        specials = set(tokenizer.all_special_ids) | set(reserved)
         tokens = [b""] * vocab_size
         for token in range(vocab_size):
             if token < len(table) and table[token]:
@@ -79,6 +88,14 @@ class _Vocabulary:
         if isinstance(text, bytes):
             text = text.decode("utf-8", errors="replace")
         return list(self._tokenizer.encode(text, add_special_tokens=False))
+
+
+def _reserved(params: StructuredParams) -> frozenset[int]:
+    """The tool-call marker tokens, which only the grammar's own references may produce."""
+    syntax = params.syntax
+    if syntax is None:
+        return frozenset()
+    return frozenset(t for t in (syntax.open_token, syntax.close_token) if t is not None)
 
 
 def _byte_table(tokenizer: TokenizerLike) -> tuple[bytes, ...]:
@@ -125,7 +142,7 @@ class GrammarCompiler:
         self._max_entries = max_entries
         self._cache: OrderedDict[str, _Compiled] = OrderedDict()
         self._lock = threading.Lock()
-        self._ll_tokenizer: Any = None
+        self._ll_tokenizers: dict[frozenset[int], Any] = {}
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
         self.compiles = 0
         """How many grammars were compiled (cache misses)."""
@@ -161,7 +178,7 @@ class GrammarCompiler:
             if key in self._cache:
                 self._cache.move_to_end(key)
                 return key
-        template = self._compile(grammar_text(params))
+        template = self._compile(grammar_text(params), _reserved(params))
         with self._lock:
             self._cache[key] = _Compiled(template, params)
             self.compiles += 1
@@ -190,9 +207,9 @@ class GrammarCompiler:
             parallel=params.parallel,
         )
 
-    def _compile(self, grammar: str) -> GrammarState:
+    def _compile(self, grammar: str, reserved: frozenset[int]) -> GrammarState:
         llguidance = self._module()
-        tokenizer = self._llg_tokenizer(llguidance)
+        tokenizer = self._llg_tokenizer(llguidance, reserved)
         if self._pool is None:
             self._pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="ayaka-grammar"
@@ -229,19 +246,22 @@ class GrammarCompiler:
                 context={"features": ("structured",)},
             ) from exc
 
-    def _llg_tokenizer(self, llguidance: Any) -> Any:
-        if self._ll_tokenizer is not None:
-            return self._ll_tokenizer
+    def _llg_tokenizer(self, llguidance: Any, reserved: frozenset[int]) -> Any:
+        """llguidance's view of the vocabulary, one per set of reserved marker tokens."""
+        found = self._ll_tokenizers.get(reserved)
+        if found is not None:
+            return found
         if self._tokenizer is None:
             raise UnsupportedFeatureError(
                 "structured output needs a tokenizer", context={"features": ("structured",)}
             )
-        vocabulary = _Vocabulary(self._tokenizer, self._vocab, self._eos)
+        vocabulary = _Vocabulary(self._tokenizer, self._vocab, self._eos, reserved)
         wrapper = llguidance.TokenizerWrapper(vocabulary)
-        self._ll_tokenizer = llguidance.LLTokenizer(
+        found = llguidance.LLTokenizer(
             wrapper, n_vocab=self._vocab, eos_token=list(self._eos) or None
         )
-        return self._ll_tokenizer
+        self._ll_tokenizers[reserved] = found
+        return found
 
     def close(self) -> None:
         """Stop the compile thread."""

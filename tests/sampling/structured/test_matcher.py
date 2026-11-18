@@ -173,6 +173,30 @@ class TestToolCalls:
         assert matcher.state == "WAIT_OPEN"
         assert matcher.mask() is None
 
+    def test_a_marker_token_never_appears_inside_the_body(self) -> None:
+        compiler = _compiler()
+        matcher = compiler.matcher(
+            compiler.compile(
+                StructuredParams(
+                    kind=ConstraintKind.TOOL_CALL,
+                    tools=(_WEATHER,),
+                    syntax=_SYNTAX,
+                    tool_choice="required",
+                    strict=True,
+                )
+            )
+        )
+        matcher.accept([OPEN_CALL, *b'{"name":"get_weather","arguments":{"city":"'])
+
+        inside = _allowed(matcher.mask())
+        matcher.accept(list(b'Hue"}}'))
+        after = _allowed(matcher.mask())
+
+        # The parser ends a call at the marker token, so the token inside a string would cut it.
+        assert OPEN_CALL not in inside
+        assert CLOSE_CALL not in inside
+        assert set(after) == {10, CLOSE_CALL}  # a newline, or the closing marker
+
     def test_an_opening_marker_of_several_tokens_cannot_be_constrained(self) -> None:
         syntax = ToolCallSyntax("<call>", "</call>", None)
 
