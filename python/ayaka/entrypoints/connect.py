@@ -7,9 +7,11 @@ Four jobs, one record per tool:
   through a temporary file and an atomic replace;
 * ``--check``: seven steps against the running server, in the tool's own protocol, each with a
   fix when it fails;
-* ``--observe``: a small proxy between the tool and the server that counts the tokens of the first
-  request by part (system prompt, tool definitions, conversation) and stores only the counts; with
-  ``--record DIR`` it also keeps each request (credentials removed) to build replay fixtures.
+* ``--observe``: a small proxy between the tool and the server that counts the tokens of each
+  model request by part (system prompt, tool definitions, conversation) and stores only the counts
+  of the largest one, the tool's floor (a tool's first request is not always its agent request:
+  OpenCode first asks for a session title); with ``--record DIR`` it also keeps each request
+  (credentials removed) to build replay fixtures.
 
 A tool is a :class:`ToolRecord`: data, not code paths. The records follow the tools' documentation
 and an installed version (see each record); a client changing its format is a one-record change.
@@ -50,11 +52,23 @@ __all__ = [
     "ObservedPrompt",
     "ServerInfo",
     "ToolRecord",
+    "WriteResult",
+    "agent_version",
+    "check_lines",
     "count_parts",
+    "generic_setup",
+    "known_tools",
+    "largest",
+    "observer",
+    "recorder",
+    "redact",
     "redact_headers",
     "render_config",
     "run_check",
+    "save_observation",
+    "serve_proxy",
     "tool_record",
+    "tool_version",
     "write_config",
 ]
 
@@ -112,8 +126,14 @@ class ToolRecord:
         render: Builds the new file content from the server info and the current content.
         min_context_tokens: The tool's fixed prompt (system and tools) in tokens, as measured by
             ``--observe`` on a recorded version; ``None`` until measured, never guessed.
+        measured: Which tool version and which tokenizer gave ``min_context_tokens`` (another
+            model's tokenizer counts the same text differently).
         verified: The tool version and documentation the record was checked against.
         usage: How to start the tool once configured.
+        agent: The product name of the tool's ``User-Agent``, to recognise its requests.
+        alternates: Other files the tool reads in the same folder instead of ``config_name``
+            (such as JSON with comments); ``--write`` will not overwrite one, since a rewrite
+            would drop its comments.
     """
 
     name: str
@@ -125,8 +145,11 @@ class ToolRecord:
     config_format: Literal["json", "toml"]
     render: Callable[[ServerInfo, str], str]
     min_context_tokens: int | None
+    measured: str | None
     verified: str
     usage: str
+    agent: str
+    alternates: tuple[str, ...] = ()
 
     def config_path(self, environ: Mapping[str, str] | None = None) -> Path:
         """The configuration file, in the folder the tool's variable names when it is set."""
@@ -164,10 +187,17 @@ def _render_claude_code(server: ServerInfo, current: str) -> str:
             # ANTHROPIC_AUTH_TOKEN is sent as a Bearer token; the server accepts either header.
             "ANTHROPIC_AUTH_TOKEN": server.api_key or _KEY_PLACEHOLDER,
             "ANTHROPIC_MODEL": server.model,
+            # /model opus, sonnet or haiku in the tool picks these names: all go to the server.
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": server.model,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": server.model,
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": server.small_model or server.model,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         }
     )
+    if server.context_tokens:
+        # Claude Code does not know a gateway's model and assumes a 1M window, so it would not
+        # compact before the server refuses; checked on 2.1.327 (its warning goes away).
+        merged["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(server.context_tokens)
     settings["env"] = merged
     return json.dumps(settings, indent=2) + "\n"
 
@@ -195,8 +225,11 @@ def _render_codex(server: ServerInfo, current: str) -> str:
         'name = "Ayaka"',
         f"base_url = {_toml_string(server.openai_base)}",
         'wire_api = "responses"',
-        'env_key = "AYAKA_API_KEY"',
     ]
+    if server.api_key:
+        # Codex refuses to start when the named variable is unset, so it is named only when the
+        # server needs a key.
+        lines.append('env_key = "AYAKA_API_KEY"')
     return "\n".join(lines) + "\n"
 
 
@@ -228,8 +261,11 @@ def _render_opencode(server: ServerInfo, current: str) -> str:
     return json.dumps(config, indent=2) + "\n"
 
 
-#: The tools ``ayaka connect`` knows. ``min_context_tokens`` stays ``None`` until ``--observe``
-#: measured a version and a reviewed data change records it.
+#: The tools ``ayaka connect`` knows. ``min_context_tokens`` comes from ``--observe`` on a real
+#: session of the named version and changes only through a reviewed data change: the tokens of
+#: the system text and the tool definitions as the request sends them, counted with one tokenizer
+#: (another model's tokenizer counts the same text a little differently, which the margin of
+#: step 7 absorbs).
 TOOLS: Final[Mapping[str, ToolRecord]] = {
     "claude-code": ToolRecord(
         name="claude-code",
@@ -240,9 +276,12 @@ TOOLS: Final[Mapping[str, ToolRecord]] = {
         config_name="settings.json",
         config_format="json",
         render=_render_claude_code,
-        min_context_tokens=None,
+        min_context_tokens=18281,
+        measured="Claude Code 2.1.327, the largest of 4 recorded requests (23 tools), "
+        "SmolLM2-135M tokenizer, 2026-11-18",
         verified="Claude Code 2.1.327; code.claude.com/docs llm-gateway-connect, env-vars",
         usage="claude   (or: claude -p 'prompt')",
+        agent="claude-cli",
     ),
     "codex": ToolRecord(
         name="codex",
@@ -253,9 +292,12 @@ TOOLS: Final[Mapping[str, ToolRecord]] = {
         config_name="ayaka.config.toml",
         config_format="toml",
         render=_render_codex,
-        min_context_tokens=None,
+        min_context_tokens=13348,
+        measured="codex-cli 0.163.0, 1 recorded request (9 tools), SmolLM2-135M tokenizer, "
+        "2026-11-18",
         verified="codex-cli 0.163.0; config-reference (profiles as <name>.config.toml)",
-        usage="AYAKA_API_KEY=<key> codex --profile ayaka",
+        usage="codex --profile ayaka   (with AYAKA_API_KEY=<key> when the server has a key)",
+        agent="codex_exec",
     ),
     "opencode": ToolRecord(
         name="opencode",
@@ -266,9 +308,13 @@ TOOLS: Final[Mapping[str, ToolRecord]] = {
         config_name="opencode.json",
         config_format="json",
         render=_render_opencode,
-        min_context_tokens=None,
+        min_context_tokens=11260,
+        measured="opencode 2.3.2, the largest of 4 recorded requests (13 tools), "
+        "SmolLM2-135M tokenizer, 2026-11-18",
         verified="opencode 2.3.2; opencode.ai/docs providers, config, models",
         usage="AYAKA_API_KEY=<key> opencode   (or: opencode run --model ayaka/<model> 'prompt')",
+        agent="opencode",
+        alternates=("opencode.jsonc",),
     ),
 }
 
@@ -357,6 +403,10 @@ def write_config(
     if path.exists():
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         backup = path.with_name(f"{path.name}.{stamp}.bak")
+        serial = 1
+        while backup.exists():  # two writes in one second keep both backups
+            backup = path.with_name(f"{path.name}.{stamp}-{serial}.bak")
+            serial += 1
         shutil.copy2(path, backup)
         _private(backup)
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
@@ -419,7 +469,11 @@ class CheckReport:
 
 
 class _Client:
-    """A minimal HTTP client for the checks: standard library, no SDK."""
+    """A minimal HTTP client for the checks: standard library, no SDK, and it never raises.
+
+    Every call returns ``(status, body)``; a connection that fails is status ``0`` with the error
+    as the body, so a step fails with what happened instead of stopping the check.
+    """
 
     def __init__(self, server: ServerInfo, timeout: float) -> None:
         self.server = server
@@ -433,28 +487,56 @@ class _Client:
             headers["anthropic-version"] = "2023-06-01"
         return headers
 
-    def get(self, path: str) -> tuple[int, bytes]:
-        request = urllib.request.Request(  # noqa: S310  # the server's own URL
-            self.server.base_url.rstrip("/") + path, headers=self._headers("openai-chat")
-        )
+    def _open(self, request: urllib.request.Request) -> tuple[int, bytes]:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
                 return response.status, response.read()
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read()
+        except (
+            OSError,
+            ValueError,
+            http.client.HTTPException,
+        ) as exc:  # refused, timed out, bad URL
+            return 0, redact(f"{type(exc).__name__}: {exc}", self.server).encode()
+
+    def get(self, path: str) -> tuple[int, bytes]:
+        return self._open(
+            urllib.request.Request(  # noqa: S310  # the server's own URL
+                self.server.base_url.rstrip("/") + path, headers=self._headers("openai-chat")
+            )
+        )
 
     def post(self, path: str, body: Mapping[str, object], protocol: Protocol) -> tuple[int, bytes]:
-        request = urllib.request.Request(  # noqa: S310  # the server's own URL
-            self.server.base_url.rstrip("/") + path,
-            data=json.dumps(body).encode(),
-            headers=self._headers(protocol),
-            method="POST",
+        return self._open(
+            urllib.request.Request(  # noqa: S310  # the server's own URL
+                self.server.base_url.rstrip("/") + path,
+                data=json.dumps(body).encode(),
+                headers=self._headers(protocol),
+                method="POST",
+            )
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
-                return response.status, response.read()
-        except urllib.error.HTTPError as exc:
-            return exc.code, exc.read()
+
+
+def _json_object(body: bytes) -> dict[str, object] | None:
+    """The body as a JSON object, or ``None`` when it is not one."""
+    try:
+        value: object = json.loads(body)
+    except ValueError:
+        return None
+    return cast("dict[str, object]", value) if isinstance(value, dict) else None
+
+
+def _answered(status: int, body: bytes) -> str:
+    """How the server answered, for a step's detail: the status and its error message."""
+    if status == 0:
+        return f"nothing ({body.decode(errors='replace')[:200]})"
+    if status == 200:
+        return "200"
+    error = (_json_object(body) or {}).get("error")
+    message = cast("dict[str, object]", error).get("message") if isinstance(error, dict) else None
+    text = str(message) if message else body.decode(errors="replace")
+    return f"{status} ({text[:200]})"
 
 
 _CHECK_TOOL: Final = {
@@ -562,41 +644,52 @@ def _tool_request(protocol: Protocol, model: str) -> dict[str, object]:
     }
 
 
+def _objects(value: object) -> list[dict[str, object]]:
+    """The JSON objects of a list (anything else in it, or a non-list, is skipped)."""
+    if not isinstance(value, list):
+        return []
+    items = cast("list[object]", value)
+    return [cast("dict[str, object]", item) for item in items if isinstance(item, dict)]
+
+
+def _first_message(answer: Mapping[str, object]) -> dict[str, object]:
+    choices = _objects(answer.get("choices"))
+    message = choices[0].get("message") if choices else None
+    return cast("dict[str, object]", message) if isinstance(message, dict) else {}
+
+
 def _text_of(protocol: Protocol, answer: Mapping[str, object]) -> str:
     if protocol == "anthropic":
-        blocks = cast("list[dict[str, object]]", answer.get("content") or [])
-        return "".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+        blocks = _objects(answer.get("content"))
+        return "".join(str(b.get("text") or "") for b in blocks if b.get("type") == "text")
     if protocol == "openai-responses":
-        items = cast("list[dict[str, object]]", answer.get("output") or [])
         texts: list[str] = []
-        for item in items:
-            for part in cast("list[dict[str, object]]", item.get("content") or []):
-                texts.append(str(part.get("text", "")))
+        for item in _objects(answer.get("output")):
+            if item.get("type") == "message":
+                texts.extend(str(part.get("text") or "") for part in _objects(item.get("content")))
         return "".join(texts)
-    choices = cast("list[dict[str, object]]", answer.get("choices") or [{}])
-    message = cast("dict[str, object]", choices[0].get("message") or {})
-    return str(message.get("content") or "")
+    content = _first_message(answer).get("content")
+    return content if isinstance(content, str) else ""
 
 
 def _call_of(protocol: Protocol, answer: Mapping[str, object]) -> tuple[str, object] | None:
     """``(name, arguments)`` of the first call, arguments decoded from JSON when they are text."""
     if protocol == "anthropic":
-        for block in cast("list[dict[str, object]]", answer.get("content") or []):
+        for block in _objects(answer.get("content")):
             if block.get("type") == "tool_use":
                 return str(block.get("name")), block.get("input")
         return None
     if protocol == "openai-responses":
-        for item in cast("list[dict[str, object]]", answer.get("output") or []):
+        for item in _objects(answer.get("output")):
             if item.get("type") == "function_call":
                 return str(item.get("name")), _decoded(item.get("arguments"))
         return None
-    choices = cast("list[dict[str, object]]", answer.get("choices") or [{}])
-    message = cast("dict[str, object]", choices[0].get("message") or {})
-    calls = cast("list[dict[str, object]]", message.get("tool_calls") or [])
-    if not calls:
+    calls = _objects(_first_message(answer).get("tool_calls"))
+    function = calls[0].get("function") if calls else None
+    if not isinstance(function, dict):
         return None
-    function = cast("dict[str, object]", calls[0].get("function") or {})
-    return str(function.get("name")), _decoded(function.get("arguments"))
+    values = cast("dict[str, object]", function)
+    return str(values.get("name")), _decoded(values.get("arguments"))
 
 
 def _decoded(value: object) -> object:
@@ -608,33 +701,51 @@ def _decoded(value: object) -> object:
     return value
 
 
+def _number(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _cache_share(protocol: Protocol, answer: Mapping[str, object]) -> tuple[int, int]:
     """``(cached, prompt)`` tokens from the usage of an answer."""
-    usage = cast("dict[str, object]", answer.get("usage") or {})
+    usage = answer.get("usage")
+    values = cast("dict[str, object]", usage) if isinstance(usage, dict) else {}
     if protocol == "anthropic":
-        cached = int(cast("int", usage.get("cache_read_input_tokens") or 0))
-        fresh = int(cast("int", usage.get("input_tokens") or 0))
-        return cached, cached + fresh
-    if protocol == "openai-responses":
-        details = cast("dict[str, object]", usage.get("input_tokens_details") or {})
-        return int(cast("int", details.get("cached_tokens") or 0)), int(
-            cast("int", usage.get("input_tokens") or 0)
-        )
-    details = cast("dict[str, object]", usage.get("prompt_tokens_details") or {})
-    return int(cast("int", details.get("cached_tokens") or 0)), int(
-        cast("int", usage.get("prompt_tokens") or 0)
+        cached = _number(values.get("cache_read_input_tokens"))
+        return cached, cached + _number(values.get("input_tokens"))
+    key, total = (
+        ("input_tokens_details", "input_tokens")
+        if protocol == "openai-responses"
+        else ("prompt_tokens_details", "prompt_tokens")
     )
+    details = values.get(key)
+    found = cast("dict[str, object]", details) if isinstance(details, dict) else {}
+    return _number(found.get("cached_tokens")), _number(values.get(total))
+
+
+def _sse_lines(body: bytes, field: str) -> list[str]:
+    prefix = f"{field}:"
+    return [
+        line.removeprefix(prefix).strip()
+        for line in body.decode("utf-8", errors="replace").splitlines()
+        if line.startswith(prefix)
+    ]
 
 
 def _stream_terminated(protocol: Protocol, body: bytes) -> tuple[bool, str]:
-    text = body.decode("utf-8", errors="replace")
+    """Whether the stream's last event is the protocol's terminal one, and its name."""
+    events = _sse_lines(body, "event")
     if protocol == "anthropic":
-        return "event: message_stop" in text, "message_stop"
+        return bool(events) and events[-1] == "message_stop", "message_stop"
     if protocol == "openai-responses":
         # A stream cut by max_output_tokens ends with response.incomplete, also a terminal event.
-        ended = "event: response.completed" in text or "event: response.incomplete" in text
+        ended = bool(events) and events[-1] in ("response.completed", "response.incomplete")
         return ended, "response.completed or response.incomplete"
-    return "data: [DONE]" in text and '"finish_reason"' in text, "a finish_reason, then [DONE]"
+    data = _sse_lines(body, "data")
+    finished = False
+    for chunk in data[:-1]:
+        for choice in _objects((_json_object(chunk.encode()) or {}).get("choices")):
+            finished = finished or bool(choice.get("finish_reason"))
+    return bool(data) and data[-1] == "[DONE]" and finished, "a finish_reason, then [DONE]"
 
 
 def _valid_arguments(arguments: object) -> bool:
@@ -646,6 +757,17 @@ def _valid_arguments(arguments: object) -> bool:
     return set(values) == {"path"} and isinstance(path, str) and len(path) <= 40
 
 
+def _wait_ready(client: _Client, timeout: float) -> tuple[bool, int, bytes]:
+    deadline = time.monotonic() + timeout
+    while True:
+        status, body = client.get("/health")
+        if status == 200 and (_json_object(body) or {}).get("status") == "ready":
+            return True, status, body
+        if time.monotonic() >= deadline:
+            return False, status, body
+        time.sleep(0.5)
+
+
 def run_check(
     record: ToolRecord,
     server: ServerInfo,
@@ -653,64 +775,66 @@ def run_check(
     timeout: float = 60.0,
     version: str | None = None,
 ) -> CheckReport:
-    """The seven steps of ``--check`` against a running server, in the tool's protocol."""
+    """The seven steps of ``--check`` against a running server, in the tool's protocol.
+
+    A step that cannot get an answer fails with what happened; a step whose subject the server
+    does not have (a prefix cache, a measured floor) is reported as not measured, never as a pass.
+    """
     client = _Client(server, timeout)
     report = CheckReport(tool=record.name, version=version, protocol=record.protocol)
     steps = report.steps
 
-    deadline = time.monotonic() + timeout
-    status, body = 0, b""
-    while time.monotonic() < deadline:
-        try:
-            status, body = client.get("/health")
-        except OSError as exc:
-            body = str(exc).encode()
-        if status == 200:
-            break
-        time.sleep(0.5)
-    ready = status == 200
+    ready, status, body = _wait_ready(client, timeout)
     steps.append(
         CheckStep(
             1,
             "server ready",
             ready,
-            f"/health answered {status}: {body[:120].decode(errors='replace')}",
-            None if ready else f"start it: ayaka serve <model> (listening at {server.base_url})",
+            f"/health answered {_answered(status, body)}"
+            + (f": {body[:80].decode(errors='replace')}" if status == 200 else ""),
+            None
+            if ready
+            else f"start the server (ayaka serve <model>) at {server.base_url}, or give it longer "
+            "to load (--timeout)",
         )
     )
     if not ready:
         return report
 
     status, body = client.get("/v1/models")
-    listing = cast("dict[str, object]", json.loads(body or b"{}")) if status == 200 else {}
-    entries = cast("list[dict[str, object]]", listing.get("data") or [])
+    entries = _objects((_json_object(body) or {}).get("data")) if status == 200 else []
     names = {str(entry.get("id")) for entry in entries}
-    missing = [alias for alias in record.aliases(server) if alias not in names]
+    aliases = record.aliases(server)
+    missing = [alias for alias in aliases if alias not in names]
+    listed = bool(entries) and not missing
     steps.append(
         CheckStep(
             2,
             "model and aliases",
-            status == 200 and not missing,
-            f"the server serves {sorted(names)}; the tool sends {list(record.aliases(server))}",
+            listed,
+            f"/v1/models answered {_answered(status, body)}; the server serves {sorted(names)}, "
+            f"the tool sends {list(aliases)}",
             None
-            if not missing
-            else "start the server with --served-model-name "
-            + " --served-model-name ".join(missing),
+            if listed
+            else "serve every name the tool sends: --served-model-name "
+            + " --served-model-name ".join(missing or aliases),
         )
     )
+    none: dict[str, object] = {}
+    entry = next((e for e in entries if str(e.get("id")) == server.model), none)
 
     path = _path(record.protocol)
     status, body = client.post(
         path, _text_request(record.protocol, server.model, stream=False), record.protocol
     )
-    text = _text_of(record.protocol, json.loads(body)) if status == 200 else ""
+    text = _text_of(record.protocol, _json_object(body) or {}) if status == 200 else ""
     steps.append(
         CheckStep(
             3,
             "text",
             bool(text.strip()),
-            f"{path} answered {status} with {len(text)} characters",
-            None if text.strip() else "look at the server log for this request's error",
+            f"{path} answered {_answered(status, body)} with {len(text)} characters of text",
+            None if text.strip() else "the server log names this request's error",
         )
     )
 
@@ -723,78 +847,105 @@ def run_check(
             4,
             "streaming",
             status == 200 and ended,
-            f"stream answered {status}; expected {terminal}",
-            None if ended else "a proxy may be buffering or cutting server-sent events",
+            f"the stream answered {_answered(status, body)}; it "
+            f"{'ends' if ended else 'does not end'} with {terminal}",
+            None
+            if status == 200 and ended
+            else (
+                "a proxy between the tool and the server may buffer or cut server-sent events"
+                if status == 200
+                else "the server log names this request's error"
+            ),
         )
     )
 
     tool_request = _tool_request(record.protocol, server.model)
     status, body = client.post(path, tool_request, record.protocol)
-    answer = cast("dict[str, object]", json.loads(body)) if status == 200 else {}
-    call = _call_of(record.protocol, answer) if answer else None
+    answer = _json_object(body) if status == 200 else None
+    call = _call_of(record.protocol, answer) if answer is not None else None
     valid = call is not None and call[0] == _CHECK_TOOL["name"] and _valid_arguments(call[1])
     steps.append(
         CheckStep(
             5,
             "tool call",
             valid,
-            f"answered {status}; call: {call!r}"[:300],
+            f"{path} answered {_answered(status, body)}; call: {call!r}"[:300],
             None
             if valid
-            else "start the server with --tool-call-parser for this model and the structured "
-            "extra (uv sync --extra structured)",
+            else "serve with the model's --tool-call-parser and the structured extra "
+            "(uv sync --extra structured), so a forced call follows the schema",
         )
     )
 
-    status, body = client.post(path, tool_request, record.protocol)
-    repeat = cast("dict[str, object]", json.loads(body)) if status == 200 else {}
-    cached, prompt = _cache_share(record.protocol, repeat) if repeat else (0, 0)
-    share = cached / prompt if prompt else 0.0
-    hit = share >= CachedShareThreshold
-    steps.append(
-        CheckStep(
-            6,
-            "prefix cache",
-            hit if status == 200 else False,
-            f"the repeated request read {cached} of {prompt} prompt tokens from the cache "
-            f"({share:.0%}; threshold {CachedShareThreshold:.0%})",
-            None
-            if hit
-            else "the identical request did not hit: start the server without --no-prefix-cache",
-        )
-    )
-
-    context = server.context_tokens
-    for entry in entries:
-        if str(entry.get("id")) == server.model:
-            value = entry.get("max_context_tokens") or entry.get("max_model_len")
-            if isinstance(value, int):
-                context = value
-    floor = record.min_context_tokens
-    if floor is None or context is None:
+    if entry.get("prefix_cache") is False:
         steps.append(
             CheckStep(
-                7,
-                "context",
+                6,
+                "prefix cache",
                 None,
-                f"not measured: the tool's fixed prompt has no recorded size "
-                f"(run ayaka connect {record.name} --observe); the server gives {context} tokens",
+                "not measured: the server runs without a prefix cache (--no-prefix-cache)",
             )
         )
     else:
-        needed = floor + CONTEXT_MARGIN_TOKENS
-        enough = context >= needed
+        status, body = client.post(path, tool_request, record.protocol)
+        repeat = _json_object(body) if status == 200 else None
+        cached, prompt = _cache_share(record.protocol, repeat) if repeat is not None else (0, 0)
+        share = cached / prompt if prompt else 0.0
+        hit = status == 200 and share >= CachedShareThreshold
+        detail = (
+            f"the repeated request answered {_answered(status, body)} and read {cached} of "
+            f"{prompt} prompt tokens from the cache ({share:.0%}; threshold "
+            f"{CachedShareThreshold:.0%})"
+        )
+        if status == 200 and not hit:
+            # Both prompts are the same request, so they agree everywhere: the cache stopped
+            # matching at the first token it did not keep.
+            detail += f"; the identical prompts diverge in the cache at token {cached}"
         steps.append(
             CheckStep(
-                7,
-                "context",
-                enough,
-                f"{context} tokens per request; the tool needs {floor} plus "
-                f"{CONTEXT_MARGIN_TOKENS} to work",
-                None if enough else "a smaller model or more memory (see ayaka plan)",
+                6,
+                "prefix cache",
+                hit,
+                detail,
+                None
+                if hit
+                else "serve with the prefix cache on (no --no-prefix-cache) and enough KV blocks "
+                "to keep a prompt between two requests (ayaka plan)",
             )
         )
+
+    steps.append(_context_step(record, server, entry))
     return report
+
+
+def _context_step(record: ToolRecord, server: ServerInfo, entry: Mapping[str, object]) -> CheckStep:
+    context = server.context_tokens
+    value = entry.get("max_context_tokens") or entry.get("max_model_len")
+    if isinstance(value, int):
+        context = value
+    floor = record.min_context_tokens
+    if floor is None or context is None:
+        reason = (
+            f"no recorded fixed-prompt size for {record.name} "
+            f"(ayaka connect {record.name} --observe measures it)"
+            if floor is None
+            else "the server does not say how long one request may be"
+        )
+        given = f"; the server gives {context} tokens per request" if context else ""
+        return CheckStep(7, "context", None, f"not measured: {reason}{given}")
+    needed = floor + CONTEXT_MARGIN_TOKENS
+    enough = context >= needed
+    return CheckStep(
+        7,
+        "context",
+        enough,
+        f"{context} tokens per request; {record.name} needs {floor} for its fixed prompt "
+        f"({record.measured}) plus {CONTEXT_MARGIN_TOKENS} to work, {needed} in all",
+        None
+        if enough
+        else "a model with a longer context, or more memory for the KV cache: "
+        f"ayaka plan <model> --for {record.name}",
+    )
 
 
 # -- observe and record -----------------------------------------------------------------------
@@ -802,11 +953,24 @@ def run_check(
 
 @dataclass(frozen=True, slots=True)
 class ObservedPrompt:
-    """The fixed prompt of a tool's first request, as token counts. No content is kept."""
+    """The fixed prompt of one request of a tool, as token counts. No content is kept.
+
+    Attributes:
+        tool: The record's name.
+        version: The tool's version, from its ``User-Agent`` (else the installed binary).
+        protocol: The API of the request.
+        tokenizer: The model whose tokenizer counted.
+        system_tokens: System and developer text.
+        tools_tokens: The tool definitions, as the request sends them (JSON).
+        conversation_tokens: User, assistant and tool-result text.
+        tool_count: How many tools the request offers.
+        at: When, in UTC.
+    """
 
     tool: str
     version: str | None
     protocol: str
+    tokenizer: str
     system_tokens: int
     tools_tokens: int
     conversation_tokens: int
@@ -897,9 +1061,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002  # base signature
         del format, args  # no request lines with content on stderr
 
-    def _forward(self, method: str) -> None:
+    def _body(self) -> bytes:
+        if "chunked" in (self.headers.get("transfer-encoding") or "").lower():
+            chunks: list[bytes] = []
+            while (size := int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)) > 0:
+                chunks.append(self.rfile.read(size))
+                self.rfile.readline()  # the CRLF after the chunk
+            while self.rfile.readline() not in (b"\r\n", b"\n", b""):  # trailers
+                pass
+            return b"".join(chunks)
         length = int(self.headers.get("content-length") or 0)
-        body = self.rfile.read(length) if length else b""
+        return self.rfile.read(length) if length else b""
+
+    def _forward(self, method: str) -> None:
+        body = self._body()
         headers = dict(self.headers.items())
         try:
             self.server.on_request(self.path, headers, body)
@@ -911,12 +1086,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         forward = {
             key: value
             for key, value in headers.items()
-            if key.lower() not in ("host", "content-length", "connection")
+            if key.lower() not in ("host", "content-length", "connection", "transfer-encoding")
         }
-        connection.request(
-            method, parsed.path + (f"?{parsed.query}" if parsed.query else ""), body, forward
-        )
-        response = connection.getresponse()
+        try:
+            connection.request(
+                method, parsed.path + (f"?{parsed.query}" if parsed.query else ""), body, forward
+            )
+            response = connection.getresponse()
+        except (OSError, http.client.HTTPException) as exc:
+            connection.close()
+            message = json.dumps({"error": {"message": f"the server did not answer: {exc}"}})
+            self.send_response(502)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(message)))
+            self.send_header("connection", "close")
+            self.end_headers()
+            self.wfile.write(message.encode())
+            return
         self.send_response(response.status)
         for key, value in response.getheaders():
             if key.lower() not in ("transfer-encoding", "connection", "content-length"):
@@ -999,23 +1185,48 @@ def recorder(
     return keep
 
 
+def agent_version(headers: Mapping[str, str], agent: str) -> str | None:
+    """The version in a ``User-Agent`` whose product is ``agent``, such as ``claude-cli/2.1.3``.
+
+    OpenCode writes ``opencode/latest/2.3.2/cli``: the first part that starts with a digit is the
+    version.
+    """
+    value = next((v for k, v in headers.items() if k.lower() == "user-agent"), "")
+    product = value.split(" ", 1)[0]
+    parts = product.split("/")
+    if not parts or parts[0] != agent:
+        return None
+    return next((part for part in parts[1:] if part[:1].isdigit()), None)
+
+
 def observer(
-    tool: str, version: str | None, count: Callable[[str], int], found: list[ObservedPrompt]
+    record: ToolRecord,
+    tokenizer: str,
+    count: Callable[[str], int],
+    found: list[ObservedPrompt],
+    *,
+    installed: str | None = None,
 ) -> Callable[[str, dict[str, str], bytes], None]:
-    """Count the parts of the first model request; keep only the counts in ``found``."""
+    """Count the parts of each model request into ``found``; keep only the counts.
+
+    A tool's first request is not always its agent request (OpenCode first asks for a session
+    title, with no tools), so every request is counted and :func:`largest` picks the floor.
+    """
 
     def observe(path: str, headers: dict[str, str], body: bytes) -> None:
-        del headers
         protocol = _protocol_of(path)
-        if protocol is None or found or path.endswith("count_tokens"):
+        if protocol is None or "count_tokens" in path:
             return
-        parsed = cast("dict[str, object]", json.loads(body))
+        parsed = _json_object(body)
+        if parsed is None:
+            return
         system, tools, conversation, tool_count = count_parts(protocol, parsed, count)
         found.append(
             ObservedPrompt(
-                tool=tool,
-                version=version,
+                tool=record.name,
+                version=agent_version(headers, record.agent) or installed,
                 protocol=protocol,
+                tokenizer=tokenizer,
                 system_tokens=system,
                 tools_tokens=tools,
                 conversation_tokens=conversation,
@@ -1025,6 +1236,11 @@ def observer(
         )
 
     return observe
+
+
+def largest(found: Sequence[ObservedPrompt]) -> ObservedPrompt | None:
+    """The request with the largest fixed prompt: the one the tool's context must hold."""
+    return max(found, key=lambda observed: observed.fixed_tokens, default=None)
 
 
 def tool_version(record: ToolRecord) -> str | None:

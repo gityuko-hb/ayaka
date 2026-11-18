@@ -7,6 +7,7 @@ import http.server
 import json
 import threading
 import tomllib
+import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING, Any
 
@@ -16,12 +17,16 @@ from ayaka.entrypoints.cli import EXIT_OK, EXIT_USAGE, main
 from ayaka.entrypoints.connect import (
     TOOLS,
     ServerInfo,
+    agent_version,
+    check_lines,
     count_parts,
+    largest,
     observer,
     recorder,
     redact_headers,
     render_config,
     run_check,
+    save_observation,
     serve_proxy,
     write_config,
 )
@@ -48,6 +53,7 @@ class TestRender:
         assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8000"
         assert env["ANTHROPIC_MODEL"] == env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "tiny"
         assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+        assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1024"
 
     def test_codex_gets_a_profile_file_that_parses(self) -> None:
         profile = tomllib.loads(render_config(TOOLS["codex"], _SERVER))
@@ -85,8 +91,18 @@ class TestRender:
         assert TOOLS["codex"].config_path(env) == tmp_path / "ayaka.config.toml"
         assert TOOLS["claude-code"].config_path(env) == tmp_path / "c" / "settings.json"
 
-    def test_no_record_claims_a_measured_floor_it_does_not_have(self) -> None:
-        assert all(record.min_context_tokens is None for record in TOOLS.values())
+    def test_every_measured_floor_says_where_it_comes_from(self) -> None:
+        for record in TOOLS.values():
+            if record.min_context_tokens is not None:
+                assert record.measured is not None
+                assert "tokenizer" in record.measured
+
+    def test_claude_code_maps_every_model_alias_to_the_served_model(self) -> None:
+        env = json.loads(render_config(TOOLS["claude-code"], _SERVER))["env"]
+
+        assert {env[f"ANTHROPIC_DEFAULT_{size}_MODEL"] for size in ("OPUS", "SONNET", "HAIKU")} == {
+            "tiny"
+        }
 
 
 class TestWrite:
@@ -191,15 +207,15 @@ class TestCountsAndRecordings:
 
     def test_the_observer_keeps_counts_only(self) -> None:
         found: list[Any] = []
-        observe = observer("claude-code", "2.1", self._count, found)
+        observe = observer(TOOLS["claude-code"], "tok", self._count, found)
         body = json.dumps({"system": "secret system text", "messages": [], "max_tokens": 1})
 
         observe("/v1/messages?beta=true", {"authorization": "Bearer x"}, body.encode())
-        observe("/v1/messages", {}, body.encode())
+        observe("/v1/messages/count_tokens", {}, body.encode())
 
         assert len(found) == 1
         assert found[0].system_tokens == len("secret system text")
-        assert "secret" not in json.dumps(found[0].__repr__())
+        assert "secret" not in repr(found[0])
 
     def test_a_recording_has_no_credentials(self, tmp_path: Path) -> None:
         keep = recorder(tmp_path / "rec", limit=1)
@@ -388,8 +404,9 @@ class TestCheck:
 
         results = {step.id: step.ok for step in report.steps}
         details = [f"{step.id} {step.ok} {step.detail}" for step in report.steps]
-        assert results == {1: True, 2: True, 3: True, 4: True, 5: True, 6: True, 7: None}, details
-        assert report.ok
+        # The tiny model gives a request 1024 tokens: less than any tool's measured floor.
+        assert results == {1: True, 2: True, 3: True, 4: True, 5: True, 6: True, 7: False}, details
+        assert not report.ok
         payload = report.as_json()
         assert payload["protocol"] == TOOLS[record].protocol
         assert [step["id"] for step in payload["steps"]] == [1, 2, 3, 4, 5, 6, 7]
@@ -403,3 +420,378 @@ class TestCheck:
         assert step.ok is False
         assert step.fix is not None
         assert not report.ok
+
+
+# -- each step's failure against a scripted server --------------------------------------------
+
+
+class _Script:
+    """What the fake server answers: a working OpenAI-compatible server unless changed."""
+
+    def __init__(self) -> None:
+        self.health: tuple[int, dict[str, Any]] = (200, {"status": "ready"})
+        self.models: list[dict[str, Any]] = [
+            {"id": "tiny", "max_context_tokens": 65536, "prefix_cache": True}
+        ]
+        self.text = "Hello there."
+        self.stream_end: list[str] = ["data: [DONE]"]
+        self.arguments = '{"path": "README.md"}'
+        self.cached = 80
+        self.prompt = 90
+        self.posts = 0
+
+
+def _fake_server(script: _Script) -> tuple[str, Callable[[], None]]:
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            del format, args
+
+        def _json(self, status: int, body: object) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:
+            if self.path == "/health":
+                self._json(*script.health)
+            else:
+                self._json(200, {"object": "list", "data": script.models})
+
+        def do_POST(self) -> None:
+            request = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            script.posts += 1
+            if request.get("stream"):
+                chunk = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                body = f"data: {json.dumps(chunk)}\n\n" + "".join(
+                    f"{line}\n\n" for line in script.stream_end
+                )
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(body.encode())
+                return
+            usage = {
+                "prompt_tokens": script.prompt,
+                "prompt_tokens_details": {"cached_tokens": script.cached},
+            }
+            if request.get("tools"):
+                call = {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": script.arguments},
+                }
+                message: dict[str, Any] = {"role": "assistant", "tool_calls": [call]}
+            else:
+                message = {"role": "assistant", "content": script.text}
+                usage = {"prompt_tokens": 9}
+            self._json(200, {"choices": [{"index": 0, "message": message}], "usage": usage})
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def close() -> None:
+        server.shutdown()
+        server.server_close()
+
+    return f"http://127.0.0.1:{server.server_address[1]}", close
+
+
+def _scripted(script: _Script, *, key: str | None = None) -> Any:
+    base, close = _fake_server(script)
+    try:
+        return run_check(TOOLS["opencode"], ServerInfo(base, key, "tiny"), timeout=1.0)
+    finally:
+        close()
+
+
+def _step(report: Any, number: int) -> Any:
+    return next(step for step in report.steps if step.id == number)
+
+
+class TestCheckSteps:
+    def test_a_working_server_passes_every_step(self) -> None:
+        report = _scripted(_Script())
+
+        assert [step.ok for step in report.steps] == [True] * 7, check_lines(report)
+
+    def test_a_server_still_loading_fails_ready_after_the_timeout(self) -> None:
+        script = _Script()
+        script.health = (503, {"status": "starting"})
+
+        report = _scripted(script)
+
+        assert [step.id for step in report.steps] == [1]
+        assert report.steps[0].ok is False
+        assert "--timeout" in (report.steps[0].fix or "")
+
+    def test_a_missing_alias_names_the_flag_that_adds_it(self) -> None:
+        script = _Script()
+        script.models = [{"id": "other", "max_context_tokens": 65536}]
+
+        step = _step(_scripted(script), 2)
+
+        assert step.ok is False
+        assert step.fix == "serve every name the tool sends: --served-model-name tiny"
+
+    def test_empty_text_fails_the_text_step(self) -> None:
+        script = _Script()
+        script.text = ""
+
+        assert _step(_scripted(script), 3).ok is False
+
+    def test_a_stream_without_its_terminal_event_fails(self) -> None:
+        script = _Script()
+        script.stream_end = []
+
+        step = _step(_scripted(script), 4)
+
+        assert step.ok is False
+        assert "does not end with" in step.detail
+        assert "proxy" in (step.fix or "")
+
+    def test_tool_arguments_that_are_not_schema_json_fail(self) -> None:
+        for arguments in ('{"path": ', '{"file": "a"}', '{"path": "' + "x" * 41 + '"}'):
+            script = _Script()
+            script.arguments = arguments
+
+            assert _step(_scripted(script), 5).ok is False, arguments
+
+    def test_a_cache_miss_says_where_the_prompts_diverge(self) -> None:
+        script = _Script()
+        script.cached = 0
+
+        step = _step(_scripted(script), 6)
+
+        assert step.ok is False
+        assert "diverge in the cache at token 0" in step.detail
+
+    def test_a_server_without_a_prefix_cache_is_not_measured(self) -> None:
+        script = _Script()
+        script.models[0]["prefix_cache"] = False
+
+        report = _scripted(script)
+
+        assert _step(report, 6).ok is None
+        assert script.posts == 3  # no repeat was sent
+        assert report.ok
+
+    def test_too_short_a_context_fails_with_the_plan_command(self) -> None:
+        script = _Script()
+        script.models[0]["max_context_tokens"] = 4096
+
+        step = _step(_scripted(script), 7)
+
+        assert step.ok is False
+        assert "ayaka plan <model> --for opencode" in (step.fix or "")
+
+    def test_a_server_that_breaks_mid_check_fails_steps_instead_of_raising(self) -> None:
+        script = _Script()
+        base, close = _fake_server(script)
+        close()  # health is never answered, nor anything after
+
+        report = run_check(TOOLS["opencode"], ServerInfo(base, None, "tiny"), timeout=0.5)
+
+        assert report.steps[0].ok is False
+        assert "nothing" in report.steps[0].detail
+
+
+class TestCheckCommand:
+    def test_json_output_has_the_stable_shape_and_exit_codes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        key = tmp_path / "key"
+        key.write_text("sk-secret-123\n", encoding="utf-8")
+        script = _Script()
+        base, close = _fake_server(script)
+        try:
+            argv = ["connect", "opencode", "--check", "--url", base, "--model", "tiny"]
+            argv += ["--api-key-file", str(key), "--output", "json", "--timeout", "2"]
+            passed = main(argv)
+            first = capsys.readouterr().out
+            script.text = ""
+            failed = main(argv)
+            second = capsys.readouterr().out
+        finally:
+            close()
+
+        report = json.loads(first)
+        assert passed == EXIT_OK
+        assert failed == 1
+        assert set(report) == {"tool", "version", "protocol", "ok", "ayaka", "steps"}
+        assert [set(step) for step in report["steps"]] == [
+            {"id", "name", "ok", "detail", "fix"}
+        ] * 7
+        assert json.loads(second)["ok"] is False
+        assert "sk-secret-123" not in first + second
+
+    def test_a_check_of_an_unknown_tool_cannot_run(self) -> None:
+        assert main(["connect", "some-editor", "--check", "--url", "http://127.0.0.1:9"]) == 2
+
+
+class TestNoKeyLeaks:
+    def test_the_key_never_appears_in_printed_configurations(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        key = tmp_path / "key"
+        key.write_text("sk-secret-123\n", encoding="utf-8")
+
+        for tool in TOOLS:
+            assert (
+                main(
+                    [
+                        "connect",
+                        tool,
+                        "--url",
+                        "http://127.0.0.1:9",
+                        "--model",
+                        "m",
+                        "--api-key-file",
+                        str(key),
+                    ]
+                )
+                == EXIT_OK
+            )
+
+        assert "sk-secret-123" not in capsys.readouterr().out
+
+    def test_the_key_never_appears_in_the_write_diff(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        key = tmp_path / "key"
+        key.write_text("sk-secret-123\n", encoding="utf-8")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        (tmp_path / "claude").mkdir()
+        (tmp_path / "claude" / "settings.json").write_text('{"model": "opus"}\n', encoding="utf-8")
+
+        code = main(
+            [
+                "connect",
+                "claude-code",
+                "--write",
+                "--yes",
+                "--url",
+                "http://127.0.0.1:9",
+                "--model",
+                "m",
+                "--api-key-file",
+                str(key),
+            ]
+        )
+
+        out = capsys.readouterr().out
+        written = json.loads((tmp_path / "claude" / "settings.json").read_text(encoding="utf-8"))
+        assert code == EXIT_OK
+        assert "<api key>" in out
+        assert "sk-secret-123" not in out
+        assert written["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-secret-123"  # the tool needs it
+        assert written["model"] == "opus"
+        backups = list((tmp_path / "claude").glob("settings.json.*.bak"))
+        assert [b.read_text(encoding="utf-8") for b in backups] == ['{"model": "opus"}\n']
+
+
+class TestWriteRefusals:
+    def test_a_broken_file_is_not_overwritten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "settings.json").write_text("{not json", encoding="utf-8")
+
+        code = main(
+            [
+                "connect",
+                "claude-code",
+                "--write",
+                "--yes",
+                "--url",
+                "http://127.0.0.1:9",
+                "--model",
+                "m",
+            ]
+        )
+
+        assert code == EXIT_USAGE
+        assert (tmp_path / "settings.json").read_text(encoding="utf-8") == "{not json"
+
+    def test_two_backups_in_one_second_are_both_kept(self, tmp_path: Path) -> None:
+        path = tmp_path / "f.json"
+        for content in ("1\n", "2\n", "3\n"):
+            write_config(path, content, confirm=lambda question: True, show=lambda _: None)
+
+        backups = sorted(p.read_text(encoding="utf-8") for p in tmp_path.glob("f.json.*.bak"))
+        assert backups == ["1\n", "2\n"]
+
+    def test_codex_names_a_key_variable_only_when_the_server_has_a_key(self) -> None:
+        keyless = tomllib.loads(render_config(TOOLS["codex"], ServerInfo("http://h", None, "m")))
+        keyed = tomllib.loads(render_config(TOOLS["codex"], _SERVER))
+
+        assert "env_key" not in keyless["model_providers"]["ayaka"]
+        assert keyed["model_providers"]["ayaka"]["env_key"] == "AYAKA_API_KEY"
+
+
+class TestObserve:
+    @staticmethod
+    def _count(text: str) -> int:
+        return len(text.encode())
+
+    def test_the_largest_request_is_the_floor_and_the_version_comes_from_the_agent(self) -> None:
+        found: list[Any] = []
+        observe = observer(TOOLS["opencode"], "tok", self._count, found, installed="9.9")
+        title = {"messages": [{"role": "system", "content": "title please"}]}
+        agent = {
+            "messages": [{"role": "system", "content": "you are an agent"}],
+            "tools": [{"type": "function", "function": {"name": "read"}}],
+        }
+        headers = {"User-Agent": "opencode/latest/2.3.2/cli"}
+
+        observe("/v1/chat/completions", headers, json.dumps(title).encode())
+        observe("/v1/chat/completions", headers, json.dumps(agent).encode())
+        observe("/v1/chat/completions", {}, b"not json")
+
+        floor = largest(found)
+        assert len(found) == 2
+        assert floor is not None
+        assert floor.tool_count == 1
+        assert floor.version == "2.3.2"
+        assert floor.tokenizer == "tok"
+        assert found[0].version == "2.3.2"
+
+    def test_another_tools_agent_is_not_taken_for_this_ones_version(self) -> None:
+        assert agent_version({"user-agent": "claude-cli/2.1.327 (external)"}, "claude-cli") == (
+            "2.1.327"
+        )
+        assert agent_version({"user-agent": "codex_exec/0.163.0 (Windows)"}, "codex_exec") == (
+            "0.163.0"
+        )
+        assert agent_version({"user-agent": "curl/8"}, "opencode") is None
+
+    def test_an_observation_file_holds_counts_and_a_new_row_per_run(self, tmp_path: Path) -> None:
+        found: list[Any] = []
+        observe = observer(TOOLS["claude-code"], "tok", self._count, found)
+        body = {"system": "secret system text", "messages": [{"role": "user", "content": "hi"}]}
+        observe("/v1/messages", {"user-agent": "claude-cli/2.1.327"}, json.dumps(body).encode())
+
+        save_observation(found[0], tmp_path)
+        path = save_observation(found[0], tmp_path)
+
+        rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        assert len(rows) == 2
+        assert rows[0]["fixed_tokens"] == len("secret system text")
+        assert "secret" not in path.read_text(encoding="utf-8")
+
+    def test_the_proxy_answers_502_when_the_server_is_gone(self) -> None:
+        stop = threading.Event()
+        port = serve_proxy(0, "http://127.0.0.1:9", lambda path, headers, body: None, stop=stop)
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/chat/completions", data=b"{}", method="POST"
+            )
+            with pytest.raises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)  # noqa: S310  # local
+        finally:
+            stop.set()
+        caught.value.close()
+        assert caught.value.code == 502

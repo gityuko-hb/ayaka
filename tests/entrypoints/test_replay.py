@@ -46,6 +46,7 @@ def _let_the_adapters_propagate() -> Iterator[None]:
     yield
     logger.handlers, logger.level, logger.propagate = handlers, level, propagate
 
+
 _TERMINAL = {
     "anthropic": "message_stop",
     "openai-responses": "response.completed",

@@ -275,7 +275,11 @@ def _connect_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser
         "--record", type=Path, metavar="DIR", help="also keep each request in DIR (--observe)"
     )
     connect.add_argument(
-        "--count", type=int, default=1, metavar="N", help="requests to wait for (--observe)"
+        "--count",
+        type=int,
+        default=3,
+        metavar="N",
+        help="model requests to wait for; the largest is the tool's floor (--observe)",
     )
     connect.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
     connect.add_argument("-v", "--verbose", action="count", default=0, help="log more")
@@ -363,6 +367,13 @@ def _plan_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
     )
     plan.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
+    plan.add_argument(
+        "--for",
+        dest="for_tool",
+        choices=("claude-code", "codex", "opencode"),
+        help="also say whether one request holds this coding tool's measured prompt "
+        "(exit 5 when not)",
+    )
     _engine_flags(plan)
     plan.add_argument("-v", "--verbose", action="count", default=0, help="log more")
 
@@ -611,7 +622,15 @@ def _plan(args: argparse.Namespace) -> int:
     from dataclasses import asdict, replace
 
     from ayaka.engine.build import plan_engine
-    from ayaka.entrypoints.plan import plan_lines, plan_report, shortfall_lines, shortfall_of
+    from ayaka.entrypoints.connect import tool_record
+    from ayaka.entrypoints.plan import (
+        plan_lines,
+        plan_report,
+        shortfall_lines,
+        shortfall_of,
+        tool_fit,
+        tool_fit_lines,
+    )
 
     config = _engine_config(args, max_running=args.max_running)
     # A plan never downloads: a repo id must already be in the Hub cache.
@@ -627,12 +646,17 @@ def _plan(args: argparse.Namespace) -> int:
             for line in shortfall_lines(shortfall):
                 print(line)
         return EXIT_MEMORY
+    record = tool_record(args.for_tool) if args.for_tool else None
+    fit = tool_fit(plan, record) if record is not None else None
     if args.output == "json":
-        print(json.dumps(plan_report(plan, args.model), indent=2))
+        report = plan_report(plan, args.model)
+        if fit is not None:
+            report["for"] = asdict(fit) | {"needed_tokens": fit.needed_tokens, "fits": fit.fits}
+        print(json.dumps(report, indent=2))
     else:
-        for line in plan_lines(plan, args.model):
+        for line in plan_lines(plan, args.model) + (tool_fit_lines(fit) if fit else []):
             print(line)
-    return EXIT_OK
+    return EXIT_MEMORY if fit is not None and fit.fits is False else EXIT_OK
 
 
 def _info(args: argparse.Namespace) -> int:
@@ -700,7 +724,8 @@ def _models(url: str, key: str | None) -> list[dict[str, object]]:
     headers = {"authorization": f"Bearer {key}"} if key else {}
     request = urllib.request.Request(url.rstrip("/") + "/v1/models", headers=headers)  # noqa: S310
     try:
-        with urllib.request.urlopen(request, timeout=3) as response:  # noqa: S310
+        # A local server answers at once; a second keeps a stopped one from stalling the print.
+        with urllib.request.urlopen(request, timeout=1) as response:  # noqa: S310
             listing: object = json.loads(response.read())
     except (OSError, ValueError):
         return []
@@ -766,8 +791,20 @@ def _connect(args: argparse.Namespace) -> int:
         print(redact(render_config(record, server, ""), server), end="")
         print(f"# then: {record.usage}")
         return EXIT_OK
+    for name in record.alternates:
+        if (path.parent / name).exists() and not path.exists():
+            raise InvalidRequestError(
+                f"{path.parent / name} holds this tool's settings and may carry comments a "
+                "rewrite would drop; merge the printed configuration into it by hand "
+                f"(ayaka connect {record.name})"
+            )
     current = path.read_text(encoding="utf-8") if path.exists() else ""
-    content = render_config(record, server, current)
+    try:
+        content = render_config(record, server, current)
+    except ValueError as exc:
+        raise InvalidRequestError(
+            f"{path} is not a JSON object Ayaka can merge into ({exc}); fix it or move it away"
+        ) from exc
     interactive = sys.stdin is not None and sys.stdin.isatty()
     if not args.yes and not interactive:
         raise InvalidRequestError("--write without a terminal needs --yes")
@@ -799,8 +836,10 @@ def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -
     from ayaka.configs.tokenizer import tokenizer_config_from_source
     from ayaka.entrypoints.connect import (
         ObservedPrompt,
+        largest,
         observer,
         recorder,
+        redact,
         render_config,
         save_observation,
         serve_proxy,
@@ -822,24 +861,32 @@ def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -
 
     found: list[ObservedPrompt] = []
     stop = threading.Event()
-    keep = recorder(args.record, limit=args.count) if args.record is not None else None
-    count_seen = [0]
-    observe = observer(record.name, tool_version(record), count, found)
+    keep = recorder(args.record) if args.record is not None else None
+    observe = observer(record, args.tokenizer, count, found, installed=tool_version(record))
 
     def on_request(path: str, headers: dict[str, str], body: bytes) -> None:
+        before = len(found)
         observe(path, headers, body)
-        done = keep(path, headers, body) if keep is not None else False
-        if keep is None and found:
-            count_seen[0] += 1
-            done = count_seen[0] >= args.count
-        if done:
+        if keep is not None:
+            keep(path, headers, body)
+        if len(found) > before:
+            latest = found[-1]
+            _say(
+                f"request {len(found)}: {latest.tool_count} tools, fixed prompt "
+                f"{latest.fixed_tokens} tokens"
+            )
+        if len(found) >= args.count:
             stop.set()
 
     port = serve_proxy(args.port, server.base_url, on_request, stop=stop, host=args.listen)
-    proxied = replace(server, base_url=f"http://127.0.0.1:{port}")
-    _say(f"listening on http://127.0.0.1:{port}, forwarding to {server.base_url}")
-    _say(f"point {record.name} at the proxy with this configuration, then send one prompt:")
-    print(render_config(record, proxied, ""), end="")
+    shown = "127.0.0.1" if args.listen in ("0.0.0.0", "::") else args.listen  # noqa: S104
+    proxied = replace(server, base_url=f"http://{shown}:{port}")
+    _say(f"listening on {args.listen}:{port}, forwarding to {server.base_url}")
+    _say(
+        f"point {record.name} at the proxy with this configuration, then send one prompt "
+        f"(the proxy stops after {args.count} model requests, or on Ctrl-C):"
+    )
+    print(redact(render_config(record, proxied, ""), server), end="")
     if args.record is not None:
         _say(
             f"warning: the requests are kept in {args.record}, prompts included; "
@@ -849,16 +896,18 @@ def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -
         stop.wait()
     except KeyboardInterrupt:
         stop.set()
-    if not found:
+    observed = largest(found)
+    if observed is None:
         _say("no model request arrived")
         return EXIT_USAGE
-    observed = found[0]
     out = args.out or Path.cwd() / "ayaka-observations"
     saved = save_observation(observed, out)
     print(
-        f"{record.name} {observed.version or ''}: system {observed.system_tokens} tokens, "
-        f"{observed.tool_count} tools {observed.tools_tokens} tokens, fixed prompt "
-        f"{observed.fixed_tokens} tokens (counts only, in {saved})"
+        f"{record.name} {observed.version or '(version unknown)'}: the largest of "
+        f"{len(found)} requests has system {observed.system_tokens} tokens and "
+        f"{observed.tool_count} tools {observed.tools_tokens} tokens: fixed prompt "
+        f"{observed.fixed_tokens} tokens with the {args.tokenizer} tokenizer "
+        f"(counts only, in {saved})"
     )
     return EXIT_OK
 

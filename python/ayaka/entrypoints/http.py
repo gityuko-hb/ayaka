@@ -487,6 +487,7 @@ class Serving:
         self.output_format = OutputFormat()
         self.max_model_len = 0
         self.max_context_tokens = 0
+        self.prefix_cache: bool | None = None
 
     @property
     def model_name(self) -> str:
@@ -499,7 +500,8 @@ class Serving:
         """Start serving with a started engine."""
         self.llm = llm
         self.max_model_len = llm.engine.tokenizer.max_model_len
-        self.max_context_tokens = min(self.max_model_len, llm.engine.kv.max_tokens_per_request)
+        self.max_context_tokens = min(self.max_model_len, llm.engine.kv.max_context_tokens)
+        self.prefix_cache = llm.engine.kv.prefix_caching
         if output_format is not None:
             self.output_format = output_format
         self.status = Readiness.READY
@@ -948,6 +950,8 @@ async def _models(request: web.Request) -> web.Response:
             "max_model_len": serving.max_model_len or None,
             # The longest context one request gets on this machine (the KV cache's limit).
             "max_context_tokens": serving.max_context_tokens or None,
+            # Whether identical prompt prefixes are read from the cache (``ayaka connect`` step 6).
+            "prefix_cache": serving.prefix_cache,
         }
         for name in serving.model_names
     ]

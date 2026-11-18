@@ -168,6 +168,13 @@ class KVCacheManager:
         return self._table.max_blocks_per_request * self._block_size
 
     @property
+    def max_context_tokens(self) -> int:
+        """Longest context one request can reach: its table row, or every usable block of the
+        scarcest pool (the padding block is never given out), whichever is shorter."""
+        usable = min(pool.num_blocks for pool in self._pools) - 1
+        return min(self.max_tokens_per_request, usable * self._block_size)
+
+    @property
     def free_blocks(self) -> int:
         """Blocks a request could still be given in the scarcest group."""
         return min(pool.free_count for pool in self._pools)
