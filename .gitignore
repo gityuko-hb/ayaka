@@ -218,6 +218,15 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# docs/ holds internal planning (ROADMAP/, strategy/) next to the public pages: only the public
+# files below are tracked, each by name, so a new internal note is never published by accident.
 docs/*
 !docs/EXPERIMENTS.md
+!docs/INSTALL.md
+!docs/TROUBLESHOOTING.md
+!docs/CAPABILITIES.md
+!docs/capabilities.toml
+!docs/SAFETY.md
+!docs/AI_SETUP.md
+!docs/AI_REFERENCE.md
 third_party/

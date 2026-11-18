@@ -1,0 +1,42 @@
+# The source of docs/CAPABILITIES.md. Edit this file, then run
+#     uv run python tools/generate_capabilities.py
+# A row says what is known about one model at one precision on one machine:
+#   status = "runs"          a result file shows it ran; the numbers come from that file
+#   status = "untested"      nobody has run it; no number is shown
+#   status = "does-not-run"  a result file shows it does not; `reason` says why
+# Numbers are never written here: they are read from `result`.
+
+version = 1
+
+[[row]]
+model = "unsloth/Llama-3.2-1B-Instruct"
+precision = "fp16"
+machine = "RTX 3050 Laptop GPU 4 GB, WSL2"
+status = "runs"
+result = "benchmarks/results/2026-11-18-rtx-3050-laptop-gpu/results.json"
+
+[[row]]
+model = "unsloth/Llama-3.2-1B-Instruct"
+precision = "fp16, full 131,072-token context"
+machine = "RTX 3050 Laptop GPU 4 GB, WSL2"
+status = "does-not-run"
+result = "benchmarks/results/2026-11-18-rtx-3050-laptop-gpu/plan-full-context.json"
+reason = "the KV cache for the whole context does not fit next to the weights; pass --kv-reserve-tokens"
+
+[[row]]
+model = "unsloth/Llama-3.2-1B-Instruct"
+precision = "bf16"
+machine = "RTX 3050 Laptop GPU 4 GB, WSL2"
+status = "untested"
+
+[[row]]
+model = "HuggingFaceTB/SmolLM2-135M"
+precision = "fp16"
+machine = "RTX 3050 Laptop GPU 4 GB, WSL2"
+status = "untested"
+
+[[row]]
+model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+precision = "fp16"
+machine = "RTX 3050 Laptop GPU 4 GB, WSL2"
+status = "untested"

@@ -2,7 +2,26 @@
 
 High-performance LLM inference engine with CUDA/C++ native extensions.
 
-> **Status:** early development. The API will change.
+> **Status:** early development. The API will change. There is no release on PyPI yet; install from a checkout.
+
+## Quickstart
+
+On Linux or WSL2 with an NVIDIA GPU, from a checkout:
+
+```sh
+uv sync --extra cu130 --extra serve --extra structured --extra hf
+uv run ayaka serve HuggingFaceTB/SmolLM2-135M --device cuda --dtype fp16
+```
+
+The server answers OpenAI and Anthropic clients on `127.0.0.1:8000`. On the development machine (an RTX 3050 Laptop
+GPU with 4 GB, under WSL2), `ayaka bench` measured Llama-3.2-1B-Instruct in fp16 reading a 4K-token prompt at
+3,668 tok/s and generating 53.4 tok/s after it ([result](benchmarks/results/2026-11-18-rtx-3050-laptop-gpu/results.json)).
+
+- [Install](docs/INSTALL.md): extras, WSL2, first run.
+- [Troubleshooting](docs/TROUBLESHOOTING.md): symptom, cause, fix.
+- [Capabilities](docs/CAPABILITIES.md): what runs where, with the result behind every number.
+- [Safety](docs/SAFETY.md): telemetry, network use, what stays on the machine, checkpoint trust.
+- For agents: [setting Ayaka up for someone](docs/AI_SETUP.md) and the [reference](docs/AI_REFERENCE.md).
 
 ## Serving
 
