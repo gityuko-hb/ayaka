@@ -165,7 +165,11 @@ _STREAM = {
 
 
 async def _run_server(
-    checkpoint: TinyCheckpoint, config: ServerConfig, *, slow: float = 0.0
+    checkpoint: TinyCheckpoint,
+    config: ServerConfig,
+    *,
+    slow: float = 0.0,
+    record: Path | None = None,
 ) -> tuple[asyncio.Task[None], asyncio.Event, str, list[str]]:
     stop = asyncio.Event()
     ready: asyncio.Future[str] = asyncio.get_running_loop().create_future()
@@ -179,6 +183,7 @@ async def _run_server(
             stop=stop,
             handle_signals=False,
             on_ready=lambda host, port: ready.set_result(f"http://{host}:{port}"),
+            record=record,
         )
     )
     url = await asyncio.wait_for(ready, 60)
@@ -186,6 +191,28 @@ async def _run_server(
 
 
 class TestLifeCycle:
+    def test_record_writes_each_request_but_not_the_warm_up(
+        self, checkpoint: TinyCheckpoint, tmp_path: Path
+    ) -> None:
+        from ayaka.engine.recorder import read_session
+
+        async def main_() -> None:
+            config = ServerConfig(port=0)
+            task, stop, url, said = await _run_server(checkpoint, config, record=tmp_path)
+            async with aiohttp.ClientSession() as session:
+                body = {**_STREAM, "stream": False, "max_tokens": 5}
+                for _ in range(2):
+                    assert (await session.post(f"{url}/v1/chat/completions", json=body)).ok
+            stop.set()
+            await asyncio.wait_for(task, 30)
+            assert any(line.startswith("recording every request to") for line in said)
+
+        asyncio.run(main_())
+        [path] = tmp_path.glob("session-*.jsonl")
+        records = read_session(path)
+        assert len(records) == 2
+        assert [record.completion_tokens for record in records] == [5, 5]
+
     def test_stopping_drains_requests_in_flight_and_refuses_new_ones(
         self, checkpoint: TinyCheckpoint
     ) -> None:

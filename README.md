@@ -26,6 +26,26 @@ JSON answers (`response_format`, `text.format`, `output_format`), forced tool ca
 tool arguments need the `structured` extra (llguidance): `uv sync --extra cpu --extra serve --extra structured`.
 With it, a request that offers tools also gets its calls checked by a grammar while the rest of the answer stays free.
 
+### Benchmark
+
+`ayaka bench MODEL` loads the model in this process (the same flags as `serve`) and measures:
+
+- prompt read (cold) and generation, for three fixed prompt groups at 1K, 4K, 16K tokens and the longest prompt the
+  machine holds;
+- the first token, with a cold and a warm system prompt;
+- a short agent session;
+- peak memory.
+
+It also runs two sanity checks: a forced tool call and a JSON answer, each checked against its schema. Every raw run
+goes to `results.json` (`benchmarks/results/<date>-<machine>/` unless `--out` says otherwise), together with the
+machine, the versions, the power source and the GPU temperature. One summary line goes to `benchmarks/history/` when
+that folder exists. A failed sanity check marks the result invalid and exits 2; the speed numbers stay, marked.
+`--quick` measures 1K and 4K only.
+
+`--record DIR` on `bench` or `serve` writes every request's prompt and output token ids, sampling parameters, times and
+cache use to a versioned session file in `DIR`. It is off by default and the file is owner-only: it holds the
+session's content in token form.
+
 ### Coding tools
 
 `ayaka connect TOOL` (`claude-code`, `codex` or `opencode`) prints what the tool needs to use a running server;

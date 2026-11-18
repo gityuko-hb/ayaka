@@ -8,6 +8,7 @@
     ayaka info
     ayaka config show
     ayaka connect claude-code [--write | --check | --observe]
+    ayaka bench MODEL [--quick] [--out DIR] [--record DIR]
 
 ``MODEL`` is a local directory or a Hugging Face repo id. ``run`` writes the generated text to
 standard output as it is produced; everything else (the line that says what was started,
@@ -140,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "info": _info,
             "config": _config_show,
             "connect": _connect,
+            "bench": _bench,
         }[args.command]
         return handler(args)
     except KeyboardInterrupt:
@@ -232,7 +234,89 @@ def _parser() -> argparse.ArgumentParser:
     _server_flags(show)
     show.add_argument("-v", "--verbose", action="count", default=0, help="log more")
     _connect_parser(commands)
+    _bench_parser(commands)
     return parser
+
+
+def _bench_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
+    bench = commands.add_parser(
+        "bench",
+        help="measure a model on this machine: prompt read, generation, first token, sanity",
+        description="Load a model in-process and measure prompt read (cold), generation, the "
+        "first token (cold and warm), a short agent session, peak memory, and two sanity checks "
+        "(a forced tool call, a JSON answer). Writes results.json with every raw run. Exit codes: "
+        "0 done, 1 the benchmark failed, 2 a sanity check failed (the result is written and "
+        "marked invalid).",
+    )
+    bench.add_argument("model", help="a local model directory or a Hugging Face repo id")
+    bench.add_argument(
+        "--out",
+        type=Path,
+        metavar="DIR",
+        help="where results.json goes (benchmarks/results/<date>-<machine>/)",
+    )
+    bench.add_argument(
+        "--history",
+        type=Path,
+        metavar="DIR",
+        help="append the summary line to DIR/bench.jsonl (benchmarks/history when it exists)",
+    )
+    bench.add_argument("--quick", action="store_true", help="1K and 4K only, two repetitions")
+    bench.add_argument("--seed", type=int, default=0, help="the run's seed (sampling is greedy)")
+    bench.add_argument(
+        "--record",
+        type=Path,
+        metavar="DIR",
+        help="write every benchmark request as token ids to DIR (owner-only)",
+    )
+    bench.add_argument("--json", action="store_true", help="print results.json, not the summary")
+    bench.add_argument(
+        "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
+    )
+    _engine_flags(bench)
+    bench.add_argument("-v", "--verbose", action="count", default=0, help="log more")
+
+
+def _bench(args: argparse.Namespace) -> int:
+    """Run the benchmark and write its results; exit 2 when a sanity check failed."""
+    import json
+
+    from ayaka.entrypoints.bench import (
+        BenchOptions,
+        default_out,
+        run_bench,
+        summary_lines,
+        validate_results,
+        write_results,
+    )
+
+    config = _engine_config(args, max_running=args.max_running)
+    options = BenchOptions(model=args.model, quick=args.quick, seed=args.seed, record=args.record)
+    if args.record is not None:
+        _say(f"warning: {args.record} will hold the benchmark's prompts and answers as token ids")
+    try:
+        results = run_bench(config, options, say=_say)
+    except AyakaError:
+        raise  # a model that does not load or fit exits with its own code, as serve does
+    except (RuntimeError, OSError) as exc:
+        _say(f"the benchmark failed: {exc}")
+        return EXIT_BUG
+    problems = validate_results(results)
+    if problems:
+        _say("results.json does not validate: " + "; ".join(problems))
+        return EXIT_BUG
+    history = args.history
+    if history is None and (Path.cwd() / "benchmarks" / "history").is_dir():
+        history = Path.cwd() / "benchmarks" / "history"
+    out = args.out or default_out(results, Path.cwd())
+    path, line = write_results(results, out, history)
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        for text in summary_lines(results):
+            print(text)
+    _say(f"wrote {path}" + (f"; summary line in {line}" if line else ""))
+    return EXIT_OK if results["valid"] else EXIT_USAGE
 
 
 def _connect_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
@@ -349,6 +433,13 @@ def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser])
         "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
     )
     _engine_flags(serve)
+    serve.add_argument(
+        "--record",
+        type=Path,
+        metavar="DIR",
+        help="write every request's prompt and output token ids to DIR (owner-only; off by "
+        "default; the files hold the session's content)",
+    )
     serve.add_argument(
         "-v", "--verbose", action="count", default=0, help="log more; twice for debug"
     )
@@ -620,7 +711,7 @@ def _serve(args: argparse.Namespace) -> int:
 
     for line in describe_server(config, engine, args.model):
         _say(line)
-    asyncio.run(serve(config, engine, model_name=args.model, say=_say))
+    asyncio.run(serve(config, engine, model_name=args.model, say=_say, record=args.record))
     return EXIT_OK
 
 

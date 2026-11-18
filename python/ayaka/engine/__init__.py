@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ayaka.engine.input import InputProcessor
     from ayaka.engine.llm import LLM
     from ayaka.engine.output import OutputProcessor
+    from ayaka.engine.recorder import SessionRecorder
 
 __all__ = [
     "LLM",
@@ -31,6 +32,7 @@ __all__ = [
     "InputProcessor",
     "OutputProcessor",
     "RequestStream",
+    "SessionRecorder",
     "build_engine",
     "plan_engine",
 ]
@@ -42,6 +44,7 @@ _EXPORTS = {
     "input": ("InputProcessor",),
     "llm": ("LLM",),
     "output": ("OutputProcessor",),
+    "recorder": ("SessionRecorder",),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())
