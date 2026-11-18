@@ -167,6 +167,24 @@ def _git(*args: str) -> str | None:
     return result.stdout.strip()
 
 
+def _dirty() -> bool | None:
+    """Whether the tree differs from its commit; line endings alone (a Windows checkout's CRLF)
+    do not count, nor do untracked files."""
+    root = Path(__file__).resolve().parents[3]
+    if not (root / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603  # a fixed argv
+            ["git", "-C", str(root), "diff", "--quiet", "--ignore-cr-at-eol", "HEAD", "--"],  # noqa: S607
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {0: False, 1: True}.get(result.returncode)
+
+
 def _running_on_wsl() -> bool:
     try:
         return "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
@@ -282,7 +300,6 @@ def _machine() -> dict[str, object]:
     cuda = torch.cuda.is_available()
     free, total = torch.cuda.mem_get_info() if cuda else (None, None)
     commit = _git("rev-parse", "HEAD")
-    status = _git("status", "--porcelain")
     return {
         "gpu": torch.cuda.get_device_name(0) if cuda else None,
         "capability": list(torch.cuda.get_device_capability(0)) if cuda else None,
@@ -299,7 +316,7 @@ def _machine() -> dict[str, object]:
         "ayaka": {
             "version": __version__,
             "commit": commit,
-            "dirty": bool(status) if status is not None else None,
+            "dirty": _dirty(),
         },
     }
 
