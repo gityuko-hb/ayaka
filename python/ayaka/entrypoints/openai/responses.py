@@ -348,7 +348,11 @@ def _usage(usage: UsageEvent | None) -> dict[str, object] | None:
         return None
     return {
         "input_tokens": usage.prompt_tokens,
-        "input_tokens_details": {"cached_tokens": usage.cached_tokens},
+        # cache_write_tokens: the field is required by the current openai client library.
+        "input_tokens_details": {
+            "cached_tokens": usage.cached_tokens,
+            "cache_write_tokens": 0,
+        },
         "output_tokens": usage.completion_tokens,
         "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens},
         "total_tokens": usage.prompt_tokens + usage.completion_tokens,

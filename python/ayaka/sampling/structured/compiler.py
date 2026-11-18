@@ -166,11 +166,11 @@ class GrammarCompiler:
         if (
             params.kind is ConstraintKind.TOOL_CALL
             and params.syntax is not None
-            and params.syntax.open_token is None
+            and not params.syntax.opening
         ):
             raise UnsupportedFeatureError(
-                f"tool-call constraints need the opening marker {params.syntax.open!r} to be one "
-                "token of this model's vocabulary",
+                f"tool-call constraints need the tokens of the opening marker "
+                f"{params.syntax.open!r}",
                 context={"features": ("structured tool calls",)},
             )
         key = hashlib.blake2b(params.canonical().encode(), digest_size=16).hexdigest()
@@ -202,7 +202,7 @@ class GrammarCompiler:
             vocab_size=self._vocab,
             eos_token_ids=self._eos,
             start_after=params.start_after,
-            open_token=syntax.open_token if is_call and syntax is not None else None,
+            opening=syntax.opening if is_call and syntax is not None else (),
             forced=is_call and params.tool_choice != "auto",
             parallel=params.parallel,
         )

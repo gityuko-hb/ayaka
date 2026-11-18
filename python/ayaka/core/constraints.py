@@ -71,12 +71,21 @@ class ToolCallSyntax:
         close_token: The closing marker's token id when it is one token. The grammar then
             demands that token, because the parser recognises a one-token marker by its id and
             the same characters spelled byte by byte would not close the call.
+        open_ids: The tokens of the opening marker as the tokenizer spells it, when it is not one
+            token: a forced call is made to write exactly these, and a lazy call starts when the
+            model wrote them (another spelling of the same text is not recognised).
     """
 
     open: str
     close: str
     open_token: int | None = None
     close_token: int | None = None
+    open_ids: tuple[int, ...] = ()
+
+    @property
+    def opening(self) -> tuple[int, ...]:
+        """The tokens that open a call: the one marker token, or its spelling."""
+        return (self.open_token,) if self.open_token is not None else self.open_ids
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
