@@ -213,10 +213,23 @@ class VramSampler:
             return None
 
     def _run(self) -> None:
-        while not self._stop.wait(0.2):
-            value = self.used()
-            if value is not None:
-                self.peak = max(self.peak or 0, value)
+        # NVML is opened once for the whole slot: opening and closing it on every sample costs
+        # the driver enough to slow the engine being measured.
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+        except Exception:  # no NVML: no VRAM numbers, the rest stands
+            return
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            while not self._stop.wait(0.2):
+                used = int(pynvml.nvmlDeviceGetMemoryInfo(handle).used)
+                self.peak = max(self.peak or 0, used)
+        except Exception:  # a query that fails ends the sampling, not the run
+            return
+        finally:
+            pynvml.nvmlShutdown()
 
     def __enter__(self) -> VramSampler:
         self._thread.start()
@@ -495,6 +508,11 @@ def main(argv: list[str] | None = None) -> int:
     plan = Plan(prompts, args.rounds, args.max_tokens, args.timeout, args.api_key)
     for engine in engines:
         engine.version = _version(engine.command)
+    from ayaka.entrypoints.bench import power_source
+
+    power_start = power_source()
+    if power_start == "battery":
+        print("warning: on battery; the numbers will be lower than on mains, and are marked")
     running: list[str] = []
     slots: list[dict[str, Any]] = []
     started = datetime.now(UTC).isoformat(timespec="seconds")
@@ -508,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
         "started": started,
         "finished": datetime.now(UTC).isoformat(timespec="seconds"),
         "machine": machine(),
+        # ac, battery or unknown, when the run started and when it ended.
+        "power": [power_start, power_source()],
         "prompt_set": {"version": PROMPT_SET_VERSION, "prompts": [name for name, _ in prompts]},
         "sampling": {"temperature": 0, "max_tokens": plan.max_tokens, "ignore_eos": True},
         "engines": [

@@ -168,6 +168,7 @@ class TestRun:
         assert any("not the same file" in note for note in result["differences"])
         assert not any("precisions differ" in note for note in result["differences"])  # f16 = fp16
         assert all(len(slot["gpu_temperature_c"]) == 2 for slot in result["slots"])
+        assert len(result["power"]) == 2
         ratios = result["summary"]["ratios"]["median"]["prose-64"]
         assert ratios["ttft_cold_s"] < 1  # the fake ayaka reads its prompt faster
         assert compare.validate(result) == []
