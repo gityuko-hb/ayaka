@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from ayaka.__version__ import __version__
+from ayaka.core.errors import AyakaError
 from ayaka.entrypoints.bench_prompts import (
     GROUPS,
     PROMPT_SET_VERSION,
@@ -740,7 +741,13 @@ def run_bench(
                     "benchmark prompts)"
                 )
             runner = _Runner(llm, options)
-            results = _measure(runner, plan.max_context_tokens, options, say)
+            # The loaded engine's cache, not the plan: the start-up run may have measured more
+            # runtime memory than the plan assumed and given the cache fewer blocks.
+            longest = min(plan.max_context_tokens, llm.engine.kv.max_context_tokens)
+            try:
+                results = _measure(runner, longest, options, say)
+            except AyakaError as exc:  # a measurement the engine refused is the run failing
+                raise RuntimeError(f"a benchmark request failed: {exc}") from exc
         finally:
             llm.close()
             del llm
@@ -768,6 +775,7 @@ def run_bench(
         "backends": dict(plan.providers),
         "plan": {
             "max_context_tokens": plan.max_context_tokens,
+            "engine_context_tokens": longest,
             "max_running": plan.max_running,
             "kv_blocks": plan.kv_blocks,
             "block_size": plan.block_size,

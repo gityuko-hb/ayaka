@@ -249,6 +249,8 @@ class TestRun:
         assert {item["name"] for item in results["sanity"]} == {"tool call", "structured output"}
         assert results["valid"] is all(item["passed"] for item in results["sanity"])
         assert results["memory"]["samples"] > 0
+        plan = results["plan"]
+        assert plan["engine_context_tokens"] <= plan["max_context_tokens"]
         assert results["prompt_set"]["digests"]
         sessions = list((tmp_path / "rec").glob("session-*.jsonl"))
         assert len(sessions) == 1
