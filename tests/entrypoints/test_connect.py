@@ -6,6 +6,7 @@ import asyncio
 import http.server
 import json
 import threading
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -795,3 +796,39 @@ class TestObserve:
             stop.set()
         caught.value.close()
         assert caught.value.code == 502
+
+    def test_the_request_that_stops_the_proxy_still_gets_its_answer(self) -> None:
+        class Slow(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                del format, args
+
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers["content-length"]))
+                time.sleep(0.5)  # the proxy is asked to stop while this answer is on its way
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"late": true}')
+
+        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        stop, closed = threading.Event(), threading.Event()
+        port = serve_proxy(
+            0,
+            f"http://127.0.0.1:{upstream.server_address[1]}",
+            lambda path, headers, body: stop.set(),
+            stop=stop,
+            closed=closed,
+        )
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/messages", data=b"{}", method="POST"
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310  # local
+                answer = json.loads(response.read())
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+
+        assert answer == {"late": True}
+        assert closed.wait(10)

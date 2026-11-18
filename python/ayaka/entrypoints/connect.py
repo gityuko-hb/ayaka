@@ -1053,6 +1053,8 @@ def redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
 class _Proxy(http.server.ThreadingHTTPServer):
     upstream: str
     on_request: Callable[[str, dict[str, str], bytes], None]
+    active: int
+    idle: threading.Condition
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -1074,6 +1076,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return self.rfile.read(length) if length else b""
 
     def _forward(self, method: str) -> None:
+        with self.server.idle:
+            self.server.active += 1
+        try:
+            self._relay(method)
+        finally:
+            with self.server.idle:
+                self.server.active -= 1
+                self.server.idle.notify_all()
+
+    def _relay(self, method: str) -> None:
         body = self._body()
         headers = dict(self.headers.items())
         try:
@@ -1131,11 +1143,19 @@ def serve_proxy(
     *,
     stop: threading.Event,
     host: str = "127.0.0.1",
+    closed: threading.Event | None = None,
+    drain_timeout: float = 900.0,
 ) -> int:
-    """Forward every request to ``upstream`` until ``stop`` is set; return the port used."""
+    """Forward every request to ``upstream`` until ``stop`` is set; return the port used.
+
+    Once ``stop`` is set the proxy takes no new request, lets the ones in flight finish (the
+    request that set it included, up to ``drain_timeout`` seconds), closes, then sets ``closed``.
+    """
     proxy = _Proxy((host, port), _Handler)
     proxy.upstream = upstream
     proxy.on_request = on_request
+    proxy.active = 0
+    proxy.idle = threading.Condition()
     thread = threading.Thread(
         target=proxy.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True
     )
@@ -1144,8 +1164,12 @@ def serve_proxy(
 
     def close() -> None:
         stop.wait()
-        proxy.shutdown()
+        proxy.shutdown()  # no new request; the handlers in flight keep running
+        with proxy.idle:
+            proxy.idle.wait_for(lambda: proxy.active == 0, timeout=drain_timeout)
         proxy.server_close()
+        if closed is not None:
+            closed.set()
 
     threading.Thread(target=close, daemon=True).start()
     return bound

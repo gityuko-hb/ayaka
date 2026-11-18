@@ -878,7 +878,10 @@ def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -
         if len(found) >= args.count:
             stop.set()
 
-    port = serve_proxy(args.port, server.base_url, on_request, stop=stop, host=args.listen)
+    closed = threading.Event()
+    port = serve_proxy(
+        args.port, server.base_url, on_request, stop=stop, host=args.listen, closed=closed
+    )
     shown = "127.0.0.1" if args.listen in ("0.0.0.0", "::") else args.listen  # noqa: S104
     proxied = replace(server, base_url=f"http://{shown}:{port}")
     _say(f"listening on {args.listen}:{port}, forwarding to {server.base_url}")
@@ -894,6 +897,7 @@ def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -
         )
     try:
         stop.wait()
+        closed.wait()  # the last request reaches the tool before the proxy goes away
     except KeyboardInterrupt:
         stop.set()
     observed = largest(found)
