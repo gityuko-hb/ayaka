@@ -15,13 +15,13 @@ from typing import TYPE_CHECKING
 from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
-    from ayaka.model_loader.loader import load_model, load_weights
+    from ayaka.model_loader.loader import describe_model, load_model, load_weights
     from ayaka.model_loader.source import resolve_source
 
-__all__ = ["load_model", "load_weights", "resolve_source"]
+__all__ = ["describe_model", "load_model", "load_weights", "resolve_source"]
 
 _EXPORTS = {
-    "loader": ("load_model", "load_weights"),
+    "loader": ("describe_model", "load_model", "load_weights"),
     "source": ("resolve_source",),
 }
 

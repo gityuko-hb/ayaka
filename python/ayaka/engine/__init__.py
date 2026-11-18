@@ -17,7 +17,7 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
     from ayaka.engine.async_llm import AsyncLLM, RequestStream
-    from ayaka.engine.build import build_engine
+    from ayaka.engine.build import EnginePlan, build_engine, plan_engine
     from ayaka.engine.core import EngineCore
     from ayaka.engine.input import InputProcessor
     from ayaka.engine.llm import LLM
@@ -27,15 +27,17 @@ __all__ = [
     "LLM",
     "AsyncLLM",
     "EngineCore",
+    "EnginePlan",
     "InputProcessor",
     "OutputProcessor",
     "RequestStream",
     "build_engine",
+    "plan_engine",
 ]
 
 _EXPORTS = {
     "async_llm": ("AsyncLLM", "RequestStream"),
-    "build": ("build_engine",),
+    "build": ("EnginePlan", "build_engine", "plan_engine"),
     "core": ("EngineCore",),
     "input": ("InputProcessor",),
     "llm": ("LLM",),

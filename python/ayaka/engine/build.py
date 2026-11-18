@@ -7,9 +7,11 @@
     device capabilities               the dtype and CUDA graphs the config asks for exist here
     ops backend                       from the config's backend list, for this device and dtype
                                       (graph-safe families only when CUDA graphs are on)
-    model                             resolve the source, check and load the weights
-    memory plan                       plan_budget over the weights, the KV cost of the model and,
-                                      on a GPU, the last start-up profile measured for this key
+    memory plan                       plan_budget over the weights (the model built on the meta
+                                      device: nothing read yet), the KV cost of the model and, on
+                                      a GPU, the last start-up profile measured for this key;
+                                      plan_engine stops here, which is what ``ayaka plan`` prints
+    model                             load the weights
     KV cache                          tensors (KVPool), bookkeeping (KVCacheManager) and, unless
                                       the config turns it off, the prefix cache
     tokenizer                         checked against the model's vocabulary and context
@@ -31,7 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
 from ayaka.core.errors import (
@@ -47,6 +49,7 @@ from ayaka.engine.input import InputProcessor
 from ayaka.engine.output import OutputProcessor
 from ayaka.engine.profile import (
     ProfileKey,
+    StartupProfile,
     StartupReport,
     load_profile,
     measure_startup,
@@ -64,19 +67,24 @@ from ayaka.tokenizers.service import TokenizerService
 from ayaka.utils.math_utils import div_ceil
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
+    from pathlib import Path
 
     from ayaka.configs.device import DeviceConfig
     from ayaka.configs.engine import EngineConfig
+    from ayaka.configs.model import ModelConfig
+    from ayaka.device.capabilities import DeviceCapabilities
     from ayaka.device.info import DeviceInfo
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.storage.pool import KVPool
+    from ayaka.kvcache.storage.spec import KVGroup
     from ayaka.memory.budget import BudgetPlan
     from ayaka.metrics.loggers import StatLogger
     from ayaka.models.base import CausalLM
+    from ayaka.ops.backend import OpsBackend
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
-__all__ = ["build_engine"]
+__all__ = ["STATS_LOG_INTERVAL", "EnginePlan", "build_engine", "plan_engine"]
 
 logger = logging.getLogger(__name__)
 
@@ -88,41 +96,86 @@ STATS_LOG_INTERVAL: Final = 10.0
 _HOST_MAX_RUNNING: Final = 8
 
 
-def build_engine(
-    config: EngineConfig,
-    *,
-    tokenizer: LoadedTokenizer | None = None,
-    stat_loggers: Sequence[StatLogger] = (),
-) -> EngineCore:
-    """Build an engine: load the model, size and allocate the cache, and wire the loop.
+@dataclass(frozen=True, slots=True)
+class EnginePlan:
+    """What an engine would get on this machine, worked out without reading a weight.
 
-    Args:
-        config: Everything that describes the run.
-        tokenizer: A tokenizer to use instead of loading the one the configuration names; for
-            tests and for callers that already hold one.
-        stat_loggers: Loggers that get every step besides the logging one (which writes a line
-            every :data:`STATS_LOG_INTERVAL` seconds at INFO); the server passes its Prometheus
-            logger.
+    :func:`plan_engine` makes it and :func:`build_engine` builds from it, so ``ayaka plan`` and
+    a real start-up print the same numbers from the same code.
 
-    Returns:
-        An engine ready to take requests. Call :meth:`~ayaka.engine.core.EngineCore.shutdown`
-        when done.
+    Attributes:
+        directory: The checkpoint directory.
+        device: The device.
+        baseline_bytes: Its free memory, read before anything was allocated.
+        capabilities: What the device can run.
+        providers: Which backend serves each op family.
+        model_config: The model's architecture.
+        group: The KV cache group of the model.
+        weights_bytes: Bytes of the weights in the compute dtype, a shared tensor counted once.
+        budget: The memory plan (the same function the engine uses, with the last start-up
+            profile measured for this machine and model when there is one).
+        kv_blocks: KV blocks the engine allocates (on the CPU, sized for the requests that run).
+        max_running: Requests that run at once.
+        max_blocks_per_request: Blocks of one request's longest context.
+        reserve_tokens: Tokens of KV one request must be able to hold.
+        chunk_tokens: Most tokens one prefill step carries: the scheduler's budget, capped by
+            what the memory headroom supports.
+        profile_key: The key of the start-up profile.
+        profiled: Whether a start-up profile measured before fed the plan.
+    """
+
+    directory: Path
+    device: DeviceInfo
+    baseline_bytes: int
+    capabilities: DeviceCapabilities
+    providers: Mapping[str, str]
+    model_config: ModelConfig
+    group: KVGroup
+    weights_bytes: int
+    budget: BudgetPlan
+    kv_blocks: int
+    max_running: int
+    max_blocks_per_request: int
+    reserve_tokens: int
+    chunk_tokens: int
+    profile_key: ProfileKey
+    profiled: bool
+
+    @property
+    def block_size(self) -> int:
+        """Tokens per KV block."""
+        return self.group.spec.block_size
+
+    @property
+    def kv_bytes(self) -> int:
+        """Bytes of the KV pool the engine allocates."""
+        return self.kv_blocks * self.group.spec.bytes_per_block()
+
+    @property
+    def max_context_tokens(self) -> int:
+        """The longest context one request can reach here: the model's or the cache's limit."""
+        return min(
+            self.model_config.max_position_embeddings, (self.kv_blocks - 1) * self.block_size
+        )
+
+
+def plan_engine(config: EngineConfig) -> EnginePlan:
+    """Work out the memory plan of an engine without loading or allocating the model.
+
+    Reads ``config.json`` and builds the model on torch's meta device, so the weights' size and
+    the KV geometry come from the model's own code, then runs the planner the engine runs.
 
     Raises:
-        ConfigError: If the device cannot run the dtype or CUDA graphs the config asks for, the
-            backend list cannot serve the device and dtype (graph-safe families included, with
-            graphs on), the KV reserve exceeds the model context, or the tokenizer settings cannot
-            work.
-        CapabilityError: If torch, the requested GPU, the Hub client or a tokenizer package is
-            missing.
-        ModelLoadError: If the source cannot be resolved, the checkpoint does not match the model,
-            the model needs more than one KV group, or the tokenizer cannot be loaded or does not
-            match the model.
-        CapacityError: If the weights and a context of KV do not fit the memory the config allows.
+        As :func:`build_engine`, except that nothing is loaded; ``CapacityError`` when the plan
+        does not fit.
     """
-    from ayaka.execution.runner import ModelRunner
-    from ayaka.kvcache.storage.pool import KVPool
-    from ayaka.model_loader.loader import load_model
+    plan, _, _ = _plan(config)
+    return plan
+
+
+def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
+    """The plan, the ops backend it was made for, and the bytes torch held before it."""
+    from ayaka.model_loader.loader import describe_model
     from ayaka.ops.backend import load_backend
 
     device = config.device
@@ -146,7 +199,7 @@ def build_engine(
             baseline,
             cuda_free,
         )
-    model = load_model(config.source, device, ops=ops)
+    directory, model = describe_model(config.source, device, ops=ops)
     model_config = model.config
 
     groups = model.kv_specs(block_size=config.cache.block_size, layout=ops.kvcache.layout())
@@ -183,16 +236,69 @@ def build_engine(
             previous.activation_bytes_per_token,
             previous.graph_bytes,
         )
-    plan = plan_budget(
+    weights = _weights_bytes(model)
+    try:
+        budget = _budget(config, group, weights, baseline, reserve_tokens, previous)
+    except CapacityError as exc:
+        # The facts a reader needs to choose a fix: what one token of KV and the weights cost.
+        raise CapacityError(
+            exc.message,
+            context={
+                **exc.context,
+                "bytes_per_token": group.spec.bytes_per_token(),
+                "weights_bytes": weights,
+                "kv_reserve_tokens": reserve_tokens,
+                "model_context": context,
+            },
+        ) from exc
+
+    max_blocks = div_ceil(context, block_size)
+    running = _max_running(config, budget.max_running)
+    blocks = budget.kv_blocks[0]
+    if config.cache.num_blocks is None:
+        floor = 1 + div_ceil(reserve_tokens, block_size)
+        blocks = min(blocks, max(1 + running * max_blocks, floor))
+    plan = EnginePlan(
+        directory=directory,
+        device=info,
+        baseline_bytes=baseline,
+        capabilities=capabilities,
+        providers={str(family): name for family, name in ops.providers.items()},
+        model_config=model_config,
+        group=group,
+        weights_bytes=weights,
+        budget=budget,
+        kv_blocks=blocks,
+        max_running=running,
+        max_blocks_per_request=max_blocks,
+        reserve_tokens=reserve_tokens,
+        chunk_tokens=min(config.scheduler.max_tokens_per_step, budget.max_chunk_tokens),
+        profile_key=key,
+        profiled=previous is not None,
+    )
+    return plan, ops, baseline_reserved
+
+
+def _budget(
+    config: EngineConfig,
+    group: KVGroup,
+    weights: int,
+    baseline: int,
+    reserve_tokens: int,
+    previous: StartupProfile | None,
+) -> BudgetPlan:
+    """The memory plan of the engine, from the free memory, the weights and the KV geometry."""
+    spec = group.spec
+    return plan_budget(
         BudgetInputs(
             baseline_bytes=baseline,
             memory_ratio=config.cache.memory_ratio,
-            weights_bytes=_weights_bytes(model),
+            weights_bytes=weights,
             kv=(
                 KVCost(
-                    bytes_per_block=group.spec.bytes_per_block(),
-                    fixed_bytes=group.spec.fixed_bytes(),
-                    block_size=block_size,
+                    bytes_per_block=spec.bytes_per_block(),
+                    fixed_bytes=spec.fixed_bytes(),
+                    block_size=spec.block_size,
                 ),
             ),
             kv_reserve_tokens=reserve_tokens,
@@ -202,23 +308,70 @@ def build_engine(
             activation_fixed_bytes=(
                 max(previous.workspace_bytes - previous.activation_peak_bytes, 0) if previous else 0
             ),
-            graph_bytes_estimate=previous.graph_bytes if previous and device.cuda_graph else 0,
+            graph_bytes_estimate=(
+                previous.graph_bytes if previous and config.device.cuda_graph else 0
+            ),
         )
     )
 
-    max_blocks = div_ceil(context, block_size)
-    running = _max_running(config, plan.max_running)
-    blocks = plan.kv_blocks[0]
-    if config.cache.num_blocks is None:
-        floor = 1 + div_ceil(reserve_tokens, block_size)
-        blocks = min(blocks, max(1 + running * max_blocks, floor))
+
+def build_engine(
+    config: EngineConfig,
+    *,
+    tokenizer: LoadedTokenizer | None = None,
+    stat_loggers: Sequence[StatLogger] = (),
+) -> EngineCore:
+    """Build an engine: plan the memory, load the model, allocate the cache, and wire the loop.
+
+    Args:
+        config: Everything that describes the run.
+        tokenizer: A tokenizer to use instead of loading the one the configuration names; for
+            tests and for callers that already hold one.
+        stat_loggers: Loggers that get every step besides the logging one (which writes a line
+            every :data:`STATS_LOG_INTERVAL` seconds at INFO); the server passes its Prometheus
+            logger.
+
+    Returns:
+        An engine ready to take requests. Call :meth:`~ayaka.engine.core.EngineCore.shutdown`
+        when done.
+
+    Raises:
+        ConfigError: If the device cannot run the dtype or CUDA graphs the config asks for, the
+            backend list cannot serve the device and dtype (graph-safe families included, with
+            graphs on), the KV reserve exceeds the model context, or the tokenizer settings cannot
+            work.
+        CapabilityError: If torch, the requested GPU, the Hub client or a tokenizer package is
+            missing.
+        ModelLoadError: If the source cannot be resolved, the checkpoint does not match the model,
+            the model needs more than one KV group, or the tokenizer cannot be loaded or does not
+            match the model.
+        CapacityError: If the weights and a context of KV do not fit the memory the config allows;
+            raised by the plan, before a weight is read.
+    """
+    from ayaka.execution.runner import ModelRunner
+    from ayaka.kvcache.storage.pool import KVPool
+    from ayaka.model_loader.loader import load_model
+
+    device = config.device
+    engine_plan, ops, baseline_reserved = _plan(config)
+    model = load_model(config.source, device, ops=ops)
+    model_config = engine_plan.model_config
+    group = engine_plan.group
+    block_size = engine_plan.block_size
+    context = model_config.max_position_embeddings
+    plan = engine_plan.budget
+    key = engine_plan.profile_key
+    baseline = engine_plan.baseline_bytes
+    max_blocks = engine_plan.max_blocks_per_request
+    running = engine_plan.max_running
+    blocks = engine_plan.kv_blocks
     logger.info(
         "memory plan: %d KV blocks fit, %d allocated for up to %d running requests "
         "(%d tokens each at most)",
         plan.kv_blocks[0],
         blocks,
         running,
-        min(context, (blocks - 1) * block_size),
+        engine_plan.max_context_tokens,
     )
 
     prefix = None

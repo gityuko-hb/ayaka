@@ -4,6 +4,9 @@
 
     ayaka run MODEL -p "Once upon a time" --max-tokens 64
     ayaka serve MODEL --port 8000 --tool-call-parser hermes
+    ayaka plan MODEL --device cuda --dtype fp16
+    ayaka info
+    ayaka config show
 
 ``MODEL`` is a local directory or a Hugging Face repo id. ``run`` writes the generated text to
 standard output as it is produced; everything else (the line that says what was started,
@@ -12,20 +15,27 @@ line that says what was started names the values really used, which come from th
 from the environment.
 
 ``serve`` answers OpenAI and Anthropic clients over HTTP (it needs the ``serve`` extra). Its
-settings come from the flags, then from the ``[server]`` table of ``--config FILE`` (TOML), then
-from the defaults; never from the environment. It prints where it listens and when it is ready,
+settings come from the flags, then from the ``[server]`` table of ``--config FILE`` (TOML; without
+the flag, the user's configuration file when it exists, see ``ayaka info``), then from the
+defaults; never from the environment. ``config show`` prints those settings and where each came
+from.
+
+``plan`` prints whether the model fits this machine and how the memory would be divided, from the
+same planner a start-up runs, without loading a weight or downloading anything; ``--output json``
+gives the same as data. ``info`` prints the version, devices, backends, installed extras and the
+directories Ayaka uses. It prints where it listens and when it is ready,
 and stops on SIGINT or SIGTERM: new requests get 503, requests in flight get
 ``--shutdown-timeout`` seconds, and a second signal exits at once.
 
 Exit codes are the contract of the command::
 
-    0    the text was generated, or the server stopped cleanly
+    0    the text was generated, the server stopped cleanly, or the plan fits
     1    an unexpected error: a bug; ``-v`` prints its traceback
     2    the arguments or the request are wrong (a flag, a prompt too long, an unsupported option)
     3    the model or the tokenizer cannot be loaded
     4    something the run needs is not installed or not available (torch, a tokenizer package,
          a GPU)
-    5    the memory plan does not fit this machine
+    5    the memory plan does not fit this machine (``plan`` prints three ways out)
     6    the engine failed while generating
     130  interrupted
 
@@ -38,6 +48,7 @@ answered without them; torch loads once an engine is built, aiohttp once ``serve
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import sys
 import tomllib
@@ -50,7 +61,7 @@ from ayaka.configs.device import DeviceConfig
 from ayaka.configs.engine import EngineConfig
 from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.scheduler import SchedulerConfig
-from ayaka.configs.server import DEFAULT_PORT, ServerConfig
+from ayaka.configs.server import DEFAULT_PORT, ServerConfig, user_config_path
 from ayaka.core.errors import (
     AyakaError,
     CapabilityError,
@@ -105,20 +116,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         _say("error: no command given; try 'ayaka run --help' or 'ayaka serve --help'")
         return EXIT_USAGE
-    if args.verbose:
+    if args.command == "config" and args.action is None:
+        _say("error: say what to do: ayaka config show")
+        return EXIT_USAGE
+    if getattr(args, "verbose", 0):
         init_logger("ayaka", level=logging.DEBUG if args.verbose > 1 else logging.INFO)
     elif args.command == "serve":
         # Request lines (ids, outcomes, token counts; never text) are part of serving.
         init_logger("ayaka", level=logging.INFO)
     try:
-        return _serve(args) if args.command == "serve" else _run(args)
+        handler = {
+            "serve": _serve,
+            "run": _run,
+            "plan": _plan,
+            "info": _info,
+            "config": _config_show,
+        }[args.command]
+        return handler(args)
     except KeyboardInterrupt:
         _say("interrupted")
         return EXIT_INTERRUPTED
     except AyakaError as exc:
         return _report(exc)
     except Exception as exc:
-        if args.verbose:
+        if getattr(args, "verbose", 0):
             raise
         _say(f"error: unexpected {type(exc).__name__}: {exc} (run with -v for the traceback)")
         return EXIT_BUG
@@ -178,6 +199,29 @@ def _parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="count", default=0, help="log progress; twice for debug"
     )
     _serve_parser(commands)
+    _plan_parser(commands)
+    info = commands.add_parser(
+        "info",
+        help="print the version, devices, backends, extras and directories",
+        description="Print what this installation has: the version, the devices, the ops backends "
+        "that run here, the installed extras and the directories Ayaka uses, with their sizes.",
+    )
+    info.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
+    info.add_argument("-v", "--verbose", action="count", default=0, help="log more")
+    config = commands.add_parser(
+        "config",
+        help="print the settings a server would use",
+        description="Inspect the configuration.",
+    )
+    actions = config.add_subparsers(dest="action", metavar="action")
+    show = actions.add_parser(
+        "show",
+        help="print each server setting and where it comes from",
+        description="Print the server settings `ayaka serve` would use with the same flags, each "
+        "with its source: a flag, the configuration file or the default.",
+    )
+    _server_flags(show)
+    show.add_argument("-v", "--verbose", action="count", default=0, help="log more")
     return parser
 
 
@@ -213,6 +257,13 @@ def _engine_flags(command: argparse.ArgumentParser) -> None:
         help="share of the free memory the engine may use, in (0, 1] (0.9)",
     )
     where.add_argument(
+        "--kv-reserve-tokens",
+        type=int,
+        default=None,
+        metavar="N",
+        help="tokens of KV one request must be able to hold; the model context when absent",
+    )
+    where.add_argument(
         "--no-prefix-cache",
         dest="prefix_cache",
         action="store_false",
@@ -233,7 +284,38 @@ def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser])
         "and Anthropic Messages requests over HTTP. Needs the serve extra.",
     )
     serve.add_argument("model", help="a local model directory or a Hugging Face repo id")
-    server = serve.add_argument_group("server (flags win over --config, which wins over defaults)")
+    _server_flags(serve)
+    serve.add_argument(
+        "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
+    )
+    _engine_flags(serve)
+    serve.add_argument(
+        "-v", "--verbose", action="count", default=0, help="log more; twice for debug"
+    )
+
+
+def _plan_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
+    plan = commands.add_parser(
+        "plan",
+        help="print whether a model fits this machine and how memory would be divided",
+        description="Plan the memory of a model on this machine with the planner a start-up "
+        "runs: weights, KV cache, context per request, requests at once. Reads config.json only: "
+        "no weight is loaded and nothing is downloaded. Exits 5 when it does not fit.",
+    )
+    plan.add_argument("model", help="a local model directory or a cached Hugging Face repo id")
+    plan.add_argument(
+        "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
+    )
+    plan.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
+    _engine_flags(plan)
+    plan.add_argument("-v", "--verbose", action="count", default=0, help="log more")
+
+
+def _server_flags(command: argparse.ArgumentParser) -> None:
+    """The flags of the server settings, shared by ``serve`` and ``config show``."""
+    server = command.add_argument_group(
+        "server (flags win over --config, which wins over defaults)"
+    )
     server.add_argument("--config", type=Path, metavar="FILE", help="a TOML file with [server]")
     server.add_argument("--host", help="address to bind (127.0.0.1: this machine only)")
     server.add_argument("--port", type=int, help=f"TCP port ({DEFAULT_PORT}); 0 picks a free one")
@@ -283,13 +365,6 @@ def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser])
         metavar="S",
         help="cancel a request whose client blocks a write this long (30)",
     )
-    server.add_argument(
-        "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
-    )
-    _engine_flags(serve)
-    serve.add_argument(
-        "-v", "--verbose", action="count", default=0, help="log more; twice for debug"
-    )
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -321,9 +396,9 @@ def _run(args: argparse.Namespace) -> int:
 
 def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> EngineConfig:
     """The engine configuration the flags describe; ``run`` runs one request at a time."""
-    cache = CacheConfig(prefix_cache=args.prefix_cache)
+    cache = CacheConfig(kv_reserve_tokens=args.kv_reserve_tokens, prefix_cache=args.prefix_cache)
     if args.memory_ratio is not None:
-        cache = CacheConfig(memory_ratio=args.memory_ratio, prefix_cache=args.prefix_cache)
+        cache = dataclasses.replace(cache, memory_ratio=args.memory_ratio)
     return EngineConfig(
         source=ModelSourceConfig(
             args.model, revision=args.revision, tokenizer=args.tokenizer, offline=args.offline
@@ -362,8 +437,9 @@ def server_config(args: argparse.Namespace) -> ServerConfig:
         InvalidRequestError: If the key file cannot be read.
     """
     values: dict[str, object] = {}
-    if args.config is not None:
-        values.update(_config_file(args.config))
+    file = config_file_path(args)
+    if file is not None:
+        values.update(_config_file(file))
     for flag, key in _SERVER_FLAGS:
         value: object = getattr(args, flag)
         if isinstance(value, list):
@@ -383,6 +459,28 @@ def server_config(args: argparse.Namespace) -> ServerConfig:
     if config.tool_call_parser is not None:
         tool_call_format(config.tool_call_parser)
     return config
+
+
+def config_file_path(args: argparse.Namespace) -> Path | None:
+    """The configuration file to read: ``--config``, else the user's file when it exists."""
+    if args.config is not None:
+        return cast("Path", args.config)
+    default = user_config_path()
+    return default if default.is_file() else None
+
+
+def _flag_values(args: argparse.Namespace) -> dict[str, object]:
+    """The server settings given as flags, by setting name; the key reported only as set."""
+    values: dict[str, object] = {}
+    for flag, key in _SERVER_FLAGS:
+        value: object = getattr(args, flag)
+        if isinstance(value, list):
+            values[key] = tuple(cast("list[object]", value))
+        elif value is not None:
+            values[key] = value
+    if args.api_key is not None or args.api_key_file is not None:
+        values["api_key"] = "set"
+    return values
 
 
 def _config_file(path: Path) -> dict[str, object]:
@@ -448,6 +546,65 @@ def _serve(args: argparse.Namespace) -> int:
     for line in describe_server(config, engine, args.model):
         _say(line)
     asyncio.run(serve(config, engine, model_name=args.model, say=_say))
+    return EXIT_OK
+
+
+def _plan(args: argparse.Namespace) -> int:
+    """Print the memory plan of the model on this machine; exit 5 when it does not fit."""
+    import json
+    from dataclasses import asdict, replace
+
+    from ayaka.engine.build import plan_engine
+    from ayaka.entrypoints.plan import plan_lines, plan_report, shortfall_lines, shortfall_of
+
+    config = _engine_config(args, max_running=args.max_running)
+    # A plan never downloads: a repo id must already be in the Hub cache.
+    config = replace(config, source=replace(config.source, offline=True))
+    try:
+        plan = plan_engine(config)
+    except CapacityError as exc:
+        shortfall = shortfall_of(exc)
+        if args.output == "json":
+            report = {"fits": False, "model": args.model, "shortfall": asdict(shortfall)}
+            print(json.dumps(report, indent=2))
+        else:
+            for line in shortfall_lines(shortfall):
+                print(line)
+        return EXIT_MEMORY
+    if args.output == "json":
+        print(json.dumps(plan_report(plan, args.model), indent=2))
+    else:
+        for line in plan_lines(plan, args.model):
+            print(line)
+    return EXIT_OK
+
+
+def _info(args: argparse.Namespace) -> int:
+    """Print what this installation has."""
+    import json
+
+    from ayaka.entrypoints.info import info_lines, info_report
+
+    report = info_report()
+    if args.output == "json":
+        print(json.dumps(report.as_json(), indent=2))
+    else:
+        for line in info_lines(report):
+            print(line)
+    return EXIT_OK
+
+
+def _config_show(args: argparse.Namespace) -> int:
+    """Print each server setting, its value and its source."""
+    from ayaka.entrypoints.info import config_rows
+
+    server_config(args)  # the same checks serve makes: a bad value fails here too
+    file = config_file_path(args)
+    rows = config_rows(_flag_values(args), _config_file(file) if file else {}, file)
+    width = max(len(name) for name, _, _ in rows)
+    print(f"configuration file: {file if file is not None else 'none'}")
+    for name, value, source in rows:
+        print(f"{name:<{width}}  {value}  [{source}]")
     return EXIT_OK
 
 

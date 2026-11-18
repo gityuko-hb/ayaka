@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from ayaka.ops.backend import OpsBackend
     from ayaka.weights.tensor import TensorRef
 
-__all__ = ["load_model", "load_weights"]
+__all__ = ["describe_model", "load_model", "load_weights"]
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,31 @@ def load_model(
         time.monotonic() - started,
     )
     return model
+
+
+def describe_model(
+    source: ModelSourceConfig, device: DeviceConfig, *, ops: OpsBackend | None = None
+) -> tuple[Path, CausalLM]:
+    """The model a source describes, built on the meta device: shapes and code, no weights.
+
+    The checkpoint's ``config.json`` is read and the model built as :func:`load_model` builds it,
+    shared parameters tied, but nothing is allocated and no tensor is read, so a plan can ask the
+    model for its size and its KV geometry before deciding whether to load it.
+
+    Returns:
+        The checkpoint directory and the model.
+
+    Raises:
+        As :func:`load_model`, except for errors that need the tensors.
+    """
+    _require_readable_format(source)
+    directory = resolve_source(source)
+    config = _read_model_config(directory)
+    model_class = resolve_model(config.architecture)
+    backend = ops or load_backend(device.backends, device=device.device_type, dtype=device.dtype)
+    model = model_class(config, ops=backend, dtype=device.dtype, device="meta")
+    model.tie_weights()
+    return directory, model
 
 
 def load_weights(model: CausalLM, directory: str | Path) -> None:
