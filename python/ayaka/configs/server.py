@@ -67,6 +67,9 @@ class ServerConfig(ConfigMixin):
         reasoning_parser: Name of the model's reasoning format, or ``None``.
         tool_call_parser: Name of the model's tool-call format, or ``None``; without one,
             requests that offer tools are refused.
+        normalize_prompts: Apply the recorded clients' churn rules to their prompts before
+            tokenization, so the prefix cache hits across sessions and versions. Off returns
+            every prompt unchanged.
 
     Raises:
         ConfigError: If a value is out of range.
@@ -84,6 +87,7 @@ class ServerConfig(ConfigMixin):
     served_model_names: tuple[str, ...] = ()
     reasoning_parser: str | None = None
     tool_call_parser: str | None = None
+    normalize_prompts: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.host, str) or not self.host:  # pyright: ignore[reportUnnecessaryIsInstance]

@@ -218,4 +218,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-docs/
+docs/*
+!docs/EXPERIMENTS.md
+third_party/

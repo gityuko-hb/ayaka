@@ -84,6 +84,16 @@ class TestSettings:
         assert config.served_model_names == ("a", "b")
         assert config.cors_origins == ("x",)
 
+    def test_normalization_is_on_by_default_and_the_file_and_the_flag_agree(
+        self, tmp_path: Path
+    ) -> None:
+        file = tmp_path / "ayaka.toml"
+        file.write_text("[server]\nnormalize_prompts = false\n")
+
+        assert server_config(_args()).normalize_prompts is True
+        assert server_config(_args("--config", str(file))).normalize_prompts is False
+        assert server_config(_args("--no-normalize")).normalize_prompts is False
+
     def test_the_key_comes_from_a_flag_or_a_file_but_not_both(self, tmp_path: Path) -> None:
         key = tmp_path / "key"
         key.write_text("s3cret\n")

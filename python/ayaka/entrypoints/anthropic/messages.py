@@ -230,7 +230,10 @@ async def create_message(request: web.Request) -> web.StreamResponse:
     serving = request.app[SERVING]
     message = parse_messages_request(await read_body(request))
     serving.check_model(message.model)
-    prompt = await serving.tokenize_chat(message.conversation)
+    conversation = serving.normalized(
+        message.conversation, request.headers, request_id=request[REQUEST_ID]
+    )
+    prompt = await serving.tokenize_chat(conversation)
     sampling = replace(
         message.sampling, max_tokens=serving.output_tokens(len(prompt), message.max_tokens)
     )
@@ -243,7 +246,7 @@ async def create_message(request: web.Request) -> web.StreamResponse:
         parallel_tool_calls=message.parallel_tool_calls,
         structured=serving.constraint(
             message.output,
-            message.conversation,
+            conversation,
             tools=message.tools,
             parallel_tool_calls=message.parallel_tool_calls,
         ),
@@ -278,7 +281,9 @@ async def count_tokens(request: web.Request) -> web.Response:
     serving = request.app[SERVING]
     model, conversation = parse_count_tokens_request(await read_body(request))
     serving.check_model(model)
-    prompt = await serving.tokenize_chat(conversation)
+    prompt = await serving.tokenize_chat(
+        serving.normalized(conversation, request.headers, request_id=request[REQUEST_ID])
+    )
     return web.json_response({"input_tokens": len(prompt)})
 
 

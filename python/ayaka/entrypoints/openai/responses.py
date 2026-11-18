@@ -626,7 +626,10 @@ async def create_response(request: web.Request) -> web.StreamResponse:
     serving = request.app[SERVING]
     responses = parse_responses_request(await read_body(request))
     serving.check_model(responses.model)
-    prompt = await serving.tokenize_chat(responses.conversation)
+    conversation = serving.normalized(
+        responses.conversation, request.headers, request_id=request[REQUEST_ID]
+    )
+    prompt = await serving.tokenize_chat(conversation)
     sampling = replace(
         responses.sampling, max_tokens=serving.output_tokens(len(prompt), responses.max_tokens)
     )
@@ -639,7 +642,7 @@ async def create_response(request: web.Request) -> web.StreamResponse:
         parallel_tool_calls=responses.parallel_tool_calls,
         structured=serving.constraint(
             responses.output,
-            responses.conversation,
+            conversation,
             tools=responses.tools,
             parallel_tool_calls=responses.parallel_tool_calls,
         ),

@@ -1,0 +1,4 @@
+{
+  "system": "x-anthropic-billing-header: [ayaka:normalized:claude-code.billing-header:v1]\nYou are a Claude agent, built on Anthropic's Claude Agent SDK.",
+  "turns": [{"role": "user", "text": "Say hello."}]
+}

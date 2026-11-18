@@ -69,6 +69,7 @@ from ayaka.core.request import GenerateRequest
 from ayaka.core.types import RequestId
 from ayaka.entrypoints.conversation import (
     ChoiceEvent,
+    Conversation,
     ErrorEvent,
     FinishEvent,
     ToolCallEnd,
@@ -76,6 +77,7 @@ from ayaka.entrypoints.conversation import (
     collect,
     collect_choices,
 )
+from ayaka.entrypoints.normalize import Normalizer, identify_client
 from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
 from ayaka.entrypoints.stream import SlowClientError, collect_events, pump
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
@@ -83,13 +85,12 @@ from ayaka.utils.import_utils import has_module
 from ayaka.utils.parsing import parse_json_strict
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from ayaka.configs.server import ServerConfig
     from ayaka.engine.async_llm import AsyncLLM, RequestStream
     from ayaka.entrypoints.conversation import (
         Collected,
-        Conversation,
         OutputEvent,
         OutputRequest,
     )
@@ -392,6 +393,12 @@ class ServingMetrics:
             ["valid"],
             registry=self.registry,
         )
+        self.normalized = Counter(
+            "ayaka_normalized_replacements",
+            "Churn replacements the prompt normalizer made, by rule and client",
+            ["rule", "client"],
+            registry=self.registry,
+        )
         self.running = Gauge(
             "ayaka_requests_running", "Generation requests in flight", registry=self.registry
         )
@@ -481,6 +488,9 @@ class Serving:
         self.config = config
         self.model_names: tuple[str, ...] = config.served_model_names or (model_name,)
         self.metrics = ServingMetrics()
+        self.normalizer = Normalizer(
+            enabled=config.normalize_prompts, metrics=self.metrics.normalized
+        )
         self.created = int(time.time())
         self.status = Readiness.STARTING
         self.llm: AsyncLLM | None = None
@@ -488,6 +498,20 @@ class Serving:
         self.max_model_len = 0
         self.max_context_tokens = 0
         self.prefix_cache: bool | None = None
+
+    def normalized(
+        self, conversation: Conversation, headers: Mapping[str, str], request_id: str = ""
+    ) -> Conversation:
+        """The conversation with the recognised client's churn rules applied.
+
+        The rules run before tokenization, so the prefix cache sees the client's fixed prompt
+        without the values that change per session or per version. A prompt from an unknown
+        client, or with normalization off, comes back unchanged.
+        """
+        conversation, _ = self.normalizer.normalize(
+            conversation, identify_client(headers), request_id=request_id
+        )
+        return conversation
 
     @property
     def model_name(self) -> str:
