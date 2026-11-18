@@ -133,10 +133,16 @@ def _argv(fakes: dict[str, Any], out: Path, *, precision: str = "f16") -> list[s
 
 class TestRun:
     def test_a_run_alternates_never_overlaps_and_validates(
-        self, fakes: dict[str, Any], tmp_path: Path
+        self, fakes: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         pytest.importorskip("torch")  # the machine record reads torch
         out = tmp_path / "result.json"
+        # The fake model has no tokenizer: bytes stand in for tokens.
+        monkeypatch.setattr(
+            compare,
+            "_tokenizer",
+            lambda model: (lambda text: list(text.encode()), lambda ids: bytes(ids).decode()),
+        )
 
         code = compare.main(_argv(fakes, out))
 
@@ -160,6 +166,8 @@ class TestRun:
         assert result["opponent"]["precision"] == "f16"
         assert result["opponent"]["hash"]
         assert any("not the same file" in note for note in result["differences"])
+        assert not any("precisions differ" in note for note in result["differences"])  # f16 = fp16
+        assert all(len(slot["gpu_temperature_c"]) == 2 for slot in result["slots"])
         ratios = result["summary"]["ratios"]["median"]["prose-64"]
         assert ratios["ttft_cold_s"] < 1  # the fake ayaka reads its prompt faster
         assert compare.validate(result) == []
@@ -238,6 +246,7 @@ class TestSummary:
             compare.Engine("llama.cpp", "u", None, "m", None, "q4_k_m"),
         ]
         assert any("precisions differ" in note for note in compare.differences(engines))
+        assert compare.precision_name("fp16") == compare.precision_name("F16") == "f16"
 
     def test_one_engine_at_a_time_is_enforced(self) -> None:
         engine = compare.Engine("ayaka", "u", None, "m", None, "fp16")

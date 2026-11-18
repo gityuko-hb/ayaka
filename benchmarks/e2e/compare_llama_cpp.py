@@ -49,6 +49,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 SCHEMA: Final = "ayaka.compare/1"
 QUANTIZED: Final = ("q2", "q3", "q4", "q5", "q6", "q8", "iq")
+#: Names of one precision: Ayaka says fp16, llama.cpp says f16.
+_PRECISIONS: Final = {"fp16": "f16", "float16": "f16", "fp32": "f32", "float32": "f32"}
+
+
+def precision_name(precision: str) -> str:
+    """One spelling per precision, so fp16 and f16 compare equal."""
+    name = precision.lower()
+    return _PRECISIONS.get(name, name)
 
 
 @dataclass
@@ -176,6 +184,21 @@ class VramSampler:
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     @staticmethod
+    def temperature() -> int | None:
+        """GPU 0's temperature in Celsius, or ``None`` without NVML."""
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            try:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                return int(pynvml.nvmlDeviceGetTemperature(handle, 0))
+            finally:
+                pynvml.nvmlShutdown()
+        except Exception:  # no NVML: no temperature, the rest stands
+            return None
+
+    @staticmethod
     def used() -> int | None:
         try:
             import pynvml
@@ -225,6 +248,7 @@ def run_slot(engine: Engine, plan: Plan, round_index: int, *, running: list[str]
     if running:
         raise RuntimeError(f"{running} is still up; the engines never run at the same time")
     idle = VramSampler.used()
+    temperature = VramSampler.temperature()
     up_since = time.time()
     if engine.command is not None:
         engine.process = subprocess.Popen(  # noqa: S603  # the user's own command
@@ -266,6 +290,7 @@ def run_slot(engine: Engine, plan: Plan, round_index: int, *, running: list[str]
             "round": round_index,
             # When the engine was started and when it had exited: the slots never overlap.
             "up": [up_since, time.time()],
+            "gpu_temperature_c": [temperature, VramSampler.temperature()],
             "rows": rows,
             "vram_peak_above_idle_bytes": peak - idle
             if peak is not None and idle is not None
@@ -341,7 +366,7 @@ def differences(engines: list[Engine]) -> list[str]:
         f"{first.name} loads {first.model_file} ({first.precision}); {second.name} loads "
         f"{second.model_file} ({second.precision}): not the same file"
     ]
-    if first.precision.lower() != second.precision.lower():
+    if precision_name(first.precision) != precision_name(second.precision):
         notes.append(f"the precisions differ: {first.precision} against {second.precision}")
     notes.append("prompt token counts come from each engine's own tokenizer and template")
     return notes
@@ -358,7 +383,7 @@ def validate(result: dict[str, Any]) -> list[str]:
         return problems
     if result["schema"] != SCHEMA:
         problems.append(f"schema is {result['schema']!r}")
-    precisions = {engine["precision"].lower() for engine in result["engines"]}
+    precisions = {precision_name(engine["precision"]) for engine in result["engines"]}
     quantized = {p for p in precisions if p.startswith(QUANTIZED)}
     if quantized and quantized != precisions:
         problems.append("a quantized engine is compared with an unquantized one in one result")
@@ -376,6 +401,28 @@ def validate(result: dict[str, Any]) -> list[str]:
                 if values and median != statistics.median(values):
                     problems.append(f"{engine} {prompt} {metric}: the median does not match")
     return problems
+
+
+def _tokenizer(model: Path) -> tuple[Any, Any]:
+    """``encode`` and ``decode`` of the model's tokenizer, read from its folder, offline."""
+    from ayaka.configs.model_source import ModelSourceConfig
+    from ayaka.configs.tokenizer import tokenizer_config_from_source
+    from ayaka.tokenizers.factory import DefaultTokenizerFactory
+
+    loaded = DefaultTokenizerFactory.from_config(
+        tokenizer_config_from_source(ModelSourceConfig(str(model), offline=True))
+    )
+    tokenizer = loaded.tokenizer
+    if tokenizer is None:
+        raise ValueError(f"{model} has no tokenizer")
+
+    def encode(text: str) -> list[int]:
+        return list(tokenizer.encode(text, add_special_tokens=False))
+
+    def decode(ids: list[int]) -> str:
+        return tokenizer.decode(ids)
+
+    return encode, decode
 
 
 def _version(command: list[str] | None) -> str | None:
@@ -413,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from _machine import machine
 
-    from ayaka.entrypoints.bench_prompts import PROMPT_SET_VERSION, material_text
+    from ayaka.entrypoints.bench_prompts import PROMPT_SET_VERSION, material_ids
 
     engines = [
         Engine(
@@ -438,9 +485,11 @@ def main(argv: list[str] | None = None) -> int:
     hashes = {engine.name: file_hash(engine.model_file) for engine in engines}
     if engines[0].quantized != engines[1].quantized:
         print("note: one side is quantized; the result says so and is not an f16 comparison")
-    # The text is the bench prose material, cut by characters (about 4 per token).
+    # The bench prose material cut to each length with the model's own tokenizer, then sent as
+    # text: both engines read the same characters, and each reports its own token count.
+    encode, decode = _tokenizer(args.ayaka_model)
     prompts = [
-        (f"prose-{length}", material_text("prose", 4 * length // 80 + 1)[: 4 * length])
+        (f"prose-{length}", decode(material_ids("prose", length, encode)))
         for length in args.lengths
     ]
     plan = Plan(prompts, args.rounds, args.max_tokens, args.timeout, args.api_key)
