@@ -279,10 +279,21 @@ class TestRun:
             return results
 
         monkeypatch.setattr(bench, "run_bench", run)
-        code = main(["bench", str(long_checkpoint), "--out", str(tmp_path / "out"), "--quick"])
+        code = main(
+            [
+                "bench",
+                str(long_checkpoint),
+                "--out",
+                str(tmp_path / "out"),
+                "--history",
+                str(tmp_path / "history"),  # never the repository's own history file
+                "--quick",
+            ]
+        )
         written = json.loads((tmp_path / "out" / "results.json").read_text(encoding="utf-8"))
 
         assert code == 2
+        assert (tmp_path / "history" / "bench.jsonl").is_file()
         assert written["valid"] is False
         assert any("sanity check failed" in note for note in written["notes"])
         assert "FAIL  tool call" in capsys.readouterr().out
