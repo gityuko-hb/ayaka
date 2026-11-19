@@ -28,6 +28,7 @@ Every event carries a ``sequence_number``. A keepalive is an SSE comment line.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, replace
@@ -42,6 +43,7 @@ from ayaka.entrypoints.conversation import (
     ConversationBuilder,
     ErrorEvent,
     FinishEvent,
+    OutputRequest,
     ReasoningDelta,
     TextDelta,
     ToolCall,
@@ -59,6 +61,7 @@ from ayaka.entrypoints.http import (
     read_body,
     sampling_params,
 )
+from ayaka.entrypoints.openai.protocol import response_format
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
 
 if TYPE_CHECKING:
@@ -102,6 +105,7 @@ class ResponsesRequest:
         tools: Whether the model may call the tools.
         parallel_tool_calls: Whether it may call several in one answer.
         echo: Request fields echoed in the response object.
+        output: The shape the answer must have (``text.format``, ``tool_choice``, ``strict``).
     """
 
     model: str | None
@@ -112,6 +116,7 @@ class ResponsesRequest:
     tools: bool
     parallel_tool_calls: bool
     echo: dict[str, object]
+    output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
 
 
 _KEYS: Final = frozenset(
@@ -176,8 +181,7 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
         raise _unsupported("truncation", "only disabled is available")
     text = body.child("text")
     text_format = text.child("format") if text is not None else None
-    if text_format is not None and text_format.string("type") not in (None, "text"):
-        raise _unsupported("text.format", f"{text_format.string('type')} needs structured output")
+    response, schema = response_format(text_format, "text.format")
     reasoning = body.child("reasoning")
     if reasoning is not None and reasoning.has("effort"):
         _LOG.debug("responses: reasoning.effort is a hint; the model reasons as trained")
@@ -187,7 +191,7 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
     if instructions:
         builder.system(instructions)
     _input(body, builder)
-    tools, choice = _tools(body, builder)
+    tools, choice, constrained, strict = _tools(body, builder)
     max_tokens = body.integer("max_output_tokens")
     echo: dict[str, object] = {
         "instructions": instructions,
@@ -216,6 +220,9 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
         tools=tools,
         parallel_tool_calls=body.flag("parallel_tool_calls", default=True),
         echo=echo,
+        output=OutputRequest(
+            response=response, schema=schema, tool_choice=constrained, strict=strict
+        ),
     )
 
 
@@ -294,26 +301,41 @@ def _parts(value: object, where: str) -> str:
     return PART_SEPARATOR.join(texts)
 
 
-def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object]:
-    choice = body.raw("tool_choice") or "auto"
-    if choice == "required" or isinstance(choice, dict):
-        raise _unsupported("tool_choice", "forcing a tool call needs structured output")
-    if choice not in ("auto", "none"):
+def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object, str, bool]:
+    """Add the function tools; return ``(offered, echoed choice, constrained choice, strict)``.
+
+    The constrained choice is ``"auto"``, ``"required"`` or the one function's name. Only an
+    explicit ``strict: true`` constrains the arguments to the schema: a tool's schema may use
+    something the grammar compiler refuses, and a default must not fail the request.
+    """
+    choice: object = body.raw("tool_choice") or "auto"
+    echoed = choice
+    constrained = "auto"
+    if isinstance(choice, dict):
+        picked = body.child("tool_choice")
+        if picked is None or picked.string("type") != "function" or not picked.string("name"):
+            raise _invalid("tool_choice", "a named choice is {type: function, name}")
+        constrained = picked.text("name")
+    elif choice == "required":
+        constrained = "required"
+    elif choice not in ("auto", "none"):
         raise _invalid("tool_choice", "must be auto, none, required or a tool")
     tools = body.objects("tools")
     if choice == "none" or not tools:
-        return False, choice
+        if constrained != "auto":
+            raise _invalid("tool_choice", "forces a call but the request has no function tools")
+        return False, echoed, "auto", False
     offered = False
+    strict = False
     for tool in tools:
         if tool.string("type") != "function":
             _LOG.info("leaving out tool of type %r: only its provider can run it", tool.raw("type"))
             continue
-        if tool.flag("strict"):
-            raise _unsupported(tool.where("strict"), "strict schemas need structured output")
+        strict = strict or tool.flag("strict")
         parameters = tool.child("parameters") or JsonObject({})
         builder.tool(ToolSpec(tool.text("name"), tool.string("description"), parameters.data))
         offered = True
-    return offered, choice
+    return offered, echoed, constrained, strict
 
 
 # -- answers ----------------------------------------------------------------------------------
@@ -611,6 +633,12 @@ async def create_response(request: web.Request) -> web.StreamResponse:
         public_id=public_id,
         tools=responses.tools,
         parallel_tool_calls=responses.parallel_tool_calls,
+        structured=serving.constraint(
+            responses.output,
+            responses.conversation,
+            tools=responses.tools,
+            parallel_tool_calls=responses.parallel_tool_calls,
+        ),
     )
     snapshot = _Snapshot(f"resp_{public_id}", int(time.time()), serving.model_name, responses.echo)
     try:

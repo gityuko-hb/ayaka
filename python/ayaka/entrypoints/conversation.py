@@ -32,11 +32,13 @@ from ayaka.utils.parsing import parse_json_strict
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
+    from ayaka.core.constraints import ConstraintKind
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import FinishReason
 
 __all__ = [
     "PART_SEPARATOR",
+    "ChoiceEvent",
     "Collected",
     "CollectedToolCall",
     "Conversation",
@@ -44,9 +46,11 @@ __all__ = [
     "ErrorEvent",
     "FinishEvent",
     "OutputEvent",
+    "OutputRequest",
     "ReasoningDelta",
     "Role",
     "TextDelta",
+    "TokenLogprobs",
     "ToolCall",
     "ToolCallDelta",
     "ToolCallEnd",
@@ -55,6 +59,7 @@ __all__ = [
     "Turn",
     "UsageEvent",
     "collect",
+    "collect_choices",
     "merge_deltas",
     "parse_arguments",
 ]
@@ -115,6 +120,32 @@ class Turn:
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
     name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OutputRequest:
+    """What a request asks of the shape of its answer, before the server knows the model.
+
+    The protocol adapters fill it from ``response_format``, ``text.format``, ``output_format``,
+    ``tool_choice`` and ``strict``; the server turns it into a
+    :class:`~ayaka.core.constraints.StructuredParams` with the model's tool-call syntax.
+
+    Attributes:
+        response: ``JSON_SCHEMA`` or ``JSON_OBJECT`` for a JSON answer, else ``None``.
+        schema: The schema of a ``JSON_SCHEMA`` answer.
+        tool_choice: ``"auto"``, ``"required"`` or the name of the tool to call.
+        strict: Whether tool arguments must follow the tools' schemas.
+    """
+
+    response: ConstraintKind | None = None
+    schema: Mapping[str, object] | None = None
+    tool_choice: str = "auto"
+    strict: bool = False
+
+    @property
+    def wants_constraint(self) -> bool:
+        """Whether the request asked for something only a grammar can guarantee."""
+        return self.response is not None or self.tool_choice != "auto" or self.strict
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,8 +5,9 @@ returns ``None`` so the sampler keeps its short path (and a decode step can repl
 graph). A row that sets ``allowed_token_ids``, ``logit_bias``, ``min_tokens``, a penalty or
 logprobs gets the transforms of :mod:`ayaka.ops.sampling` in their fixed order:
 
-    1. one bitmask per row: allowed ids, and the stop ids (EOS unless ``ignore_eos``) while
-       fewer than ``min_tokens`` tokens exist
+    1. one bitmask per row: the structural mask of an active constraint, allowed ids, and the
+       stop ids (EOS unless ``ignore_eos``) while fewer than ``min_tokens`` tokens exist; the
+       masks are intersected
     2. logit bias
     3. raw logprobs, when asked for (before penalties, temperature and filters)
     4. penalties, from :class:`~ayaka.sampling.penalties.PenaltyStates`
@@ -31,9 +32,12 @@ from ayaka.sampling.penalties import uses_penalties
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
 
+    from numpy.typing import NDArray
+
     from ayaka.core.params import SamplingParams
     from ayaka.core.types import RequestId, TokenId
     from ayaka.sampling.penalties import PenaltyStates
+    from ayaka.sampling.structured.runtime import ConstraintRuntime
 
 __all__ = ["LogitControls", "LogitRow", "LogprobRequest", "build_controls", "needs_controls"]
 
@@ -131,6 +135,7 @@ def build_controls(
     eos_token_ids: Collection[TokenId],
     penalties: PenaltyStates | None,
     device: torch.device | str,
+    constraints: ConstraintRuntime | None = None,
 ) -> LogitControls | None:
     """The transforms of a step, or ``None`` when no row asks for one.
 
@@ -141,12 +146,24 @@ def build_controls(
             ``min_tokens`` unless a request sets ``ignore_eos``.
         penalties: The requests' token counts.
         device: Where the logits are.
+        constraints: The running output constraints; a row whose constraint is active gets its
+            structural mask. Only the first row of a request's window has one (no speculation
+            runs with a constraint).
     """
     has_eos = bool(eos_token_ids)
-    if not any(needs_controls(row.params, row.produced, has_eos=has_eos) for row in rows):
+    structural: list[NDArray[np.uint32] | None] = [None] * len(rows)
+    if constraints is not None and len(constraints):
+        seen: set[RequestId] = set()
+        for index, row in enumerate(rows):
+            if row.request_id not in seen:
+                seen.add(row.request_id)
+                structural[index] = constraints.mask(row.request_id)
+    if all(mask is None for mask in structural) and not any(
+        needs_controls(row.params, row.produced, has_eos=has_eos) for row in rows
+    ):
         return None
     return LogitControls(
-        bitmask=_bitmask(rows, vocab_size, eos_token_ids, device),
+        bitmask=_bitmask(rows, vocab_size, eos_token_ids, device, structural),
         bias=_bias(rows, device),
         penalties=_penalties(rows, penalties, device),
         logprobs=tuple(_logprob_request(row.params) for row in rows),
@@ -158,10 +175,11 @@ def _bitmask(
     vocab: int,
     eos: Collection[TokenId],
     device: torch.device | str,
+    structural: Sequence[NDArray[np.uint32] | None],
 ) -> torch.Tensor | None:
     words = (vocab + 31) // 32
     masks: list[np.ndarray | None] = []
-    for row in rows:
+    for row, grammar in zip(rows, structural, strict=True):
         params = row.params
         banned: set[int] = set()
         if row.produced < params.min_tokens:
@@ -169,7 +187,7 @@ def _bitmask(
             if not params.ignore_eos:
                 banned |= set(eos)
         if params.allowed_token_ids is None and not banned:
-            masks.append(None)
+            masks.append(grammar[:words].astype(np.uint64) if grammar is not None else None)
             continue
         if params.allowed_token_ids is None:
             bits = np.full(words, _ALL_BITS, dtype=np.uint64)
@@ -181,6 +199,8 @@ def _bitmask(
         for token in banned:
             if token < vocab:
                 bits[token // 32] &= ~np.uint64(1 << (token % 32)) & np.uint64(_ALL_BITS)
+        if grammar is not None:
+            bits &= grammar[:words].astype(np.uint64)
         masks.append(bits)
     if all(mask is None for mask in masks):
         return None

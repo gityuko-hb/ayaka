@@ -209,9 +209,16 @@ class EngineCore:
             self._runner.penalties.admit(
                 request.request_id, request.prompt_token_ids, request.sampling
             )
+            self._admit_constraint(request)
         except BaseException:
             self._scheduler.abort(request.request_id, FinishReason.CANCELLED)
             raise
+
+    def _admit_constraint(self, request: TokenizedRequest) -> None:
+        """Start the request's output constraint from its compiled grammar, if it has one."""
+        if request.constraint_id is not None:
+            matcher = self._input.compiler.matcher(request.constraint_id)
+            self._runner.constraints.admit(request.request_id, matcher)
 
     def _admit_family(self, request: TokenizedRequest, stream: bool) -> None:
         """Queue the ``n`` sequences of a request as siblings; all of them or none."""
@@ -241,6 +248,7 @@ class EngineCore:
                 self._runner.penalties.admit(
                     child.request_id, child.prompt_token_ids, child.sampling
                 )
+                self._admit_constraint(child)
         except BaseException:
             for child_id in added:
                 self._scheduler.abort(child_id, FinishReason.CANCELLED)
@@ -299,13 +307,16 @@ class EngineCore:
         """
         outputs: list[RequestOutput] = []
         penalties = self._runner.penalties
+        constraints = self._runner.constraints
         while events := self._scheduler.take_events():
-            if len(penalties):
+            if len(penalties) or len(constraints):
                 for event in events:
                     if event.finished:
                         penalties.drop(event.request_id)
+                        constraints.drop(event.request_id)
                     elif event.token_ids:
                         penalties.commit(event.request_id, event.token_ids)
+                        constraints.accept(event.request_id, event.token_ids)
             outputs += self._output.process(events)
         if self._families:
             for output in outputs:
@@ -320,6 +331,7 @@ class EngineCore:
         if self._closed:
             return
         self._closed = True
+        self._input.compiler.close()
         self._tokenizer.close()
 
     def _require_running(self) -> None:

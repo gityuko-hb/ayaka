@@ -24,11 +24,12 @@ With :meth:`ModelRunner.capture_graphs`, plain decode steps that fit a captured 
 CUDA graph (:class:`~ayaka.execution.graph.GraphRunner`) instead of running eagerly; every other
 step runs as before. Both paths draw the same tokens.
 
-A request that asks for masks, a logit bias, ``min_tokens``, a penalty or logprobs gets them
-from :mod:`ayaka.sampling.logits` in its step; such a step runs eagerly, never in a graph. The
-penalty counts are the one per-request state of sampling: the runner keeps them in
-:attr:`ModelRunner.penalties`, and the engine adds, grows and drops them as requests are admitted,
-emit tokens and end.
+A request that asks for masks, a logit bias, ``min_tokens``, a penalty or logprobs, or whose
+output constraint is active, gets them from :mod:`ayaka.sampling.logits` in its step; such a step
+runs eagerly, never in a graph. The penalty counts and the constraint matchers are the
+per-request state of sampling: the runner keeps them in :attr:`ModelRunner.penalties` and
+:attr:`ModelRunner.constraints`, and the engine adds, feeds and drops them as requests are
+admitted, emit tokens and end.
 
 This module imports torch. Import it through ``ayaka.execution``, which loads it on first use.
 """
@@ -46,6 +47,7 @@ from ayaka.layers.context import ForwardContext
 from ayaka.sampling.logits import LogitRow, build_controls, needs_controls
 from ayaka.sampling.penalties import PenaltyStates
 from ayaka.sampling.sampler import Sampler
+from ayaka.sampling.structured.runtime import ConstraintRuntime
 from ayaka.scheduler.step import StepOutput
 from ayaka.utils.validation import require_int
 
@@ -120,6 +122,7 @@ class ModelRunner:
         self._eos = frozenset(eos_token_ids)
         self._vocab = model.config.vocab_size
         self._penalties = PenaltyStates(self._vocab, self._device)
+        self._constraints = ConstraintRuntime()
         self._buffers: dict[int, KVBuffers] = {}
         for pool in pools:
             for layer_id in pool.group.layer_ids:
@@ -153,6 +156,11 @@ class ModelRunner:
     def penalties(self) -> PenaltyStates:
         """The penalty counts of the requests that use a penalty."""
         return self._penalties
+
+    @property
+    def constraints(self) -> ConstraintRuntime:
+        """The running output constraints of the requests that have one."""
+        return self._constraints
 
     @property
     def graph(self) -> GraphRunner | None:
@@ -236,6 +244,7 @@ class ModelRunner:
             eos_token_ids=self._eos,
             penalties=self._penalties,
             device=self._device,
+            constraints=self._constraints,
         )
         logprobs = self._sampler.sample(logits, inputs.sampling, inputs.sampled, controls)
         return self._builder.read_sampled(count), logprobs
@@ -243,8 +252,10 @@ class ModelRunner:
     def _needs_controls(self, step: StepInput) -> bool:
         """Whether a request of the step needs masks, bias, penalties or logprobs now."""
         has_eos = bool(self._eos)
+        constraints = self._constraints
         return any(
             needs_controls(params, step.output_length(index), has_eos=has_eos)
+            or (len(constraints) > 0 and constraints.active(step.request_ids[index]))
             for index, params in enumerate(step.sampling_params)
         )
 

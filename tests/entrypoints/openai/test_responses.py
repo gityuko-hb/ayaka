@@ -120,16 +120,12 @@ class TestReading:
                 "input_image",
             ),
             (
-                {"tools": [{**_WEATHER, "strict": True}]},
-                UnsupportedFeatureError,
-                "strict",
-            ),
-            (
                 {"text": {"format": {"type": "json_schema"}}},
-                UnsupportedFeatureError,
-                "structured output",
+                InvalidRequestError,
+                "needs a schema",
             ),
-            ({"tool_choice": "required"}, UnsupportedFeatureError, "forcing"),
+            ({"text": {"format": {"type": "xml"}}}, InvalidRequestError, "text.format"),
+            ({"tool_choice": "required"}, InvalidRequestError, "no function tools"),
             ({"input": []}, InvalidRequestError, "input"),
         ],
     )

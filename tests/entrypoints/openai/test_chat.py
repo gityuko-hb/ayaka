@@ -142,12 +142,17 @@ class TestReading:
                 "deprecated",
             ),
             (
+                {"messages": [{"role": "user", "content": "x"}], "tool_choice": "required"},
+                InvalidRequestError,
+                "no tools",
+            ),
+            (
                 {
                     "messages": [{"role": "user", "content": "x"}],
-                    "tools": [{"type": "function", "function": {"name": "f", "strict": True}}],
+                    "response_format": {"type": "json_schema", "json_schema": {"name": "a"}},
                 },
-                UnsupportedFeatureError,
-                "strict",
+                InvalidRequestError,
+                "needs a schema",
             ),
             (
                 {"messages": [{"role": "user", "content": "x"}], "stop": [1]},

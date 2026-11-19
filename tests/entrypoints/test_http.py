@@ -201,12 +201,12 @@ class TestErrors:
             ({"messages": [{"role": "user", "content": 3}]}, 400, "invalid_request", None),
             (_chat("x", 2, top_logprobs=50, logprobs=True), 400, "invalid_request", None),
             (
-                _chat("x", 2, response_format={"type": "json_object"}),
+                _chat("x", 2, response_format={"type": "yaml"}),
                 400,
-                "unsupported_feature",
+                "invalid_request",
                 "response_format",
             ),
-            (_chat("x", 2, tool_choice="required"), 400, "unsupported_feature", "tool_choice"),
+            (_chat("x", 2, tool_choice="required"), 400, "invalid_request", "tool_choice"),
             (
                 _chat("x", 2, tools=[{"type": "function", "function": {"name": "f"}}]),
                 400,

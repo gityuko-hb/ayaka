@@ -16,11 +16,13 @@ what to ask it and translates what comes back.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Final
 
 from ayaka.core.errors import InvalidRequestError, OverloadedError, UnsupportedFeatureError
 from ayaka.core.params import SamplingParams
 from ayaka.core.request import TokenizedRequest
+from ayaka.sampling.structured.compiler import GrammarCompiler
 from ayaka.tokenizers.contracts import (
     ChatInput,
     ChatMessage,
@@ -79,12 +81,28 @@ class InputProcessor:
         service: The tokenizer of the engine.
         max_model_len: The model's context length in tokens.
         vocab_size: The number of ids the model can embed and emit.
+        compiler: Compiles output constraints; built over the service's tokenizer when absent.
     """
 
-    def __init__(self, service: TokenizerService, *, max_model_len: int, vocab_size: int) -> None:
+    def __init__(
+        self,
+        service: TokenizerService,
+        *,
+        max_model_len: int,
+        vocab_size: int,
+        compiler: GrammarCompiler | None = None,
+    ) -> None:
         self._service = service
         self._max_model_len = max_model_len
         self._vocab_size = vocab_size
+        self._compiler = compiler or GrammarCompiler(
+            service.tokenizer, vocab_size=vocab_size, eos_token_ids=service.eos_token_ids
+        )
+
+    @property
+    def compiler(self) -> GrammarCompiler:
+        """The constraint compiler; the engine asks it for each request's matcher."""
+        return self._compiler
 
     def process(self, request: GenerateRequest) -> TokenizedRequest:
         """Tokenize and validate one request.
@@ -100,7 +118,7 @@ class InputProcessor:
             if isinstance(request.prompt, tuple)
             else TextInput(request.prompt)
         )
-        return self._tokenize(
+        tokenized = self._tokenize(
             prompt,
             request_id=request.request_id,
             sampling=request.sampling,
@@ -109,6 +127,11 @@ class InputProcessor:
             cache_salt=request.cache_salt,
             prefix_cache=request.prefix_cache,
         )
+        if request.structured is None:
+            return tokenized
+        # Compiled after tokenizing, so a prompt that does not fit is refused without compiling.
+        constraint_id = self._compiler.compile(request.structured)
+        return replace(tokenized, structured=request.structured, constraint_id=constraint_id)
 
     def process_chat(
         self,

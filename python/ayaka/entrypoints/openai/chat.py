@@ -277,12 +277,19 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         chat.sampling, max_tokens=serving.output_tokens(len(prompt), chat.max_tokens)
     )
     public_id = request[REQUEST_ID]
+    structured = serving.constraint(
+        chat.output,
+        chat.conversation,
+        tools=chat.tools,
+        parallel_tool_calls=chat.parallel_tool_calls,
+    )
     generation = await serving.start(
         prompt,
         sampling,
         public_id=public_id,
         tools=chat.tools,
         parallel_tool_calls=chat.parallel_tool_calls,
+        structured=structured,
     )
     meta = _Meta(f"chatcmpl-{public_id}", int(time.time()), serving.model_name)
     try:

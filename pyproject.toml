@@ -68,6 +68,13 @@ flashinfer = [
 serve = [
     "aiohttp>=3.14.5",
 ]
+# Structured output (JSON schema, JSON object, tool-call grammars; ayaka.sampling.structured).
+# llguidance has no dependencies of its own and ships wheels for Linux, Windows and macOS; it is
+# imported only when a request asks for a constraint, so `import ayaka` never loads it.
+#   uv sync --extra cpu --extra serve --extra structured
+structured = [
+    "llguidance>=1.9.1,<2",
+]
 
 [tool.hatch.version]
 path = "python/ayaka/__version__.py"
