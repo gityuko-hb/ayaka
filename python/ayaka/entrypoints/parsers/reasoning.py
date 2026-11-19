@@ -98,7 +98,7 @@ class ReasoningParser:
         self._scanner = MarkerScanner((self._open, self._close))
         self._inside = fmt.starts_inside
         self._strip_leading = fmt.starts_inside
-        self._trailing = ""  # whitespace at the end of the reasoning seen so far
+        self._trailing: list[str] = []  # whitespace at the end of the reasoning seen so far
         self._answer_tokens: tuple[int, ...] = ()
 
     @property
@@ -146,7 +146,7 @@ class ReasoningParser:
             if marker is None:
                 return pieces
             if self._inside:
-                self._trailing = ""  # whitespace before the closing marker is layout
+                self._trailing.clear()  # whitespace before the closing marker is layout
             self._inside = not self._inside
             self._strip_leading = True
 
@@ -155,8 +155,8 @@ class ReasoningParser:
         pieces: list[tuple[bool, str]] = []
         self._emit(self._scanner.flush(), pieces)
         if self._inside and self._trailing:
-            pieces.append((True, self._trailing))
-            self._trailing = ""
+            pieces.append((True, "".join(self._trailing)))
+        self._trailing.clear()
         return pieces
 
     def _emit(self, text: str, pieces: list[tuple[bool, str]]) -> None:
@@ -170,8 +170,11 @@ class ReasoningParser:
         if not self._inside:
             pieces.append((False, text))
             return
-        text = self._trailing + text
         body = text.rstrip()
-        self._trailing = text[len(body) :]
-        if body:
-            pieces.append((True, body))
+        if not body:
+            self._trailing.append(text)  # a run of whitespace costs its length, not its square
+            return
+        pieces.append((True, "".join(self._trailing) + body))
+        self._trailing.clear()
+        if len(body) < len(text):
+            self._trailing.append(text[len(body) :])

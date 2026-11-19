@@ -521,20 +521,28 @@ def collect_choices(events: Iterable[OutputEvent], count: int) -> list[Collected
 
 
 def collect(events: Iterable[OutputEvent]) -> Collected:
-    """Gather a stream of events into one answer."""
+    """Gather a stream of events into one answer.
+
+    Text is gathered in lists and joined once, so an answer of ``L`` characters in ``k`` pieces
+    costs ``O(L)``, not ``O(L * k)``.
+    """
     answer = Collected()
     calls: dict[int, CollectedToolCall] = {}
+    texts: list[str] = []
+    reasoning: list[str] = []
+    arguments_of: dict[int, list[str]] = {}
     for event in events:
         match event:
             case TextDelta(text):
-                answer.text += text
+                texts.append(text)
             case ReasoningDelta(text):
-                answer.reasoning += text
+                reasoning.append(text)
             case ToolCallStart(index, call_id, name):
                 calls[index] = CollectedToolCall(call_id, name)
+                arguments_of[index] = []
                 answer.tool_calls.append(calls[index])
             case ToolCallDelta(index, arguments):
-                calls[index].arguments += arguments
+                arguments_of[index].append(arguments)
             case ToolCallEnd(index, valid):
                 calls[index].valid = valid
             case UsageEvent():
@@ -547,4 +555,8 @@ def collect(events: Iterable[OutputEvent]) -> Collected:
                 answer.logprobs += entries
             case ChoiceEvent():
                 pass  # one choice of several: collect_choices sorts those
+    answer.text = "".join(texts)
+    answer.reasoning = "".join(reasoning)
+    for index, pieces in arguments_of.items():
+        calls[index].arguments = "".join(pieces)
     return answer
