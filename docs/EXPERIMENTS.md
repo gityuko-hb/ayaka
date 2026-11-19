@@ -139,3 +139,29 @@ gains more from the higher clocks than Ayaka does.
   1 KiB receive buffer and never reads (B); A B B A, five pairs; the measured value is the median
   time between text frames of the two readers, and the ratio B/A per pair.
 - Threshold, written before the run: isolation holds when the median ratio B/A is at most 1.25.
+
+### First run: invalid, the stuck client never blocked the server (2026-11-19)
+
+Run at `8d4ed71` (`slow-client` setup above, 2 s before the readers): median ratio B/A 1.068, within
+the threshold, but no request was cancelled for reading too slowly. Checked afterwards:
+
+- The stuck client's receive queue stops at 1,152 bytes after 0.5 s (its `SO_RCVBUF` reads 2,304),
+  so it does stop reading.
+- With `--slow-client-timeout 10`, the server cancelled it 40.8 s after it opened: the server
+  was blocked only from about 31 s on. Linux grows the send buffer to 4 MB (`tcp_wmem` 4096
+  16384 4194304) and the server's own write buffer takes more, which at SmolLM2's speed is half a
+  minute of output.
+
+Every B phase of that run ended about 3 s after its stuck client opened, so no reader ever ran
+next to a blocked write. The ratio is discarded; the run is not committed as a result.
+
+### Second run: setup and threshold, written before the run
+
+- Same server, model and flags, the default `--slow-client-timeout` (30 s).
+- A B phase opens the stuck client, waits 40 s, runs the 2 readers, then keeps the stuck client open
+  until `/metrics` counts its slow-client cancellation. The server was blocked from
+  `cancelled - 30 s`; a B phase counts only if that is before its readers started and the
+  cancellation is after they ended. Any phase that fails this makes the run invalid (exit 2).
+- A B B A, five pairs; the measured value is unchanged (median gap between the readers' text
+  frames, ratio B/A per pair).
+- Threshold, unchanged: isolation holds when the median ratio B/A is at most 1.25.
