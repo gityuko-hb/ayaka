@@ -125,8 +125,8 @@ class TestGenerate:
         self, checkpoint: TinyCheckpoint
     ) -> None:
         async def body(llm: AsyncLLM) -> None:
-            with pytest.raises(UnsupportedFeatureError, match="logprobs"):
-                await llm.add_request(_request("lp", "x", 2, logprobs=1))
+            with pytest.raises(UnsupportedFeatureError, match="prompt_logprobs"):
+                await llm.add_request(_request("lp", "x", 2, prompt_logprobs=1))
             assert llm.num_streams == 0
             # The engine is still fine.
             assert len(await _collect(await llm.add_request(_request("ok", "x", 2)))) >= 1

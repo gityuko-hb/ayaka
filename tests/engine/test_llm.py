@@ -217,7 +217,7 @@ class TestStream:
 
     def test_a_refused_prompt_raises_when_the_stream_is_made(self, llm: LLM) -> None:
         with pytest.raises(UnsupportedFeatureError):
-            llm.stream("x", SamplingParams(logprobs=1))
+            llm.stream("x", SamplingParams(prompt_logprobs=1))
 
     def test_a_chat_message_without_a_role_is_invalid(self, llm: LLM) -> None:
         with pytest.raises(InvalidRequestError, match="role and content"):
@@ -406,13 +406,9 @@ class TestRefusals:
         "sampling",
         [
             SamplingParams(return_sampling_support=True),
-            SamplingParams(logprobs=1),
-            SamplingParams(repetition_penalty=1.2),
-            SamplingParams(presence_penalty=0.5),
-            SamplingParams(logit_bias={3: 1.0}),
-            SamplingParams(allowed_token_ids=frozenset({1, 2})),
+            SamplingParams(prompt_logprobs=1),
         ],
-        ids=["sampling_support", "logprobs", "repetition", "presence", "logit_bias", "allowed_ids"],
+        ids=["sampling_support", "prompt_logprobs"],
     )
     def test_an_unsupported_feature_is_refused_before_anything_is_queued(
         self, llm: LLM, sampling: SamplingParams

@@ -24,6 +24,12 @@ With :meth:`ModelRunner.capture_graphs`, plain decode steps that fit a captured 
 CUDA graph (:class:`~ayaka.execution.graph.GraphRunner`) instead of running eagerly; every other
 step runs as before. Both paths draw the same tokens.
 
+A request that asks for masks, a logit bias, ``min_tokens``, a penalty or logprobs gets them
+from :mod:`ayaka.sampling.logits` in its step; such a step runs eagerly, never in a graph. The
+penalty counts are the one per-request state of sampling: the runner keeps them in
+:attr:`ModelRunner.penalties`, and the engine adds, grows and drops them as requests are admitted,
+emit tokens and end.
+
 This module imports torch. Import it through ``ayaka.execution``, which loads it on first use.
 """
 
@@ -37,13 +43,16 @@ from ayaka.core.errors import BackendError
 from ayaka.execution.graph import GraphRunner
 from ayaka.execution.inputs import InputBuilder
 from ayaka.layers.context import ForwardContext
+from ayaka.sampling.logits import LogitRow, build_controls, needs_controls
+from ayaka.sampling.penalties import PenaltyStates
 from ayaka.sampling.sampler import Sampler
 from ayaka.scheduler.step import StepOutput
 from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
+    from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import RequestId, TokenId
     from ayaka.execution.graph import CapturedBucket
     from ayaka.execution.inputs import ModelInputs
@@ -66,6 +75,8 @@ class ModelRunner:
         max_rows: Most rows (tokens) one step can have: at least the scheduler's prefill budget
             and its running requests times one plus the look-ahead.
         device: The device of the model and the cache.
+        eos_token_ids: The model's end-of-sequence ids, which ``min_tokens`` bans until enough
+            tokens exist.
 
     Raises:
         EngineError: If the model has more than one KV group.
@@ -101,9 +112,14 @@ class ModelRunner:
         *,
         max_rows: int,
         device: torch.device | str,
+        eos_token_ids: Collection[TokenId] = (),
     ) -> None:
         self._model = model
         self._sampler = Sampler(model.ops.sampling)
+        self._device = torch.device(device)
+        self._eos = frozenset(eos_token_ids)
+        self._vocab = model.config.vocab_size
+        self._penalties = PenaltyStates(self._vocab, self._device)
         self._buffers: dict[int, KVBuffers] = {}
         for pool in pools:
             for layer_id in pool.group.layer_ids:
@@ -132,6 +148,11 @@ class ModelRunner:
     def kv_buffers(self) -> Mapping[int, KVBuffers]:
         """The cache tensors of each layer, by layer id."""
         return self._buffers
+
+    @property
+    def penalties(self) -> PenaltyStates:
+        """The penalty counts of the requests that use a penalty."""
+        return self._penalties
 
     @property
     def graph(self) -> GraphRunner | None:
@@ -175,7 +196,12 @@ class ModelRunner:
         """
         try:
             with torch.inference_mode():
-                if drafts is None and self._graph is not None and self._graph.bucket_for(step):
+                if (
+                    drafts is None
+                    and self._graph is not None
+                    and self._graph.bucket_for(step)
+                    and not self._needs_controls(step)
+                ):
                     drawn = self._graph.run(step)
                     return StepOutput(
                         step_id=step.step_id,
@@ -184,33 +210,73 @@ class ModelRunner:
                         accepted=(0,) * step.num_requests,
                     )
                 inputs = self._builder.build(step, drafts)
-                sampled = self._forward(inputs)
+                sampled, logprobs = self._forward(step, inputs)
         except BackendError as exc:
             return StepOutput(
                 step_id=step.step_id, request_ids=step.request_ids, error=exc.to_info()
             )
-        return _answer(step, inputs, sampled)
+        return _answer(step, inputs, sampled, logprobs)
 
-    def _forward(self, inputs: ModelInputs) -> list[TokenId]:
-        """Run the model over the rows and sample the logit rows; return the drawn token ids."""
+    def _forward(
+        self, step: StepInput, inputs: ModelInputs
+    ) -> tuple[list[TokenId], list[TokenLogprob | None]]:
+        """Run the model over the rows and sample the logit rows.
+
+        Returns:
+            The drawn token ids, and per logit row its logprobs (empty if no row asked).
+        """
         hidden = self._model(inputs.token_ids, self._context(inputs))
-        if inputs.logit_rows.shape[0] == 0:
-            return []  # prefill chunks that all continue: the cache is written, nothing is drawn
+        count = int(inputs.logit_rows.shape[0])
+        if count == 0:
+            return [], []  # prefill chunks that all continue: the cache is written, none drawn
         logits = self._model.compute_logits(hidden.index_select(0, inputs.logit_rows))
-        self._sampler.sample(logits, inputs.sampling, inputs.sampled)
-        return self._builder.read_sampled(int(inputs.logit_rows.shape[0]))
+        controls = build_controls(
+            _logit_rows(step, inputs.logit_counts),
+            vocab_size=int(logits.shape[-1]),
+            eos_token_ids=self._eos,
+            penalties=self._penalties,
+            device=self._device,
+        )
+        logprobs = self._sampler.sample(logits, inputs.sampling, inputs.sampled, controls)
+        return self._builder.read_sampled(count), logprobs
+
+    def _needs_controls(self, step: StepInput) -> bool:
+        """Whether a request of the step needs masks, bias, penalties or logprobs now."""
+        has_eos = bool(self._eos)
+        return any(
+            needs_controls(params, step.output_length(index), has_eos=has_eos)
+            for index, params in enumerate(step.sampling_params)
+        )
 
     def _context(self, inputs: ModelInputs) -> ForwardContext:
         return ForwardContext(attention=inputs.attention, kv_buffers=self._buffers)
 
 
-def _answer(step: StepInput, inputs: ModelInputs, sampled: list[TokenId]) -> StepOutput:
+def _logit_rows(step: StepInput, logit_counts: Sequence[int]) -> list[LogitRow]:
+    """One :class:`LogitRow` per logit row: row ``j`` of a request draws its token ``j``."""
+    rows: list[LogitRow] = []
+    for index, taken in enumerate(logit_counts):
+        request_id = step.request_ids[index]
+        params = step.sampling_params[index]
+        produced = step.output_length(index)
+        rows += [LogitRow(request_id, params, produced + j) for j in range(taken)]
+    return rows
+
+
+def _answer(
+    step: StepInput,
+    inputs: ModelInputs,
+    sampled: list[TokenId],
+    logprobs: Sequence[TokenLogprob | None] = (),
+) -> StepOutput:
     """Turn the drawn tokens into per-request tokens, applying the draft acceptance rule."""
     tokens: list[tuple[TokenId, ...]] = []
     accepted: list[int] = []
+    per_request: list[tuple[TokenLogprob, ...] | None] = []
     cursor = 0
     for index, taken in enumerate(inputs.logit_counts):
         drawn = sampled[cursor : cursor + taken]
+        window = logprobs[cursor : cursor + taken] if logprobs else ()
         cursor += taken
         drafts = inputs.draft_tokens[index]
         count = 0
@@ -219,9 +285,12 @@ def _answer(step: StepInput, inputs: ModelInputs, sampled: list[TokenId]) -> Ste
         # ``count`` drafts matched, so the draws up to and including the one after them stand.
         tokens.append(tuple(drawn[: count + 1]))
         accepted.append(count)
+        kept = [entry for entry in window[: count + 1] if entry is not None]
+        per_request.append(tuple(kept) if kept and len(kept) == len(drawn[: count + 1]) else None)
     return StepOutput(
         step_id=step.step_id,
         request_ids=step.request_ids,
         tokens=tuple(tokens),
         accepted=tuple(accepted),
+        logprobs=tuple(per_request) if any(entry is not None for entry in per_request) else (),
     )

@@ -256,6 +256,7 @@ def build_engine(
             lookahead=0,
         ),
         device=device.device,
+        eos_token_ids=service.eos_token_ids,
     )
     startup = None
     if device.device_type == "cuda":

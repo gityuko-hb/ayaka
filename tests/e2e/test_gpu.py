@@ -116,12 +116,13 @@ def _generate(llm: LLM, sampling: SamplingParams) -> list[tuple[int, ...]]:
 
 
 def _greedy() -> SamplingParams:
-    return SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, min_tokens=NEW_TOKENS)
+    # ignore_eos fixes the length without a min_tokens mask, which would make the steps eager.
+    return SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, ignore_eos=True)
 
 
 def _sampled() -> SamplingParams:
     return SamplingParams(
-        temperature=0.8, top_k=40, top_p=0.95, seed=11, max_tokens=NEW_TOKENS, min_tokens=NEW_TOKENS
+        temperature=0.8, top_k=40, top_p=0.95, seed=11, max_tokens=NEW_TOKENS, ignore_eos=True
     )
 
 
@@ -203,6 +204,41 @@ def test_several_sequences_draw_the_same_in_graphs_and_eager(
 
     assert results[0] == results[1]
     assert len(set(results[0])) > 1  # the sequences drew from independent streams
+
+
+@pytest.mark.parametrize("backends", [("torch",), ("flashinfer", "torch")], ids=["torch", "fi"])
+def test_sampling_controls_run_on_the_gpu_beside_graphs(
+    gpt2: tuple[Path, ModelConfig, dict[str, Any]], backends: tuple[str, ...]
+) -> None:
+    """A request with penalties, a bias, min_tokens and logprobs runs eagerly next to graphs."""
+    directory, _, _ = gpt2
+    controlled = replace(
+        _sampled(),
+        presence_penalty=0.5,
+        repetition_penalty=1.2,
+        logit_bias={66: 2.0},
+        logprobs=2,
+        max_tokens=4,  # ends early, so the plain request's later steps replay graphs
+        min_tokens=3,
+    )
+    results = []
+    for graphs in (False, True):
+        with _llm(directory, backends=backends, dtype=DType.FP16, graphs=graphs) as llm:
+            outs = llm.generate([PROMPTS[0], PROMPTS[1]], [controlled, _greedy()])
+            assert isinstance(outs, list)
+            for out in outs:
+                assert out.error is None, out.error
+            logprobs = outs[0].outputs[0].logprobs
+            assert logprobs is not None
+            assert [entry.token_id for entry in logprobs] == list(outs[0].outputs[0].token_ids)
+            assert len(llm.engine.runner.penalties) == 0
+            if graphs:
+                assert llm.engine.runner.graph is not None
+                assert llm.engine.runner.graph.replays > 0  # the plain request still replays
+            results.append([out.outputs[0].token_ids for out in outs])
+            assert_cache_released(llm.engine)
+
+    assert results[0] == results[1]
 
 
 def test_flashinfer_and_torch_agree_on_greedy_tokens_in_fp16(

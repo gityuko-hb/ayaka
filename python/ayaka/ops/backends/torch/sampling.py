@@ -20,7 +20,16 @@ from ayaka.core.errors import BackendError
 from ayaka.ops.backends.torch._checks import capturing, require_compute_dtype, require_like
 from ayaka.ops.sampling import DrawStream
 
-__all__ = ["argmax", "philox_rounds", "sample", "uniform"]
+__all__ = [
+    "apply_logit_bias",
+    "apply_penalties",
+    "apply_token_bitmask",
+    "argmax",
+    "log_softmax",
+    "philox_rounds",
+    "sample",
+    "uniform",
+]
 
 _WORD = 0xFFFFFFFF
 # Philox-4x32 multipliers and Weyl key increments (Random123, philox.h).
@@ -126,6 +135,8 @@ def sample(
     min_p: torch.Tensor,
     u: torch.Tensor,
     out: torch.Tensor,
+    *,
+    kept_logprobs: torch.Tensor | None = None,
 ) -> None:
     op = "sampling.sample"
     _check_logits(op, logits)
@@ -139,6 +150,8 @@ def sample(
         require_like(op, name, tensor, (rows,), torch.float32)
     require_like(op, "top_k", top_k, (rows,), torch.int32)
     require_like(op, "out", out, (rows,), torch.int64)
+    if kept_logprobs is not None:
+        require_like(op, "kept_logprobs", kept_logprobs, (rows, vocab), torch.float32)
 
     greedy = temperature <= 0
     x = logits.float() / torch.where(greedy, 1.0, temperature)[:, None]
@@ -165,6 +178,79 @@ def sample(
     last = ((kept > 0).sum(dim=-1) - 1).clamp(min=0)
     chosen = order.gather(1, torch.minimum(first, last)[:, None])[:, 0]
     out.copy_(torch.where(greedy, order[:, 0], chosen))
+    if kept_logprobs is not None:
+        # The kept probabilities, renormalised, scattered back from the sorted order.
+        logp = torch.log(kept / cdf[:, -1:])
+        kept_logprobs.fill_(-torch.inf)
+        kept_logprobs.scatter_(1, order, logp)
+
+
+def apply_token_bitmask(logits: torch.Tensor, bitmask: torch.Tensor) -> None:
+    op = "sampling.apply_token_bitmask"
+    rows, vocab = _check_workspace(op, logits)
+    words = (vocab + 31) // 32
+    require_like(op, "bitmask", bitmask, (rows, words), torch.int32)
+    ids = torch.arange(vocab, device=logits.device)
+    unsigned = bitmask.to(torch.int64) & _WORD
+    bits = (unsigned.index_select(1, ids // 32) >> (ids % 32)) & 1
+    logits.masked_fill_(bits == 0, -torch.inf)
+
+
+def apply_logit_bias(
+    logits: torch.Tensor, rows: torch.Tensor, tokens: torch.Tensor, biases: torch.Tensor
+) -> None:
+    op = "sampling.apply_logit_bias"
+    _check_workspace(op, logits)
+    count = rows.shape[0] if rows.ndim == 1 else -1
+    require_like(op, "rows", rows, (count,), torch.int64)
+    require_like(op, "tokens", tokens, (count,), torch.int64)
+    require_like(op, "biases", biases, (count,), torch.float32)
+    # A masked logit stays masked: -inf plus a finite bias is -inf.
+    logits.index_put_((rows, tokens), biases, accumulate=True)
+
+
+def apply_penalties(
+    logits: torch.Tensor,
+    prompt_and_output: torch.Tensor,
+    output: torch.Tensor,
+    repetition: torch.Tensor,
+    frequency: torch.Tensor,
+    presence: torch.Tensor,
+) -> None:
+    op = "sampling.apply_penalties"
+    rows, vocab = _check_workspace(op, logits)
+    require_like(op, "prompt_and_output", prompt_and_output, (rows, vocab), torch.int32)
+    require_like(op, "output", output, (rows, vocab), torch.int32)
+    for name, tensor in (
+        ("repetition", repetition),
+        ("frequency", frequency),
+        ("presence", presence),
+    ):
+        require_like(op, name, tensor, (rows,), torch.float32)
+    r = repetition[:, None]
+    seen = prompt_and_output > 0
+    scaled = torch.where(logits > 0, logits / r, logits * r)
+    logits.copy_(torch.where(seen, scaled, logits))
+    logits.sub_(frequency[:, None] * output.to(torch.float32))
+    logits.sub_(presence[:, None] * (output > 0).to(torch.float32))
+
+
+def log_softmax(logits: torch.Tensor, out: torch.Tensor) -> None:
+    op = "sampling.log_softmax"
+    rows, vocab = _check_workspace(op, logits)
+    require_like(op, "out", out, (rows, vocab), torch.float32)
+    torch.log_softmax(logits, dim=-1, out=out)
+
+
+def _check_workspace(op: str, logits: torch.Tensor) -> tuple[int, int]:
+    """A ``[rows, vocab]`` float32 workspace the transforms change in place."""
+    if logits.ndim != 2 or logits.dtype != torch.float32:
+        raise BackendError(
+            f"{op}: logits must be a [rows, vocab] float32 workspace, "
+            f"got {logits.dtype} {list(logits.shape)}",
+            context={"op": op, "argument": "logits"},
+        )
+    return int(logits.shape[0]), int(logits.shape[1])
 
 
 def _check_logits(op: str, logits: torch.Tensor) -> None:

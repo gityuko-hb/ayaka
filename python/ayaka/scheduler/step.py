@@ -63,6 +63,8 @@ class StepInput:
             the previous step and must reach the device, freed rows included.
         sequence_indices: Per request, which output sequence of its parent it is (``n > 1``); it
             selects an independent random stream. Empty means 0 for every request.
+        output_lengths: Per request, the tokens it emitted before this step; ``min_tokens``
+            counts from it. Empty means 0 for every request.
 
     Raises:
         EngineError: If the fields disagree, a row count is below 1, or the mode does not fit the
@@ -80,6 +82,7 @@ class StepInput:
     sampling_params: tuple[SamplingParams, ...]
     table_updates: tuple[tuple[int, int, int, int], ...] = ()
     sequence_indices: tuple[int, ...] = ()
+    output_lengths: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         lengths = {
@@ -91,10 +94,14 @@ class StepInput:
             "need_logits": len(self.need_logits),
             "sampling_params": len(self.sampling_params),
         }
-        if self.sequence_indices:
-            lengths["sequence_indices"] = len(self.sequence_indices)
-            if min(self.sequence_indices) < 0:
-                raise EngineError(f"step {self.step_id}: a sequence index is negative")
+        for name, values in (
+            ("sequence_indices", self.sequence_indices),
+            ("output_lengths", self.output_lengths),
+        ):
+            if values:
+                lengths[name] = len(values)
+                if min(values) < 0:
+                    raise EngineError(f"step {self.step_id}: {name} holds a negative value")
         _require_same_length(self.step_id, lengths)
         if self.mode not in _STEP_MODES:
             raise EngineError(f"step {self.step_id}: a step cannot run in mode {self.mode}")
@@ -121,6 +128,10 @@ class StepInput:
     def sequence_index(self, index: int) -> int:
         """The output sequence of the request at batch position ``index``."""
         return self.sequence_indices[index] if self.sequence_indices else 0
+
+    def output_length(self, index: int) -> int:
+        """Tokens the request at batch position ``index`` emitted before this step."""
+        return self.output_lengths[index] if self.output_lengths else 0
 
     @property
     def num_requests(self) -> int:

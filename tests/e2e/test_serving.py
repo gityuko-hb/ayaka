@@ -108,6 +108,33 @@ def _base(client: TestClient[Any, Any]) -> str:
 
 
 class TestOpenAISdk:
+    def test_logprobs_with_five_alternatives_parse(self, checkpoint: TinyCheckpoint) -> None:
+        async def body(base: str) -> None:
+            client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY)
+            options: dict[str, Any] = {
+                "model": "tiny",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 4,
+                "temperature": 0,
+                "logprobs": True,
+                "top_logprobs": 5,
+            }
+            whole = await client.chat.completions.create(**options)
+            content = whole.choices[0].logprobs.content
+            assert len(content) == 4
+            assert all(len(item.top_logprobs) == 5 for item in content)
+            assert "".join(item.token for item in content) == whole.choices[0].message.content
+
+            stream = await client.chat.completions.create(**options, stream=True)
+            tokens: list[str] = []
+            async for chunk in stream:
+                for choice in chunk.choices:
+                    if choice.logprobs is not None and choice.logprobs.content:
+                        tokens += [item.token for item in choice.logprobs.content]
+            assert tokens == [item.token for item in content]
+
+        _run(checkpoint, body)
+
     def test_two_choices_whole_and_streamed(self, checkpoint: TinyCheckpoint) -> None:
         async def body(base: str) -> None:
             client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY)

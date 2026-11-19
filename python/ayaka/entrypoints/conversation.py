@@ -32,6 +32,7 @@ from ayaka.utils.parsing import parse_json_strict
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
+    from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import FinishReason
 
 __all__ = [
@@ -357,6 +358,17 @@ class ErrorEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class TokenLogprobs:
+    """Logprobs of tokens the answer emitted, in order, when the request asked for them.
+
+    They describe tokens, not text: the text of the same tokens may arrive in an earlier or a
+    later event, because the decoder holds back a character that is not complete.
+    """
+
+    entries: tuple[TokenLogprob, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ChoiceEvent:
     """An event of one sequence of a request with ``n > 1`` (an OpenAI ``choice``).
 
@@ -380,6 +392,7 @@ type OutputEvent = (
     | UsageEvent
     | FinishEvent
     | ErrorEvent
+    | TokenLogprobs
     | ChoiceEvent
 )
 """Anything a request's output stream says."""
@@ -403,6 +416,8 @@ def merge_deltas(events: Iterable[OutputEvent]) -> list[OutputEvent]:
             and last.index == event.index
         ):
             merged[-1] = ToolCallDelta(event.index, last.arguments + event.arguments)
+        elif isinstance(event, TokenLogprobs) and isinstance(last, TokenLogprobs):
+            merged[-1] = TokenLogprobs(last.entries + event.entries)
         elif not _empty(event):
             merged.append(event)
     return merged
@@ -414,6 +429,8 @@ def _empty(event: OutputEvent) -> bool:
             return not text
         case ToolCallDelta(_, arguments):
             return not arguments
+        case TokenLogprobs(entries):
+            return not entries
         case _:
             return False
 
@@ -439,6 +456,7 @@ class Collected:
         usage: The token counts, if the stream reported them.
         finish: How the answer ended normally, or ``None``.
         error: How it ended otherwise, or ``None``.
+        logprobs: The logprobs of the emitted tokens, when the request asked for them.
     """
 
     text: str = ""
@@ -447,6 +465,7 @@ class Collected:
     usage: UsageEvent | None = None
     finish: FinishEvent | None = None
     error: ErrorEvent | None = None
+    logprobs: list[TokenLogprob] = field(default_factory=list["TokenLogprob"])
 
 
 def collect_choices(events: Iterable[OutputEvent], count: int) -> list[Collected]:
@@ -493,6 +512,8 @@ def collect(events: Iterable[OutputEvent]) -> Collected:
                 answer.finish = event
             case ErrorEvent():
                 answer.error = event
+            case TokenLogprobs(entries):
+                answer.logprobs += entries
             case ChoiceEvent():
                 pass  # one choice of several: collect_choices sorts those
     return answer

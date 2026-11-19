@@ -45,7 +45,8 @@ CONFIGS = [
 
 
 def _generate(llm: LLM, batch: int, tokens: int) -> float:
-    params = SamplingParams(temperature=0.0, max_tokens=tokens, min_tokens=tokens)
+    # ignore_eos fixes the length; a min_tokens mask would run the decode steps eagerly.
+    params = SamplingParams(temperature=0.0, max_tokens=tokens, ignore_eos=True)
     started = time.perf_counter()
     outs = llm.generate([PROMPT] * batch, params)
     elapsed = time.perf_counter() - started

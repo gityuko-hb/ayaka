@@ -1,11 +1,23 @@
 """Sampling ops: the contract a backend implements to turn logits into tokens.
 
-Three ops cover the M0 path: :meth:`SamplingOps.uniform` produces the random
+Three ops cover the plain path: :meth:`SamplingOps.uniform` produces the random
 numbers, :meth:`SamplingOps.argmax` is the greedy path and
 :meth:`SamplingOps.sample` draws from the filtered distribution. The order of
 the steps and the tie-breaking rules are part of the contract, because every
 backend must return the same token for the same logits and the same random
 number (up to the last bit of the softmax, see below).
+
+Four in-place transforms run before them when a request asks for them, always in
+this order, on a float32 copy of the logits the caller owns::
+
+    1. apply_token_bitmask      structural masks, allowed ids, stop ids before min_tokens
+    2. apply_logit_bias         sparse additive bias
+    3. (raw logprobs: log_softmax here)
+    4. apply_penalties          repetition, frequency, presence
+    5-7. sample                 temperature, filters, draw (kept_logprobs: the final distribution)
+
+A mask writes ``-inf``; nothing after it can bring a masked token back, and none of the transforms
+introduces NaN.
 
 The random number
 -----------------
@@ -123,6 +135,8 @@ class SamplingOps(Protocol):
         min_p: Tensor,
         u: Tensor,
         out: Tensor,
+        *,
+        kept_logprobs: Tensor | None = None,
     ) -> None:
         """Write one token id per row into ``out`` (int64), as the module docstring defines.
 
@@ -132,5 +146,58 @@ class SamplingOps(Protocol):
         top-p and ``min_p`` 0 disables min-p. ``u`` is in ``[0, 1)``. The
         parameters have been validated by ``ayaka.core.params.SamplingParams``;
         the op does not repair them.
+
+        ``kept_logprobs``, when given (``[B, vocab]`` float32), receives the log of the
+        distribution the token was drawn from: the kept set renormalised, ``-inf`` for every
+        dropped token, in vocabulary order. It comes from the same pass as the draw. A greedy
+        row gets the filtered distribution at temperature 1.
+        """
+        ...
+
+    def apply_token_bitmask(self, logits: Tensor, bitmask: Tensor) -> None:
+        """Set ``logits[r, t]`` to ``-inf`` where bit ``t % 32`` of ``bitmask[r, t // 32]`` is 0.
+
+        ``logits`` is ``[B, vocab]`` float32 and changed in place; ``bitmask`` is
+        ``[B, ceil(vocab / 32)]`` int32, read as unsigned 32-bit words, least significant bit
+        first. A row of all ones changes nothing.
+        """
+        ...
+
+    def apply_logit_bias(
+        self, logits: Tensor, rows: Tensor, tokens: Tensor, biases: Tensor
+    ) -> None:
+        """Add ``biases[i]`` to ``logits[rows[i], tokens[i]]`` for every ``i``, in place.
+
+        ``rows`` and ``tokens`` are int64 ``[N]``, ``biases`` float32 ``[N]``; a pair appears at
+        most once. A masked logit stays ``-inf``.
+        """
+        ...
+
+    def apply_penalties(
+        self,
+        logits: Tensor,
+        prompt_and_output: Tensor,
+        output: Tensor,
+        repetition: Tensor,
+        frequency: Tensor,
+        presence: Tensor,
+    ) -> None:
+        """Apply the three penalties to ``logits`` (``[B, vocab]`` float32) in place.
+
+        ``prompt_and_output`` and ``output`` are ``[B, vocab]`` int32 token counts;
+        ``repetition``, ``frequency`` and ``presence`` are float32 ``[B]``. For every token::
+
+            x = x / r if x > 0 else x * r      where prompt_and_output > 0   (repetition)
+            x = x - f * output                                                (frequency)
+            x = x - s                          where output > 0               (presence)
+
+        A neutral row (``r = 1``, ``f = s = 0``) is unchanged; ``-inf`` stays ``-inf``.
+        """
+        ...
+
+    def log_softmax(self, logits: Tensor, out: Tensor) -> None:
+        """Write the log-softmax of every row of ``logits`` into ``out`` (both ``[B, vocab]``).
+
+        ``out`` is float32; ``-inf`` logits give ``-inf``.
         """
         ...

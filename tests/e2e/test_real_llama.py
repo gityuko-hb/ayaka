@@ -319,7 +319,10 @@ def test_greedy_tokens_match_transformers_on_the_gpu(
         cache=CacheConfig(block_size=16, kv_reserve_tokens=2048),
         scheduler=SchedulerConfig(max_running=4, max_tokens_per_step=256),
     )
-    sampling = SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, min_tokens=NEW_TOKENS)
+    # transformers' reference uses min_new_tokens; ignore_eos gives the same tokens while EOS is
+    # not the best token, and keeps the decode steps in CUDA graphs (a min_tokens mask runs
+    # eagerly).
+    sampling = SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, ignore_eos=True)
     chosen = bool(os.environ.get(LOCAL_PATH_VARIABLE))
 
     with _open_llm(config, chosen=chosen) as llm:
@@ -372,7 +375,10 @@ def test_a_warm_prefix_cache_gives_the_reference_tokens_on_the_gpu(
         cache=CacheConfig(block_size=16, kv_reserve_tokens=2048),
         scheduler=SchedulerConfig(max_running=4, max_tokens_per_step=256),
     )
-    sampling = SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, min_tokens=NEW_TOKENS)
+    # transformers' reference uses min_new_tokens; ignore_eos gives the same tokens while EOS is
+    # not the best token, and keeps the decode steps in CUDA graphs (a min_tokens mask runs
+    # eagerly).
+    sampling = SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, ignore_eos=True)
     chosen = bool(os.environ.get(LOCAL_PATH_VARIABLE))
 
     with _open_llm(config, chosen=chosen) as llm:

@@ -26,6 +26,7 @@ from ayaka.entrypoints.conversation import (
     FinishEvent,
     ReasoningDelta,
     TextDelta,
+    TokenLogprobs,
     ToolCallEnd,
     UsageEvent,
     merge_deltas,
@@ -169,6 +170,8 @@ class OutputParser:
         if self._calls is not None:
             self._calls.note_tokens(token_ids)
         self._route(pieces, events)
+        if completion is not None and completion.logprobs:
+            events.append(TokenLogprobs(completion.logprobs))
         if self._single_call and not output.finished:
             for position, event in enumerate(events):
                 if isinstance(event, ToolCallEnd):

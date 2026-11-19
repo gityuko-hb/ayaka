@@ -38,21 +38,17 @@ if TYPE_CHECKING:
     from ayaka.tokenizers.contracts import EncodeInput
     from ayaka.tokenizers.service import TokenizerService
 
-__all__ = ["InputProcessor", "require_supported"]
+__all__ = ["MAX_LOGPROBS", "InputProcessor", "require_supported"]
 
 #: What the sampler and the output path cannot do yet: a name for the message and a test that says
 #: whether a request asks for it. A feature leaves this table when its implementation lands.
 _UNSUPPORTED: Final[tuple[tuple[str, Callable[[SamplingParams], bool]], ...]] = (
-    ("repetition_penalty", lambda p: p.repetition_penalty != 1.0),
-    ("frequency_penalty", lambda p: p.frequency_penalty != 0.0),
-    ("presence_penalty", lambda p: p.presence_penalty != 0.0),
-    ("logit_bias", lambda p: bool(p.logit_bias)),
-    ("allowed_token_ids", lambda p: p.allowed_token_ids is not None),
-    ("logprobs", lambda p: p.logprobs is not None),
     ("prompt_logprobs", lambda p: p.prompt_logprobs is not None),
-    ("logprob_token_ids", lambda p: p.logprob_token_ids is not None),
     ("return_sampling_support", lambda p: p.return_sampling_support),
 )
+
+#: Most alternatives a request may ask for per token (OpenAI's ``top_logprobs`` limit).
+MAX_LOGPROBS: Final = 20
 
 
 def require_supported(sampling: SamplingParams, *, can_decode_text: bool = True) -> None:
@@ -173,7 +169,7 @@ class InputProcessor:
             vocab_size=self._vocab_size,
             prompt_tokens=len(encoded.token_ids),
             max_model_len=limit,
-            max_logprobs=0,
+            max_logprobs=MAX_LOGPROBS,
         )
         return TokenizedRequest(
             request_id=request_id,
