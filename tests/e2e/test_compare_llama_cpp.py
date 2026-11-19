@@ -181,6 +181,24 @@ class TestRun:
         with pytest.raises(RuntimeError, match="exited before it was healthy"):
             compare.wait_healthy("http://127.0.0.1:9", 5.0, alive=lambda: False)
 
+    def test_an_engine_that_exits_says_why(self, tmp_path: Path) -> None:
+        engine = compare.Engine(
+            "ayaka",
+            f"http://127.0.0.1:{_free_port()}",
+            [
+                sys.executable,
+                "-c",
+                "import sys; print('KV floor: short 54556263', file=sys.stderr)",
+            ],
+            "m",
+            None,
+            "fp16",
+        )
+        plan = compare.Plan(prompts=[], rounds=1, max_tokens=1, timeout=30.0, key=None)
+
+        with pytest.raises(RuntimeError, match="short 54556263"):
+            compare.run_slot(engine, plan, 0, running=[])
+
     def test_a_missing_model_file_stops_the_run(
         self, fakes: dict[str, Any], tmp_path: Path
     ) -> None:

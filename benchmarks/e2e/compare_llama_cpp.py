@@ -36,6 +36,7 @@ import shlex
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -43,7 +44,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import IO, Any, Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -111,12 +112,30 @@ def file_hash(path: Path | None) -> str | None:
     return digest.hexdigest()
 
 
-def wait_healthy(url: str, timeout: float, *, alive: Any = None) -> None:
-    """Poll ``/health`` until it answers 200, the process dies, or the time is up."""
+def output_tail(stream: IO[bytes] | None, lines: int = 20) -> str:
+    """The last ``lines`` lines an engine wrote, for an error that says why it stopped."""
+    if stream is None:
+        return ""
+    stream.flush()
+    stream.seek(0)
+    text = stream.read().decode("utf-8", errors="replace")
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def wait_healthy(
+    url: str, timeout: float, *, alive: Any = None, output: IO[bytes] | None = None
+) -> None:
+    """Poll ``/health`` until it answers 200, the process dies, or the time is up.
+
+    ``output`` is the file the engine writes its stdout and stderr to; when the engine exits,
+    its last lines go into the error.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if alive is not None and not alive():
-            raise RuntimeError(f"the engine at {url} exited before it was healthy")
+            tail = output_tail(output)
+            said = f"; its last output:\n{tail}" if tail else ""
+            raise RuntimeError(f"the engine at {url} exited before it was healthy{said}")
         try:
             with urllib.request.urlopen(url.rstrip("/") + "/health", timeout=5) as response:  # noqa: S310
                 if response.status == 200:
@@ -263,9 +282,12 @@ def run_slot(engine: Engine, plan: Plan, round_index: int, *, running: list[str]
     idle = VramSampler.used()
     temperature = VramSampler.temperature()
     up_since = time.time()
+    # The engine's output goes to a temporary file, not to a pipe nobody reads (a full pipe
+    # would block the engine), and is kept only to explain a start that fails.
+    output = tempfile.TemporaryFile() if engine.command is not None else None  # noqa: SIM115
     if engine.command is not None:
         engine.process = subprocess.Popen(  # noqa: S603  # the user's own command
-            engine.command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            engine.command, stdout=output, stderr=subprocess.STDOUT
         )
     running.append(engine.name)
     try:
@@ -274,6 +296,7 @@ def run_slot(engine: Engine, plan: Plan, round_index: int, *, running: list[str]
             engine.url,
             plan.timeout,
             alive=(lambda: process.poll() is None) if process is not None else None,
+            output=output,
         )
         rows: list[dict[str, Any]] = []
         with VramSampler() as vram:
@@ -312,6 +335,8 @@ def run_slot(engine: Engine, plan: Plan, round_index: int, *, running: list[str]
     finally:
         stop_engine(engine)
         running.remove(engine.name)
+        if output is not None:
+            output.close()
 
 
 def stop_engine(engine: Engine) -> None:
