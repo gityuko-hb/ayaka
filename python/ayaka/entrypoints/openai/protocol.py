@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         FinishEvent,
         UsageEvent,
     )
-    from ayaka.entrypoints.http import ApiFailure
+    from ayaka.entrypoints.failures import ApiFailure
 
 __all__ = [
     "ChatRequest",

@@ -14,23 +14,21 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from ayaka.entrypoints.cli import EXIT_OK, EXIT_USAGE, main
-from ayaka.entrypoints.connect import (
-    TOOLS,
-    ServerInfo,
+from ayaka.entrypoints.cli import main
+from ayaka.entrypoints.connect.check import check_lines, run_check
+from ayaka.entrypoints.connect.observe import (
     agent_version,
-    check_lines,
     count_parts,
     largest,
     observer,
     recorder,
     redact_headers,
-    render_config,
-    run_check,
     save_observation,
     serve_proxy,
-    write_config,
 )
+from ayaka.entrypoints.connect.tools import TOOLS, ServerInfo, render_config
+from ayaka.entrypoints.connect.write import write_config
+from ayaka.entrypoints.console import EXIT_OK, EXIT_USAGE
 
 if TYPE_CHECKING:
     from collections.abc import Callable

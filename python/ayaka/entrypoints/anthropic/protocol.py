@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
     from ayaka.core.params import SamplingParams
     from ayaka.entrypoints.conversation import Conversation, FinishEvent, UsageEvent
-    from ayaka.entrypoints.http import ApiFailure
+    from ayaka.entrypoints.failures import ApiFailure
 
 __all__ = [
     "MessagesRequest",

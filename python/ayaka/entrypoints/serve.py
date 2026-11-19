@@ -26,8 +26,9 @@ from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import FinishReason, RequestId
 from ayaka.engine.async_llm import AsyncLLM
-from ayaka.entrypoints.http import Serving, create_app
+from ayaka.entrypoints.http import create_app
 from ayaka.entrypoints.parsers.output import OutputFormat
+from ayaka.entrypoints.serving import Serving
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput
 
 if TYPE_CHECKING:

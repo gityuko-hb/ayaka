@@ -35,17 +35,9 @@ the requests themselves, credentials removed). It prints where it listens and wh
 and stops on SIGINT or SIGTERM: new requests get 503, requests in flight get
 ``--shutdown-timeout`` seconds, and a second signal exits at once.
 
-Exit codes are the contract of the command::
-
-    0    the text was generated, the server stopped cleanly, or the plan fits
-    1    an unexpected error: a bug; ``-v`` prints its traceback
-    2    the arguments or the request are wrong (a flag, a prompt too long, an unsupported option)
-    3    the model or the tokenizer cannot be loaded
-    4    something the run needs is not installed or not available (torch, a tokenizer package,
-         a GPU)
-    5    the memory plan does not fit this machine (``plan`` prints three ways out)
-    6    the engine failed while generating
-    130  interrupted
+Exit codes are the contract of the command; :mod:`ayaka.entrypoints.console` lists them (0 done,
+1 a bug, 2 a wrong argument or request, 3 a model that does not load, 4 something missing,
+5 a plan that does not fit, 6 an engine failure, 130 interrupted).
 
 A problem the user can fix is one line, ``ayaka: error: ...``, never a traceback.
 
@@ -59,9 +51,8 @@ import argparse
 import dataclasses
 import logging
 import sys
-import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TextIO, cast
+from typing import TYPE_CHECKING, Final, TextIO
 
 from ayaka.__version__ import __version__
 from ayaka.configs.cache import CacheConfig
@@ -69,7 +60,7 @@ from ayaka.configs.device import DeviceConfig
 from ayaka.configs.engine import EngineConfig
 from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.scheduler import SchedulerConfig
-from ayaka.configs.server import DEFAULT_PORT, ServerConfig, user_config_path
+from ayaka.configs.server import DEFAULT_PORT
 from ayaka.core.errors import (
     AyakaError,
     CapabilityError,
@@ -82,30 +73,37 @@ from ayaka.core.errors import (
 from ayaka.core.params import SamplingParams
 from ayaka.core.types import FinishReason
 from ayaka.engine.llm import LLM
-from ayaka.entrypoints.parsers.reasoning import reasoning_format
-from ayaka.entrypoints.parsers.tool_calls import tool_call_format
+from ayaka.entrypoints.console import (
+    EXIT_BUG,
+    EXIT_ENGINE,
+    EXIT_INTERRUPTED,
+    EXIT_LOAD,
+    EXIT_MEMORY,
+    EXIT_MISSING,
+    EXIT_OK,
+    EXIT_USAGE,
+    PROG,
+    say,
+)
+from ayaka.entrypoints.settings import (
+    config_file_path,
+    describe_server,
+    flag_values,
+    read_config_file,
+    server_config,
+)
 from ayaka.tokenizers.contracts import ChatMessage
 from ayaka.utils.dtypes import COMPUTE_DTYPES
 from ayaka.utils.logging import init_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Sequence
 
     from ayaka.core.outputs import RequestOutput
-    from ayaka.entrypoints.connect import ServerInfo, ToolRecord
 
 __all__ = ["main"]
 
-EXIT_OK: Final = 0
-EXIT_BUG: Final = 1
-EXIT_USAGE: Final = 2
-EXIT_LOAD: Final = 3
-EXIT_MISSING: Final = 4
-EXIT_MEMORY: Final = 5
-EXIT_ENGINE: Final = 6
-EXIT_INTERRUPTED: Final = 130
 
-_PROG: Final = "ayaka"
 _DTYPES: Final = {dtype.label: dtype for dtype in COMPUTE_DTYPES}
 
 
@@ -123,10 +121,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_usage(sys.stderr)
-        _say("error: no command given; try 'ayaka run --help' or 'ayaka serve --help'")
+        say("error: no command given; try 'ayaka run --help' or 'ayaka serve --help'")
         return EXIT_USAGE
     if args.command == "config" and args.action is None:
-        _say("error: say what to do: ayaka config show")
+        say("error: say what to do: ayaka config show")
         return EXIT_USAGE
     if getattr(args, "verbose", 0):
         init_logger("ayaka", level=logging.DEBUG if args.verbose > 1 else logging.INFO)
@@ -145,19 +143,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         }[args.command]
         return handler(args)
     except KeyboardInterrupt:
-        _say("interrupted")
+        say("interrupted")
         return EXIT_INTERRUPTED
     except AyakaError as exc:
         return _report(exc)
     except Exception as exc:
         if getattr(args, "verbose", 0):
             raise
-        _say(f"error: unexpected {type(exc).__name__}: {exc} (run with -v for the traceback)")
+        say(f"error: unexpected {type(exc).__name__}: {exc} (run with -v for the traceback)")
         return EXIT_BUG
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=_PROG, description="Ayaka: an LLM inference engine.")
+    parser = argparse.ArgumentParser(prog=PROG, description="Ayaka: an LLM inference engine.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", metavar="command")
 
@@ -279,44 +277,9 @@ def _bench_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser])
 
 def _bench(args: argparse.Namespace) -> int:
     """Run the benchmark and write its results; exit 2 when a sanity check failed."""
-    import json
+    from ayaka.entrypoints.bench import bench_command
 
-    from ayaka.entrypoints.bench import (
-        BenchOptions,
-        default_out,
-        run_bench,
-        summary_lines,
-        validate_results,
-        write_results,
-    )
-
-    config = _engine_config(args, max_running=args.max_running)
-    options = BenchOptions(model=args.model, quick=args.quick, seed=args.seed, record=args.record)
-    if args.record is not None:
-        _say(f"warning: {args.record} will hold the benchmark's prompts and answers as token ids")
-    try:
-        results = run_bench(config, options, say=_say)
-    except AyakaError:
-        raise  # a model that does not load or fit exits with its own code, as serve does
-    except (RuntimeError, OSError) as exc:
-        _say(f"the benchmark failed: {exc}")
-        return EXIT_BUG
-    problems = validate_results(results)
-    if problems:
-        _say("results.json does not validate: " + "; ".join(problems))
-        return EXIT_BUG
-    history = args.history
-    if history is None and (Path.cwd() / "benchmarks" / "history").is_dir():
-        history = Path.cwd() / "benchmarks" / "history"
-    out = args.out or default_out(results, Path.cwd())
-    path, line = write_results(results, out, history)
-    if args.json:
-        print(json.dumps(results, indent=2))
-    else:
-        for text in summary_lines(results):
-            print(text)
-    _say(f"wrote {path}" + (f"; summary line in {line}" if line else ""))
-    return EXIT_OK if results["valid"] else EXIT_USAGE
+    return bench_command(args, _engine_config(args, max_running=args.max_running))
 
 
 def _connect_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
@@ -548,7 +511,7 @@ def _run(args: argparse.Namespace) -> int:
     config = _engine_config(args)
     if not args.quiet:
         graphs = ", decode in CUDA graphs" if config.device.cuda_graph else ""
-        _say(
+        say(
             f"running {args.model} on {config.device.device} in {config.device.dtype.label} "
             f"(ops backends: {', '.join(config.device.backends)}{graphs})"
         )
@@ -581,125 +544,6 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
     )
 
 
-_SERVER_FLAGS: Final = (
-    ("host", "host"),
-    ("port", "port"),
-    ("cors_origin", "cors_origins"),
-    ("served_model_name", "served_model_names"),
-    ("reasoning_parser", "reasoning_parser"),
-    ("tool_call_parser", "tool_call_parser"),
-    ("max_body_bytes", "max_body_bytes"),
-    ("shutdown_timeout", "shutdown_timeout"),
-    ("sse_coalesce_ms", "sse_coalesce_ms"),
-    ("keepalive", "keepalive_seconds"),
-    ("slow_client_timeout", "slow_client_seconds"),
-    ("normalize_prompts", "normalize_prompts"),
-)
-
-
-def server_config(args: argparse.Namespace) -> ServerConfig:
-    """The server settings: the flags, then ``--config``'s ``[server]`` table, then defaults.
-
-    Raises:
-        ConfigError: If the file or a value is invalid.
-        InvalidRequestError: If the key file cannot be read.
-    """
-    values: dict[str, object] = {}
-    file = config_file_path(args)
-    if file is not None:
-        values.update(_config_file(file))
-    for flag, key in _SERVER_FLAGS:
-        value: object = getattr(args, flag)
-        if isinstance(value, list):
-            values[key] = tuple(cast("list[object]", value))
-        elif value is not None:
-            values[key] = value
-    if args.api_key is not None and args.api_key_file is not None:
-        raise InvalidRequestError("give --api-key or --api-key-file, not both")
-    if args.api_key is not None:
-        values["api_key"] = args.api_key
-    elif args.api_key_file is not None:
-        values["api_key"] = _read_key(args.api_key_file)
-    config = ServerConfig.from_mapping(values)
-    # Unknown parser names fail here, before anything loads.
-    if config.reasoning_parser is not None:
-        reasoning_format(config.reasoning_parser)
-    if config.tool_call_parser is not None:
-        tool_call_format(config.tool_call_parser)
-    return config
-
-
-def config_file_path(args: argparse.Namespace) -> Path | None:
-    """The configuration file to read: ``--config``, else the user's file when it exists."""
-    if args.config is not None:
-        return cast("Path", args.config)
-    default = user_config_path()
-    return default if default.is_file() else None
-
-
-def _flag_values(args: argparse.Namespace) -> dict[str, object]:
-    """The server settings given as flags, by setting name; the key reported only as set."""
-    values: dict[str, object] = {}
-    for flag, key in _SERVER_FLAGS:
-        value: object = getattr(args, flag)
-        if isinstance(value, list):
-            values[key] = tuple(cast("list[object]", value))
-        elif value is not None:
-            values[key] = value
-    if args.api_key is not None or args.api_key_file is not None:
-        values["api_key"] = "set"
-    return values
-
-
-def _config_file(path: Path) -> dict[str, object]:
-    try:
-        with path.open("rb") as handle:
-            document = tomllib.load(handle)
-    except OSError as exc:
-        raise ConfigError("config", "UNREADABLE", f"cannot read {path}: {exc}") from exc
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError("config", "INVALID", f"{path} is not valid TOML: {exc}") from exc
-    unknown = sorted(set(document) - {"server"})
-    if unknown:
-        raise ConfigError("config", "UNKNOWN_KEY", f"{path}: unknown tables {unknown}")
-    table = document.get("server", {})
-    if not isinstance(table, dict):
-        raise ConfigError("config.server", "INVALID", "must be a table")
-    return cast("dict[str, object]", table)
-
-
-def _read_key(path: Path) -> str:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise InvalidRequestError(f"cannot read the API key file {path}: {exc}") from exc
-    key = lines[0].strip() if lines else ""
-    if not key:
-        raise InvalidRequestError(f"the API key file {path} is empty")
-    return key
-
-
-def describe_server(config: ServerConfig, engine: EngineConfig, model: str) -> list[str]:
-    """The lines ``serve`` prints before it starts: the effective settings, never the key."""
-    device = engine.device
-    graphs = ", decode in CUDA graphs" if device.cuda_graph else ""
-    names = ", ".join(config.served_model_names) or model
-    lines = [
-        f"serving {model} as {names} on {device.device} in {device.dtype.label} "
-        f"(ops backends: {', '.join(device.backends)}{graphs})",
-        f"reasoning parser: {config.reasoning_parser or 'none'}; "
-        f"tool-call parser: {config.tool_call_parser or 'none (requests with tools get 400)'}; "
-        f"API key: {'required' if config.api_key else 'none'}; "
-        f"CORS: {', '.join(config.cors_origins) or 'off'}",
-    ]
-    if not config.is_loopback and config.api_key is None:
-        lines.append(
-            f"warning: {config.host} is reachable from other machines and no API key is set: "
-            "anyone who can reach this port can use the model; set --api-key-file"
-        )
-    return lines
-
-
 def _serve(args: argparse.Namespace) -> int:
     """Start the server and run it until a signal stops it."""
     import asyncio
@@ -712,8 +556,8 @@ def _serve(args: argparse.Namespace) -> int:
     from ayaka.entrypoints.serve import serve
 
     for line in describe_server(config, engine, args.model):
-        _say(line)
-    asyncio.run(serve(config, engine, model_name=args.model, say=_say, record=args.record))
+        say(line)
+    asyncio.run(serve(config, engine, model_name=args.model, say=say, record=args.record))
     return EXIT_OK
 
 
@@ -723,7 +567,7 @@ def _plan(args: argparse.Namespace) -> int:
     from dataclasses import asdict, replace
 
     from ayaka.engine.build import plan_engine
-    from ayaka.entrypoints.connect import tool_record
+    from ayaka.entrypoints.connect.tools import tool_record
     from ayaka.entrypoints.plan import (
         plan_lines,
         plan_report,
@@ -781,7 +625,7 @@ def _config_show(args: argparse.Namespace) -> int:
 
     server_config(args)  # the same checks serve makes: a bad value fails here too
     file = config_file_path(args)
-    rows = config_rows(_flag_values(args), _config_file(file) if file else {}, file)
+    rows = config_rows(flag_values(args), read_config_file(file) if file else {}, file)
     width = max(len(name) for name, _, _ in rows)
     print(f"configuration file: {file if file is not None else 'none'}")
     for name, value, source in rows:
@@ -789,232 +633,11 @@ def _config_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _connect_server(args: argparse.Namespace) -> ServerInfo:
-    """The server a tool should reach: flags, then the server settings, then the server itself.
-
-    A running server is asked for ``/v1/models``: it names the served model and says how many
-    tokens one request may hold, which ``--write`` puts into the tool's configuration
-    (``model_context_window`` for Codex, ``limit.context`` for OpenCode).
-    """
-    from ayaka.entrypoints.connect import ServerInfo
-
-    file = args.config if args.config is not None else user_config_path()
-    values = _config_file(file) if file is not None and file.is_file() else {}
-    settings = ServerConfig.from_mapping(values)
-    host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host  # noqa: S104
-    url = args.url or f"http://{host}:{settings.port}"
-    key = _read_key(args.api_key_file) if args.api_key_file is not None else settings.api_key
-    model = args.model or (settings.served_model_names[0] if settings.served_model_names else None)
-    entries = _models(url, key)
-    if model is None and entries:
-        model = str(entries[0].get("id"))
-    return ServerInfo(
-        base_url=url,
-        api_key=key,
-        model=model or "<model>",
-        small_model=args.small_model,
-        context_tokens=_context_of(entries, model),
-    )
-
-
-def _models(url: str, key: str | None) -> list[dict[str, object]]:
-    """The entries a running server reports on ``/v1/models``, or ``[]`` when it does not answer."""
-    import json
-    import urllib.request
-
-    headers = {"authorization": f"Bearer {key}"} if key else {}
-    request = urllib.request.Request(url.rstrip("/") + "/v1/models", headers=headers)  # noqa: S310
-    try:
-        # A local server answers at once; a second keeps a stopped one from stalling the print.
-        with urllib.request.urlopen(request, timeout=1) as response:  # noqa: S310
-            listing: object = json.loads(response.read())
-    except (OSError, ValueError):
-        return []
-    data = cast("dict[str, object]", listing).get("data") if isinstance(listing, dict) else None
-    if not isinstance(data, list):
-        return []
-    entries = cast("list[object]", data)
-    if not all(isinstance(entry, dict) for entry in entries):
-        return []
-    return cast("list[dict[str, object]]", entries)
-
-
-def _context_of(entries: Sequence[Mapping[str, object]], model: str | None) -> int | None:
-    """The context one request may hold: the tool's model's entry, else the first entry."""
-    for entry in entries:
-        if str(entry.get("id")) == model:
-            entries = [entry]
-            break
-    for entry in entries:
-        value = entry.get("max_context_tokens") or entry.get("max_model_len")
-        if isinstance(value, int):
-            return value
-    return None
-
-
 def _connect(args: argparse.Namespace) -> int:
-    """Print, write, check or observe a tool's configuration."""
-    import json
+    """Print, write, check or observe a tool's configuration (``ayaka.entrypoints.connect``)."""
+    from ayaka.entrypoints.connect.command import connect_command
 
-    from ayaka.entrypoints.connect import (
-        check_lines,
-        generic_setup,
-        redact,
-        render_config,
-        run_check,
-        tool_record,
-        tool_version,
-        write_config,
-    )
-
-    server = _connect_server(args)
-    record = tool_record(args.tool) if args.tool else None
-    if record is None:
-        if args.tool:
-            _say(f"no record for {args.tool!r}; known: claude-code, codex, opencode")
-        for line in generic_setup(server):
-            print(line)
-        return EXIT_USAGE if (args.write or args.check or args.observe) else EXIT_OK
-    if args.check:
-        report = run_check(record, server, timeout=args.timeout, version=tool_version(record))
-        if args.output == "json":
-            print(json.dumps(report.as_json(), indent=2))
-        else:
-            for line in check_lines(report):
-                print(line)
-        return EXIT_OK if report.ok else EXIT_BUG
-    if args.observe:
-        return _observe(args, record, server)
-    path = record.config_path()
-    if not args.write:
-        # Only what Ayaka adds: the rest of the user's file is theirs and is not printed.
-        print(f"# merge into {path} (ayaka connect {record.name} --write does it)")
-        print(redact(render_config(record, server, ""), server), end="")
-        print(f"# then: {record.usage}")
-        return EXIT_OK
-    for name in record.alternates:
-        if (path.parent / name).exists() and not path.exists():
-            raise InvalidRequestError(
-                f"{path.parent / name} holds this tool's settings and may carry comments a "
-                "rewrite would drop; merge the printed configuration into it by hand "
-                f"(ayaka connect {record.name})"
-            )
-    current = path.read_text(encoding="utf-8") if path.exists() else ""
-    try:
-        content = render_config(record, server, current)
-    except ValueError as exc:
-        raise InvalidRequestError(
-            f"{path} is not a JSON object Ayaka can merge into ({exc}); fix it or move it away"
-        ) from exc
-    interactive = sys.stdin is not None and sys.stdin.isatty()
-    if not args.yes and not interactive:
-        raise InvalidRequestError("--write without a terminal needs --yes")
-
-    def confirm(question: str) -> bool:
-        if args.yes:
-            return True
-        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
-
-    try:
-        write_config(
-            path,
-            content,
-            confirm=confirm,
-            create_dirs=args.create_dirs,
-            redactor=lambda text: redact(text, server),
-        )
-    except FileNotFoundError as exc:
-        raise InvalidRequestError(str(exc)) from exc
-    print(f"then: {record.usage}")
-    return EXIT_OK
-
-
-def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -> int:
-    """Run the proxy until the tool's first requests arrived; print and keep only the counts."""
-    import threading
-    from dataclasses import replace
-
-    from ayaka.configs.tokenizer import tokenizer_config_from_source
-    from ayaka.entrypoints.connect import (
-        ObservedPrompt,
-        largest,
-        observer,
-        recorder,
-        redact,
-        render_config,
-        save_observation,
-        serve_proxy,
-        tool_version,
-    )
-    from ayaka.tokenizers.factory import DefaultTokenizerFactory
-
-    if not args.tokenizer:
-        raise InvalidRequestError("--observe needs --tokenizer MODEL to count tokens")
-    loaded = DefaultTokenizerFactory.from_config(
-        tokenizer_config_from_source(ModelSourceConfig(args.tokenizer, offline=True))
-    )
-    tokenizer = loaded.tokenizer
-    if tokenizer is None:
-        raise InvalidRequestError(f"{args.tokenizer} has no tokenizer to count with")
-
-    def count(text: str) -> int:
-        return len(tokenizer.encode(text, add_special_tokens=False))
-
-    found: list[ObservedPrompt] = []
-    stop = threading.Event()
-    keep = recorder(args.record) if args.record is not None else None
-    observe = observer(record, args.tokenizer, count, found, installed=tool_version(record))
-
-    def on_request(path: str, headers: dict[str, str], body: bytes) -> None:
-        before = len(found)
-        observe(path, headers, body)
-        if keep is not None:
-            keep(path, headers, body)
-        if len(found) > before:
-            latest = found[-1]
-            _say(
-                f"request {len(found)}: {latest.tool_count} tools, fixed prompt "
-                f"{latest.fixed_tokens} tokens"
-            )
-        if len(found) >= args.count:
-            stop.set()
-
-    closed = threading.Event()
-    port = serve_proxy(
-        args.port, server.base_url, on_request, stop=stop, host=args.listen, closed=closed
-    )
-    shown = "127.0.0.1" if args.listen in ("0.0.0.0", "::") else args.listen  # noqa: S104
-    proxied = replace(server, base_url=f"http://{shown}:{port}")
-    _say(f"listening on {args.listen}:{port}, forwarding to {server.base_url}")
-    _say(
-        f"point {record.name} at the proxy with this configuration, then send one prompt "
-        f"(the proxy stops after {args.count} model requests, or on Ctrl-C):"
-    )
-    print(redact(render_config(record, proxied, ""), server), end="")
-    if args.record is not None:
-        _say(
-            f"warning: the requests are kept in {args.record}, prompts included; "
-            "remove personal and project content before sharing them"
-        )
-    try:
-        stop.wait()
-        closed.wait()  # the last request reaches the tool before the proxy goes away
-    except KeyboardInterrupt:
-        stop.set()
-    observed = largest(found)
-    if observed is None:
-        _say("no model request arrived")
-        return EXIT_USAGE
-    out = args.out or Path.cwd() / "ayaka-observations"
-    saved = save_observation(observed, out)
-    print(
-        f"{record.name} {observed.version or '(version unknown)'}: the largest of "
-        f"{len(found)} requests has system {observed.system_tokens} tokens and "
-        f"{observed.tool_count} tools {observed.tools_tokens} tokens: fixed prompt "
-        f"{observed.fixed_tokens} tokens with the {args.tokenizer} tokenizer "
-        f"(counts only, in {saved})"
-    )
-    return EXIT_OK
+    return connect_command(args)
 
 
 def _read_prompt(prompt: str | None) -> str:
@@ -1047,20 +670,20 @@ def _print(chunks: Iterator[RequestOutput], out: TextIO) -> int:
     reason = last.outputs[0].finish_reason
     if reason in (FinishReason.ERROR, FinishReason.TIMEOUT):
         detail = last.error.message if last.error is not None else str(reason)
-        _say(f"error: generation failed: {detail}")
+        say(f"error: generation failed: {detail}")
         return EXIT_ENGINE
     if last.error is not None:
-        _say(f"warning: {last.error.message}")
+        say(f"warning: {last.error.message}")
     return EXIT_OK
 
 
 def _report(error: AyakaError) -> int:
     """Print a typed error as one line (and its fix when it has one); return its exit code."""
     if isinstance(error, CapabilityError):
-        _say(f"error: {error.capability} is not available: {error.detail}")
-        _say(f"fix: {error.remedy}")
+        say(f"error: {error.capability} is not available: {error.detail}")
+        say(f"fix: {error.remedy}")
         return EXIT_MISSING
-    _say(f"error: {error.message if not isinstance(error, ConfigError) else error}")
+    say(f"error: {error.message if not isinstance(error, ConfigError) else error}")
     if isinstance(error, ModelLoadError):
         return EXIT_LOAD
     if isinstance(error, CapacityError):
@@ -1068,7 +691,3 @@ def _report(error: AyakaError) -> int:
     if isinstance(error, (InvalidRequestError, ConfigError)):
         return EXIT_USAGE
     return EXIT_ENGINE
-
-
-def _say(message: str) -> None:
-    print(f"{_PROG}: {message}", file=sys.stderr)

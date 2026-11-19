@@ -49,7 +49,7 @@ from ayaka.entrypoints.conversation import (
     collect,
     collect_choices,
 )
-from ayaka.entrypoints.http import NotReadyError, failure_for, failure_for_event
+from ayaka.entrypoints.failures import NotReadyError, failure_for, failure_for_event
 from ayaka.entrypoints.openai.chat import (
     ChatStreamEncoder,
     CompletionStreamEncoder,

@@ -14,7 +14,8 @@ import pytest
 
 from ayaka.configs.cache import CacheConfig
 from ayaka.core.errors import CapacityError
-from ayaka.entrypoints.cli import EXIT_LOAD, EXIT_MEMORY, EXIT_OK, main
+from ayaka.entrypoints.cli import main
+from ayaka.entrypoints.console import EXIT_LOAD, EXIT_MEMORY, EXIT_OK
 from ayaka.entrypoints.plan import shortfall_lines, shortfall_of
 
 torch: Any = pytest.importorskip("torch")
@@ -138,7 +139,7 @@ class TestCommand:
         assert fit["context_tokens"] == report["context"]["max_tokens_per_request"]
 
     def test_a_tool_fit_reads_the_plans_context(self) -> None:
-        from ayaka.entrypoints.connect import TOOLS
+        from ayaka.entrypoints.connect.tools import TOOLS
         from ayaka.entrypoints.plan import ToolFit, tool_fit_lines
 
         record = TOOLS["codex"]

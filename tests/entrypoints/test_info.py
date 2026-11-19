@@ -10,7 +10,8 @@ import pytest
 
 from ayaka.configs.server import ServerConfig, user_config_path
 from ayaka.core.errors import ConfigError
-from ayaka.entrypoints.cli import EXIT_OK, EXIT_USAGE, main
+from ayaka.entrypoints.cli import main
+from ayaka.entrypoints.console import EXIT_OK, EXIT_USAGE
 from ayaka.entrypoints.info import config_rows, info_lines, info_report
 
 if TYPE_CHECKING:

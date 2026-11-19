@@ -24,27 +24,19 @@ A pairs) is the comparison script's job; one ``bench`` run measures one configur
 
 from __future__ import annotations
 
-import contextlib
 import gc
 import json
 import logging
-import os
-import platform
-import re
 import statistics
-import subprocess
-import sys
-import threading
 import time
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from ayaka.__version__ import __version__
 from ayaka.core.errors import AyakaError
+from ayaka.entrypoints.bench_machine import MemorySampler, gpu_state, machine_info, power_source
 from ayaka.entrypoints.bench_prompts import (
     GROUPS,
     PROMPT_SET_VERSION,
@@ -52,9 +44,11 @@ from ayaka.entrypoints.bench_prompts import (
     material_ids,
     prompt_digest,
 )
+from ayaka.entrypoints.console import EXIT_BUG, EXIT_OK, EXIT_USAGE, say
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    import argparse
+    from collections.abc import Callable, Sequence
 
     from ayaka.configs.engine import EngineConfig
     from ayaka.core.outputs import RequestOutput
@@ -67,16 +61,10 @@ __all__ = [
     "SCHEMA",
     "BenchOptions",
     "SanityItem",
-    "default_out",
-    "machine_slug",
+    "bench_command",
     "median_of",
     "model_label",
-    "power_source",
     "run_bench",
-    "summary_line",
-    "summary_lines",
-    "validate_results",
-    "write_results",
 ]
 
 _LOG = logging.getLogger(__name__)
@@ -139,264 +127,6 @@ def model_label(model: str) -> str:
 def median_of(values: Sequence[float]) -> float | None:
     """The median, ``None`` for no value."""
     return statistics.median(values) if values else None
-
-
-# -- the machine -------------------------------------------------------------------------------
-
-
-def _version_of(name: str) -> str | None:
-    try:
-        return version(name)
-    except PackageNotFoundError:
-        return None
-
-
-def _git(*args: str) -> str | None:
-    root = Path(__file__).resolve().parents[3]
-    if not (root / ".git").exists():
-        return None
-    try:
-        result = subprocess.run(  # noqa: S603  # a fixed argv
-            ["git", "-C", str(root), *args],  # noqa: S607  # git from PATH
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout.strip()
-
-
-def _dirty() -> bool | None:
-    """Whether the tree differs from its commit; line endings alone (a Windows checkout's CRLF)
-    do not count, nor do untracked files."""
-    root = Path(__file__).resolve().parents[3]
-    if not (root / ".git").exists():
-        return None
-    try:
-        result = subprocess.run(  # noqa: S603  # a fixed argv
-            ["git", "-C", str(root), "diff", "--quiet", "--ignore-cr-at-eol", "HEAD", "--"],  # noqa: S607
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return {0: False, 1: True}.get(result.returncode)
-
-
-def _running_on_wsl() -> bool:
-    try:
-        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8").lower()
-    except OSError:
-        return False
-
-
-def power_source(
-    *,
-    platform_name: str | None = None,
-    sysfs: Path = Path("/sys/class/power_supply"),
-    wsl: bool | None = None,
-    windows_status: Callable[[], bool | None] | None = None,
-) -> str:
-    """``"ac"``, ``"battery"`` or ``"unknown"``.
-
-    Linux reads ``/sys/class/power_supply``; WSL2 has none there and asks Windows through
-    ``powershell.exe``; Windows asks ``GetSystemPowerStatus``.
-    """
-    name = platform_name or sys.platform
-    if name == "win32" or (wsl if wsl is not None else _running_on_wsl()):
-        online = (windows_status or _windows_on_ac)()
-        return "unknown" if online is None else ("ac" if online else "battery")
-    if not sysfs.is_dir():
-        return "unknown"
-    mains = [entry for entry in sysfs.iterdir() if _read(entry / "type") == "Mains"]
-    batteries = [entry for entry in sysfs.iterdir() if _read(entry / "type") == "Battery"]
-    if any(_read(entry / "online") == "1" for entry in mains):
-        return "ac"
-    if batteries:
-        return "battery"
-    return "ac" if not mains else "unknown"  # a machine with neither is a desktop on mains
-
-
-def _read(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-
-
-def _windows_on_ac() -> bool | None:
-    if sys.platform == "win32":
-        import ctypes
-
-        class _Status(ctypes.Structure):
-            _fields_ = (  # the ctypes layout
-                ("ac_line", ctypes.c_byte),
-                ("battery_flag", ctypes.c_byte),
-                ("battery_percent", ctypes.c_byte),
-                ("system_status", ctypes.c_byte),
-                ("battery_life", ctypes.c_ulong),
-                ("battery_full_life", ctypes.c_ulong),
-            )
-
-        status = _Status()
-        kernel = getattr(ctypes, "windll").kernel32  # noqa: B009  # windll exists on Windows only
-        if not kernel.GetSystemPowerStatus(ctypes.byref(status)):
-            return None
-        return {0: False, 1: True}.get(int(status.ac_line))
-    try:  # WSL2: Windows answers through interop
-        result = subprocess.run(
-            [  # noqa: S607  # Windows' own PowerShell through WSL interop
-                "powershell.exe",
-                "-NoProfile",
-                "-Command",
-                "Add-Type -AssemblyName System.Windows.Forms;"
-                "[System.Windows.Forms.SystemInformation]::PowerStatus.PowerLineStatus",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    answer = result.stdout.strip().lower()
-    return {"online": True, "offline": False}.get(answer)
-
-
-def _gpu_state() -> dict[str, object]:
-    """Temperature, memory and driver of GPU 0 from NVML; empty without one."""
-    from ayaka.utils.nvml_utils import get_driver_version, nvml_session
-
-    with nvml_session() as nvml:
-        if nvml is None:
-            return {}
-        try:
-            handle = nvml.nvmlDeviceGetHandleByIndex(0)
-            memory = nvml.nvmlDeviceGetMemoryInfo(handle)
-            return {
-                "temperature_c": int(nvml.nvmlDeviceGetTemperature(handle, 0)),
-                "memory_used_bytes": int(memory.used),
-                "memory_total_bytes": int(memory.total),
-                "driver": get_driver_version(nvml),
-            }
-        except Exception:  # NVML differs between drivers; a missing value is not an error
-            _LOG.debug("bench: NVML did not answer", exc_info=True)
-            return {}
-
-
-def machine_slug(gpu: str | None) -> str:
-    """A name for the results folder from the GPU, never the host name: ``rtx-3050-laptop``."""
-    if not gpu:
-        return "cpu"
-    words = re.sub(r"[^a-z0-9]+", "-", gpu.lower()).strip("-")
-    return re.sub(r"^(nvidia-)?(geforce-)?", "", words) or "gpu"
-
-
-def _machine() -> dict[str, object]:
-    import torch
-
-    cuda = torch.cuda.is_available()
-    free, total = torch.cuda.mem_get_info() if cuda else (None, None)
-    commit = _git("rev-parse", "HEAD")
-    return {
-        "gpu": torch.cuda.get_device_name(0) if cuda else None,
-        "capability": list(torch.cuda.get_device_capability(0)) if cuda else None,
-        "vram_free_bytes": free,
-        "vram_total_bytes": total,
-        "os": platform.platform(),
-        "wsl2": _running_on_wsl(),
-        "python": platform.python_version(),
-        "torch": torch.__version__,
-        "cuda": torch.version.cuda,
-        "flashinfer": _version_of("flashinfer-python"),
-        "llguidance": _version_of("llguidance"),
-        "transformers": _version_of("transformers"),
-        "ayaka": {
-            "version": __version__,
-            "commit": commit,
-            "dirty": _dirty(),
-        },
-    }
-
-
-# -- memory sampling ---------------------------------------------------------------------------
-
-
-def _rss_bytes() -> int | None:
-    """The process's resident memory now."""
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        class _Counters(ctypes.Structure):
-            _fields_ = (  # the ctypes layout
-                ("cb", wintypes.DWORD),
-                ("page_faults", wintypes.DWORD),
-                ("peak_working_set", ctypes.c_size_t),
-                ("working_set", ctypes.c_size_t),
-                ("quota_peak_paged", ctypes.c_size_t),
-                ("quota_paged", ctypes.c_size_t),
-                ("quota_peak_nonpaged", ctypes.c_size_t),
-                ("quota_nonpaged", ctypes.c_size_t),
-                ("pagefile", ctypes.c_size_t),
-                ("peak_pagefile", ctypes.c_size_t),
-            )
-
-        counters = _Counters()
-        counters.cb = ctypes.sizeof(counters)
-        windll = getattr(ctypes, "windll")  # noqa: B009  # windll exists on Windows only
-        process = windll.kernel32.GetCurrentProcess()
-        if not windll.psapi.GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb):
-            return None
-        return int(counters.working_set)
-    try:
-        pages = int(Path("/proc/self/statm").read_text(encoding="utf-8").split()[1])
-    except (OSError, ValueError, IndexError):
-        return None
-    return pages * os.sysconf("SC_PAGE_SIZE")
-
-
-class _MemorySampler:
-    """Samples VRAM (NVML, the whole device) and RAM (this process) on a thread."""
-
-    def __init__(self, interval: float = 0.1) -> None:
-        self.interval = interval
-        self.peak_vram: int | None = None
-        self.peak_rss: int | None = None
-        self.samples = 0
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def __enter__(self) -> _MemorySampler:
-        self._thread.start()
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self._stop.set()
-        self._thread.join()
-
-    def _run(self) -> None:
-        from ayaka.utils.nvml_utils import nvml_session
-
-        with nvml_session() as nvml:
-            handle = None
-            if nvml is not None:
-                with contextlib.suppress(Exception):
-                    handle = nvml.nvmlDeviceGetHandleByIndex(0)
-            while True:
-                if handle is not None and nvml is not None:
-                    with contextlib.suppress(Exception):
-                        used = int(nvml.nvmlDeviceGetMemoryInfo(handle).used)
-                        self.peak_vram = max(self.peak_vram or 0, used)
-                rss = _rss_bytes()
-                if rss is not None:
-                    self.peak_rss = max(self.peak_rss or 0, rss)
-                self.samples += 1
-                if self._stop.wait(self.interval):
-                    return
 
 
 # -- the measurements --------------------------------------------------------------------------
@@ -720,7 +450,7 @@ def run_bench(
     from ayaka.engine.llm import LLM
 
     started = datetime.now(UTC)
-    gpu_start = _gpu_state()
+    gpu_start = gpu_state()
     power = power_source()
     notes: list[str] = []
     if power == "battery":
@@ -729,7 +459,7 @@ def run_bench(
     plan = plan_engine(replace(config, source=replace(config.source, offline=True)))
     say(f"plan: {plan.max_context_tokens} tokens per request, {plan.max_running} at once")
     loader = load or LLM.from_config
-    with _MemorySampler() as memory:
+    with MemorySampler() as memory:
         llm = loader(config)
         try:
             if options.record is not None:
@@ -782,11 +512,11 @@ def run_bench(
             "chunk_tokens": plan.chunk_tokens,
             "usable_bytes": plan.budget.usable_bytes,
         },
-        "machine": _machine(),
+        "machine": machine_info(),
         "power": power,
         "thermal": {
             "gpu_start_c": gpu_start.get("temperature_c"),
-            "gpu_end_c": _gpu_state().get("temperature_c"),
+            "gpu_end_c": gpu_state().get("temperature_c"),
         },
         "options": {"quick": options.quick, "seed": options.seed, "repeats": options.repeats},
         "started": started.isoformat(timespec="seconds"),
@@ -879,153 +609,38 @@ def _measure(
     }
 
 
-# -- results.json ------------------------------------------------------------------------------
+def bench_command(args: argparse.Namespace, config: EngineConfig) -> int:
+    """``ayaka bench``: run, validate, write and summarise; exit 2 when a sanity check failed."""
+    from ayaka.entrypoints.bench_results import (
+        default_out,
+        summary_lines,
+        validate_results,
+        write_results,
+    )
 
-_REQUIRED: Final = (
-    "schema",
-    "valid",
-    "model",
-    "engine",
-    "backends",
-    "plan",
-    "machine",
-    "power",
-    "thermal",
-    "prompt_set",
-    "prompt_read",
-    "generation",
-    "ttft",
-    "agent",
-    "sanity",
-    "memory",
-    "notes",
-)
-
-
-def validate_results(data: Mapping[str, object]) -> list[str]:
-    """What is wrong with a ``results.json``: missing parts, medians that do not match their raw
-    values, a ``valid`` flag that disagrees with the sanity items. Empty when it is sound."""
-    problems = [f"missing {key!r}" for key in _REQUIRED if key not in data]
-    if data.get("schema") != SCHEMA:
-        problems.append(f"schema is {data.get('schema')!r}, not {SCHEMA}")
+    options = BenchOptions(model=args.model, quick=args.quick, seed=args.seed, record=args.record)
+    if args.record is not None:
+        say(f"warning: {args.record} will hold the benchmark's prompts and answers as token ids")
+    try:
+        results = run_bench(config, options, say=say)
+    except AyakaError:
+        raise  # a model that does not load or fit exits with its own code, as serve does
+    except (RuntimeError, OSError) as exc:
+        say(f"the benchmark failed: {exc}")
+        return EXIT_BUG
+    problems = validate_results(results)
     if problems:
-        return problems
-    for kind in ("prompt_read", "generation"):
-        for row in cast("list[dict[str, object]]", data[kind]):
-            raw = cast("list[float]", row["tokens_per_s"])
-            if not raw:
-                problems.append(f"{kind} row without raw values: {row}")
-            elif not _close(row["median_tokens_per_s"], statistics.median(raw)):
-                problems.append(f"{kind} median does not match its raw values: {row}")
-    ttft = cast("dict[str, object]", data["ttft"])
-    for name in ("cold", "warm"):
-        raw = cast("list[float]", ttft[f"{name}_s"])
-        if raw and not _close(ttft[f"{name}_median_s"], statistics.median(raw)):
-            problems.append(f"ttft {name} median does not match its raw values")
-    sanity = cast("list[dict[str, object]]", data["sanity"])
-    if not sanity:
-        problems.append("no sanity item")
-    if data["valid"] is not all(bool(item.get("passed")) for item in sanity):
-        problems.append("valid does not equal all(sanity passed)")
-    return problems
-
-
-def _close(value: object, expected: float) -> bool:
-    return isinstance(value, (int, float)) and abs(float(value) - expected) <= 1e-9 * max(
-        1.0, abs(expected)
-    )
-
-
-def summary_lines(results: Mapping[str, object]) -> list[str]:
-    """The printed summary: one line per part, no single aggregate."""
-    lines = [
-        f"model      {cast('dict[str, object]', results['model'])['name']}",
-        f"valid      {'yes' if results['valid'] else 'NO (a sanity check failed)'}",
-        f"power      {results['power']}",
-    ]
-    for row in cast("list[dict[str, object]]", results["prompt_read"]):
-        lines.append(
-            f"read       {row['group']:<6} {row['length']:>6} tokens: "
-            f"{cast('float', row['median_tokens_per_s']):,.0f} tok/s (median)"
-        )
-    for row in cast("list[dict[str, object]]", results["generation"]):
-        lines.append(
-            f"generate   after {row['context']:>6} tokens: "
-            f"{cast('float | None', row['median_tokens_per_s']) or 0:,.1f} tok/s (median)"
-        )
-    ttft = cast("dict[str, object]", results["ttft"])
-    lines.append(
-        f"first tok  cold {cast('float', ttft['cold_median_s']) * 1e3:,.0f} ms, warm "
-        f"{cast('float', ttft['warm_median_s']) * 1e3:,.0f} ms "
-        f"({ttft['system_tokens']}-token system prompt)"
-    )
-    agent = cast("dict[str, object]", results["agent"])
-    share = cast("float | None", agent["cached_share"])
-    lines.append(
-        f"agent      cached share {share or 0:.0%} of later turns, "
-        f"{cast('float', agent['total_s']):.2f} s in all"
-    )
-    for item in cast("list[dict[str, object]]", results["sanity"]):
-        lines.append(f"sanity     {'pass' if item['passed'] else 'FAIL'}  {item['name']}")
-    memory = cast("dict[str, object]", results["memory"])
-    vram = cast("int | None", memory["peak_vram_bytes"])
-    rss = cast("int | None", memory["peak_rss_bytes"])
-    lines.append(
-        f"memory     peak VRAM {vram / 2**20 if vram else 0:,.0f} MiB (whole GPU), peak RAM "
-        f"{rss / 2**20 if rss else 0:,.0f} MiB"
-    )
-    return lines
-
-
-def summary_line(results: Mapping[str, object]) -> dict[str, object]:
-    """The one line ``benchmarks/history`` keeps per run: the medians and where they came from."""
-    machine = cast("dict[str, object]", results["machine"])
-    ayaka = cast("dict[str, object]", machine["ayaka"])
-    return {
-        "date": results.get("finished"),
-        "machine": machine_slug(cast("str | None", machine.get("gpu"))),
-        "model": cast("dict[str, object]", results["model"])["name"],
-        "commit": ayaka.get("commit"),
-        "dirty": ayaka.get("dirty"),
-        "valid": results["valid"],
-        "power": results["power"],
-        "read_tok_s": {
-            f"{row['group']}/{row['length']}": row["median_tokens_per_s"]
-            for row in cast("list[dict[str, object]]", results["prompt_read"])
-        },
-        "generate_tok_s": {
-            str(row["context"]): row["median_tokens_per_s"]
-            for row in cast("list[dict[str, object]]", results["generation"])
-        },
-        "ttft_cold_s": cast("dict[str, object]", results["ttft"])["cold_median_s"],
-        "ttft_warm_s": cast("dict[str, object]", results["ttft"])["warm_median_s"],
-        "agent_cached_share": cast("dict[str, object]", results["agent"])["cached_share"],
-    }
-
-
-def write_results(
-    results: Mapping[str, object], out: Path, history: Path | None
-) -> tuple[Path, Path | None]:
-    """Write ``results.json`` and append the summary line to ``history/bench.jsonl``."""
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / "results.json"
-    path.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
-    line_path: Path | None = None
-    if history is not None:
-        history.mkdir(parents=True, exist_ok=True)
-        line_path = history / "bench.jsonl"
-        with line_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(summary_line(results)) + "\n")
-    return path, line_path
-
-
-def default_out(results: Mapping[str, object], root: Path) -> Path:
-    """``benchmarks/results/<date>-<machine>/`` under ``root``."""
-    machine = cast("dict[str, object]", results["machine"])
-    date = str(results.get("started", ""))[:10] or datetime.now(UTC).strftime("%Y-%m-%d")
-    return (
-        root
-        / "benchmarks"
-        / "results"
-        / f"{date}-{machine_slug(cast('str | None', machine.get('gpu')))}"
-    )
+        say("results.json does not validate: " + "; ".join(problems))
+        return EXIT_BUG
+    history = args.history
+    if history is None and (Path.cwd() / "benchmarks" / "history").is_dir():
+        history = Path.cwd() / "benchmarks" / "history"
+    out = args.out or default_out(results, Path.cwd())
+    path, line = write_results(results, out, history)
+    if args.json:
+        print(json.dumps(results, indent=2))
+    else:
+        for text in summary_lines(results):
+            print(text)
+    say(f"wrote {path}" + (f"; summary line in {line}" if line else ""))
+    return EXIT_OK if results["valid"] else EXIT_USAGE
