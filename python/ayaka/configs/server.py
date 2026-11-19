@@ -10,9 +10,13 @@ printing or hashing the configuration never reveals it.
 
 from __future__ import annotations
 
+import difflib
 import ipaddress
 import math
+import os
+import sys
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
 from ayaka.configs.base import ConfigMixin
@@ -21,7 +25,7 @@ from ayaka.core.errors import ConfigError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["DEFAULT_PORT", "ServerConfig"]
+__all__ = ["DEFAULT_PORT", "ServerConfig", "user_config_path"]
 
 #: The port ``ayaka serve`` listens on unless told otherwise.
 DEFAULT_PORT: Final = 8000
@@ -115,7 +119,12 @@ class ServerConfig(ConfigMixin):
         known = {item.name for item in fields(cls)}
         unknown = sorted(set(values) - known)
         if unknown:
-            raise ConfigError(path, "UNKNOWN_KEY", f"unknown keys: {unknown}")
+            hints = [
+                f"{key} (did you mean {close[0]}?)" if close else key
+                for key in unknown
+                for close in [difflib.get_close_matches(key, known, n=1)]
+            ]
+            raise ConfigError(path, "UNKNOWN_KEY", f"unknown keys: {', '.join(hints)}")
         converted: dict[str, object] = {}
         for key, value in values.items():
             converted[key] = (
@@ -148,3 +157,20 @@ def _strings(value: object, path: str) -> None:
     for item in cast("tuple[object, ...]", value):
         if not isinstance(item, str) or not item:
             raise ConfigError(path, "INVALID", "every entry must be a non-empty string")
+
+
+def user_config_path() -> Path:
+    """Where the user's configuration file is looked for when no ``--config`` is given.
+
+    ``%APPDATA%/ayaka/config.toml`` on Windows, ``~/Library/Application Support/ayaka/config.toml``
+    on macOS, else ``$XDG_CONFIG_HOME/ayaka/config.toml`` (``~/.config`` when unset). These are
+    the operating systems' own conventions, not settings: no feature is switched by an
+    environment variable.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "ayaka" / "config.toml"

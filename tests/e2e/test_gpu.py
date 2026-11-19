@@ -288,6 +288,32 @@ def test_a_json_constraint_holds_on_the_gpu_beside_graphs(
     assert results[0] == results[1]
 
 
+def test_the_plan_matches_a_real_start_up(
+    gpt2: tuple[Path, ModelConfig, dict[str, Any]],
+) -> None:
+    """``ayaka plan``'s numbers are the start-up's, once a start-up profile exists."""
+    from ayaka.engine.build import plan_engine
+
+    directory, _, _ = gpt2
+    with _llm(directory, backends=("torch",), dtype=DType.FP16, graphs=True):
+        pass  # the first start-up measures and saves the profile the plan then reads
+
+    config = replace(
+        tiny_engine_config(directory, block_size=16, num_blocks=None, max_running=4),
+        device=DeviceConfig(device="cuda", dtype=DType.FP16, backends=("torch",), cuda_graph=True),
+    )
+    plan = plan_engine(config)
+    with LLM.from_config(config, tokenizer=tiny_tokenizer()) as llm:
+        built = llm.engine.plan
+        usable = llm.engine.kv.stats().usable_blocks[0]
+
+    assert plan.profiled
+    # The free memory is read again at the start-up, so the blocks may move a little.
+    assert abs(plan.budget.kv_blocks[0] - built.kv_blocks[0]) <= 0.02 * built.kv_blocks[0]
+    assert abs((plan.kv_blocks - 1) - usable) <= 0.02 * usable
+    assert abs(plan.budget.max_running - built.max_running) <= max(1, 0.02 * built.max_running)
+
+
 def test_flashinfer_and_torch_agree_on_greedy_tokens_in_fp16(
     gpt2: tuple[Path, ModelConfig, dict[str, Any]],
 ) -> None:

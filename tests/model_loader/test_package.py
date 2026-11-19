@@ -24,7 +24,12 @@ def test_every_public_name_resolves_and_is_listed_by_dir() -> None:
 def test_the_public_names() -> None:
     package = importlib.import_module("ayaka.model_loader")
 
-    assert sorted(package.__all__) == ["load_model", "load_weights", "resolve_source"]
+    assert sorted(package.__all__) == [
+        "describe_model",
+        "load_model",
+        "load_weights",
+        "resolve_source",
+    ]
 
 
 @pytest.mark.parametrize(
