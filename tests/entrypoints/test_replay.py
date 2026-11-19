@@ -58,8 +58,9 @@ _TERMINAL = {
 
 
 def _cases() -> Iterator[tuple[str, Path]]:
+    """The recorded-request fixtures: one directory per tool, not the normalizer's shapes."""
     for directory in sorted(FIXTURES.iterdir()):
-        if not directory.is_dir():
+        if not directory.is_dir() or directory.name == "normalize":
             continue
         for file in sorted(directory.glob("*.json")):
             yield f"{directory.name}/{file.name}", file

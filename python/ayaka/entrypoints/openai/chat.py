@@ -272,14 +272,17 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
     serving = request.app[SERVING]
     chat = parse_chat_request(await read_body(request))
     serving.check_model(chat.model)
-    prompt = await serving.tokenize_chat(chat.conversation)
+    conversation = serving.normalized(
+        chat.conversation, request.headers, request_id=request[REQUEST_ID]
+    )
+    prompt = await serving.tokenize_chat(conversation)
     sampling = replace(
         chat.sampling, max_tokens=serving.output_tokens(len(prompt), chat.max_tokens)
     )
     public_id = request[REQUEST_ID]
     structured = serving.constraint(
         chat.output,
-        chat.conversation,
+        conversation,
         tools=chat.tools,
         parallel_tool_calls=chat.parallel_tool_calls,
     )

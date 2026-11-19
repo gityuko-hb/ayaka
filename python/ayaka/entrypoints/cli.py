@@ -432,6 +432,13 @@ def _server_flags(command: argparse.ArgumentParser) -> None:
         metavar="S",
         help="cancel a request whose client blocks a write this long (30)",
     )
+    server.add_argument(
+        "--no-normalize",
+        dest="normalize_prompts",
+        action="store_false",
+        default=None,
+        help="send every prompt to the tokenizer unchanged, with no client churn rules",
+    )
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -493,6 +500,7 @@ _SERVER_FLAGS: Final = (
     ("sse_coalesce_ms", "sse_coalesce_ms"),
     ("keepalive", "keepalive_seconds"),
     ("slow_client_timeout", "slow_client_seconds"),
+    ("normalize_prompts", "normalize_prompts"),
 )
 
 
