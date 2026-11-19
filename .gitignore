@@ -230,3 +230,5 @@ docs/*
 !docs/AI_SETUP.md
 !docs/AI_REFERENCE.md
 third_party/
+research_notes/
+reports/

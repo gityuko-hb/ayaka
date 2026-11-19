@@ -16,16 +16,29 @@ virtual environment by hand: `uv sync` creates `.venv` and `uv run` uses it.
 ## 2. Pick the extras
 
 PyTorch comes from an extra, never from the base install; pick **one** of `cpu` and `cu130`.
+The extras fall into three groups — one extra per real install decision.
+
+**Accelerator** — pick exactly one of the torch extras; `flashinfer` is Linux/WSL2 only:
 
 | Extra | What it adds | When |
 | --- | --- | --- |
 | `cpu` | PyTorch for the CPU | no NVIDIA GPU, or CI |
 | `cu130` | PyTorch built for CUDA 13.0 | an NVIDIA GPU (not with `cpu`) |
 | `flashinfer` | the flashinfer attention backend | Linux or WSL2 with `cu130`; needs `nvcc` on `PATH` |
-| `serve` | aiohttp, for `ayaka serve` | serving HTTP clients |
-| `structured` | llguidance, for JSON answers and forced tool calls | `response_format`, `tool_choice`, strict tools |
+
+**Tokenizers** — either or both; `import ayaka` and the tests need neither:
+
+| Extra | What it adds | When |
+| --- | --- | --- |
 | `hf` | transformers, tokenizers, huggingface-hub | Hugging Face tokenizers and downloads from the Hub |
 | `tiktoken` | tiktoken and jinja2 | tiktoken-based tokenizers |
+
+**Server** — either or both; `structured` is engine-level and works from `ayaka run` too:
+
+| Extra | What it adds | When |
+| --- | --- | --- |
+| `serve` | aiohttp, for `ayaka serve` | serving HTTP clients |
+| `structured` | llguidance, for JSON answers and forced tool calls | `response_format`, `tool_choice`, strict tools |
 
 A machine with an NVIDIA GPU under Linux or WSL2, serving coding tools:
 

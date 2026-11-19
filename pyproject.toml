@@ -10,6 +10,12 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = { file = "./LICENSE" }
 dependencies = [
+    # The unconditional runtime set: what the always-loaded engine path imports at module level.
+    # numpy: host arrays, logits post-processing, KV block tables and prefix hashing (reached from
+    # the CLI already: entrypoints.plan -> utils.math_utils). prometheus-client: the metrics layer
+    # that engine build wires on every start (engine/build.py -> metrics/loggers.py). torch is
+    # deliberately NOT here: it is picked per accelerator below, so `uv build` and the no-torch CI
+    # jobs stay light (lazy-imports architecture, see AGENTS.md).
     "numpy>=2.5.4",
     "prometheus-client>=0.21",
 ]
@@ -31,6 +37,13 @@ Issues = "https://github.com/gityuko-hb/ayaka/issues"
 ayaka = "ayaka.entrypoints.cli:main"
 
 [project.optional-dependencies]
+# Extras fall into three groups — one extra per real install decision:
+#   Accelerator: pick exactly one of `cpu` and `cu130`; add `flashinfer` on Linux.
+#   Tokenizers:  `hf` and/or `tiktoken` — lazy adapters, `import ayaka` needs neither.
+#   Server:      `serve` (HTTP) and `structured` (constrained output), which is
+#                engine-level and works from `ayaka run` too, not only over HTTP.
+
+# --- Accelerator -------------------------------------------------------------
 # PyTorch ships one build per accelerator on separate indexes, so the accelerator is an extra:
 #   uv sync --extra cpu     CPU build (CI, machines without a GPU, macOS)
 #   uv sync --extra cu130   CUDA 13.0 build (Linux and Windows with an NVIDIA GPU)
@@ -38,6 +51,19 @@ ayaka = "ayaka.entrypoints.cli:main"
 # The upper bound keeps both extras on the same torch version; widen it on purpose, not by accident.
 cpu = ["torch>=2.14,<2.15"]
 cu130 = ["torch>=2.14,<2.15"]
+# The GPU attention backend (ayaka.ops.backends.flashinfer), for Linux and WSL2 only. It takes torch
+# from the cu130 index, like the cu130 extra, so on a GPU machine either of these works:
+#   uv sync --extra flashinfer      or      uv sync --extra cu130 --extra flashinfer
+# flashinfer is pinned exactly: a new version brings new kernels and numerics, so it is upgraded in
+# a pull request of its own with the gpu parity and end-to-end results. Its kernels are compiled on
+# first use (about 40 s each on the dev machine), which needs the CUDA toolkit (nvcc) on PATH.
+# A `triton` extra joins this group when the Triton kernels land (planned, kernel area).
+flashinfer = [
+    "flashinfer-python==0.7.4; sys_platform == 'linux'",
+    "torch>=2.14,<2.15; sys_platform == 'linux'",
+]
+
+# --- Tokenizers --------------------------------------------------------------
 # Tokenizer adapters. Both are imported lazily, so `import ayaka` and the tests need neither;
 # loading an adapter without its extra raises a CapabilityError that names the missing package.
 #   uv sync --extra hf        HuggingFace tokenizers (ayaka.tokenizers.adapters.hf)
@@ -52,16 +78,8 @@ tiktoken = [
     "jinja2>=3.1.6",
     "tiktoken>=0.14.0",
 ]
-# The GPU attention backend (ayaka.ops.backends.flashinfer), for Linux and WSL2 only. It takes torch
-# from the cu130 index, like the cu130 extra, so on a GPU machine either of these works:
-#   uv sync --extra flashinfer      or      uv sync --extra cu130 --extra flashinfer
-# flashinfer is pinned exactly: a new version brings new kernels and numerics, so it is upgraded in
-# a pull request of its own with the gpu parity and end-to-end results. Its kernels are compiled on
-# first use (about 40 s each on the dev machine), which needs the CUDA toolkit (nvcc) on PATH.
-flashinfer = [
-    "flashinfer-python==0.7.4; sys_platform == 'linux'",
-    "torch>=2.14,<2.15; sys_platform == 'linux'",
-]
+
+# --- Server ------------------------------------------------------------------
 # The HTTP server (`ayaka serve`, ayaka.entrypoints.http). aiohttp is one package for the server,
 # streaming with backpressure, graceful shutdown and a test client; `import ayaka` never loads it.
 #   uv sync --extra cpu --extra serve
@@ -70,7 +88,8 @@ serve = [
 ]
 # Structured output (JSON schema, JSON object, tool-call grammars; ayaka.sampling.structured).
 # llguidance has no dependencies of its own and ships wheels for Linux, Windows and macOS; it is
-# imported only when a request asks for a constraint, so `import ayaka` never loads it.
+# imported only when a request asks for a constraint, so `import ayaka` never loads it. The
+# constraint path is engine-level: `ayaka run` can take it too, not only the HTTP server.
 #   uv sync --extra cpu --extra serve --extra structured
 structured = [
     "llguidance>=1.9.1,<2",
