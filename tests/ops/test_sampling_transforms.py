@@ -43,6 +43,43 @@ class TestBitmask:
                 else:
                     assert logits[row, token] == -math.inf
 
+    @pytest.mark.parametrize("vocab", [1, 31, 32, 33, 70, 256, 1000, 4096])
+    def test_random_masks_keep_exactly_their_set_bits(self, vocab: int) -> None:
+        """Token ``t`` is bit ``t % 32`` of word ``t // 32``, the sign bit included."""
+        generator = torch.Generator().manual_seed(vocab)
+        words = (vocab + 31) // 32
+        rows = 5
+        bitmask = torch.randint(
+            -(2**31), 2**31 - 1, (rows, words), generator=generator, dtype=torch.int32
+        )
+        bitmask[0] = -1  # every token allowed, bit 31 of every word set
+        bitmask[1] = 0  # none allowed
+        bitmask[2, 0] = -(2**31)  # only bit 31 of the first word
+        logits = torch.randn(rows, vocab, generator=generator)
+        before = logits.clone()
+
+        ops.apply_token_bitmask(logits, bitmask)
+
+        for row in range(rows):
+            for token in range(vocab):
+                bit = (int(bitmask[row, token // 32]) >> (token % 32)) & 1  # an arithmetic shift
+                if bit:
+                    assert logits[row, token] == before[row, token]
+                else:
+                    assert logits[row, token] == -math.inf
+
+    def test_a_mask_that_is_a_slice_of_a_larger_buffer_is_read_row_by_row(self) -> None:
+        """The graph's buffer is one tensor read by every bucket as its first rows."""
+        buffer = torch.full((4, 3), -1, dtype=torch.int32)
+        buffer[1] = torch.tensor([1, 0, 0], dtype=torch.int32)
+        logits = torch.zeros(2, 96)
+
+        ops.apply_token_bitmask(logits, buffer[:2])
+
+        assert bool(torch.isfinite(logits[0]).all())
+        assert int(torch.isfinite(logits[1]).sum()) == 1
+        assert logits[1, 0] == 0
+
     def test_the_workspace_must_be_float32(self) -> None:
         with pytest.raises(BackendError, match="float32 workspace"):
             ops.apply_token_bitmask(torch.zeros(1, VOCAB, dtype=torch.float16), _words([{1}]))
