@@ -1,0 +1,231 @@
+{
+  "benchmark": "e2e/constrained_decode",
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "model_file": ".cache/huggingface/hub/models--HuggingFaceTB--SmolLM2-135M/snapshots/93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+  "tokens": 129,
+  "dtype": "fp16",
+  "backends": [
+    "flashinfer",
+    "torch"
+  ],
+  "min_length": 2048,
+  "machine": {
+    "date": "2026-11-19T13:31:50+00:00",
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "capability": [
+      8,
+      6
+    ],
+    "driver": "591.59",
+    "os": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "wsl2": true,
+    "python": "3.13.18",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "803772c19f30f6a3f43e36a1b866517b1c91e8a7-dirty"
+  },
+  "measured": {
+    "steps": [
+      {
+        "arm": "free_graph",
+        "batch": 1,
+        "decode_ms_per_step": [
+          7.239,
+          6.909,
+          7.136,
+          7.658,
+          7.124
+        ],
+        "median_ms": 7.136,
+        "tokens_per_s": 140.1,
+        "graph_replays": 768
+      },
+      {
+        "arm": "eager_control",
+        "batch": 1,
+        "decode_ms_per_step": [
+          70.343,
+          60.109,
+          46.235,
+          42.723,
+          43.002
+        ],
+        "median_ms": 46.235,
+        "tokens_per_s": 21.6,
+        "graph_replays": 0
+      },
+      {
+        "arm": "constrained",
+        "batch": 1,
+        "decode_ms_per_step": [
+          42.269,
+          46.297,
+          44.769,
+          45.552,
+          42.549
+        ],
+        "median_ms": 44.769,
+        "tokens_per_s": 22.3,
+        "graph_replays": 0
+      },
+      {
+        "arm": "free_graph",
+        "batch": 8,
+        "decode_ms_per_step": [
+          7.416,
+          7.008,
+          7.143,
+          6.988,
+          7.086
+        ],
+        "median_ms": 7.086,
+        "tokens_per_s": 1129.0,
+        "graph_replays": 768
+      },
+      {
+        "arm": "eager_control",
+        "batch": 8,
+        "decode_ms_per_step": [
+          80.678,
+          73.348,
+          67.833,
+          85.848,
+          76.482
+        ],
+        "median_ms": 76.482,
+        "tokens_per_s": 104.6,
+        "graph_replays": 0
+      },
+      {
+        "arm": "constrained",
+        "batch": 8,
+        "decode_ms_per_step": [
+          68.267,
+          68.995,
+          68.877,
+          69.477,
+          74.388
+        ],
+        "median_ms": 68.995,
+        "tokens_per_s": 116.0,
+        "graph_replays": 0
+      },
+      {
+        "arm": "free_graph",
+        "batch": 32,
+        "decode_ms_per_step": [
+          10.035,
+          10.368,
+          10.049,
+          10.222,
+          10.22
+        ],
+        "median_ms": 10.22,
+        "tokens_per_s": 3131.1,
+        "graph_replays": 768
+      },
+      {
+        "arm": "eager_control",
+        "batch": 32,
+        "decode_ms_per_step": [
+          80.002,
+          87.014,
+          77.97,
+          74.815,
+          80.039
+        ],
+        "median_ms": 80.002,
+        "tokens_per_s": 400.0,
+        "graph_replays": 0
+      },
+      {
+        "arm": "constrained",
+        "batch": 32,
+        "decode_ms_per_step": [
+          70.867,
+          76.5,
+          75.768,
+          74.364,
+          74.641
+        ],
+        "median_ms": 74.641,
+        "tokens_per_s": 428.7,
+        "graph_replays": 0
+      }
+    ],
+    "isolated": {
+      "mask_tokens_timed": 129,
+      "host_mask_us_per_row": {
+        "p50": 9.3,
+        "p95": 14.0,
+        "max": 349.7
+      },
+      "host_accept_us_per_row": {
+        "p50": 1.7,
+        "p95": 4.4,
+        "max": 86.0
+      },
+      "per_batch": {
+        "1": {
+          "host_controls_cpu_ms": 0.026,
+          "host_controls_cuda_ms": 0.089,
+          "gpu_float_copy_ms": 0.0302,
+          "gpu_mask_ms": 0.6354
+        },
+        "8": {
+          "host_controls_cpu_ms": 0.195,
+          "host_controls_cuda_ms": 0.368,
+          "gpu_float_copy_ms": 0.0701,
+          "gpu_mask_ms": 0.406
+        },
+        "32": {
+          "host_controls_cpu_ms": 0.256,
+          "host_controls_cuda_ms": 0.889,
+          "gpu_float_copy_ms": 0.1352,
+          "gpu_mask_ms": 0.92
+        }
+      }
+    }
+  },
+  "estimates": {
+    "note": "estimates, not measurements: each adds measured parts. D1 = free_graph + gpu_mask + the whole host mask cost, serial before the replay. D2 = free_graph + gpu_mask + the part of the host mask cost that the forward (taken as free_graph) cannot hide.",
+    "gate_pct": 15.0,
+    "per_batch": {
+      "1": {
+        "gap_constrained_vs_free_graph_pct": 527.4,
+        "graph_saves_ms": 39.099,
+        "free_eager_other_engine_ms": null,
+        "grammar_extra_over_control_ms": -1.466,
+        "explained_by_parts_ms": 0.696,
+        "unexplained_ms": -2.162,
+        "d1_fused_ms": 7.862,
+        "d2_split_ms": 7.771,
+        "gate_met": true
+      },
+      "8": {
+        "gap_constrained_vs_free_graph_pct": 873.7,
+        "graph_saves_ms": 69.396,
+        "free_eager_other_engine_ms": null,
+        "grammar_extra_over_control_ms": -7.487,
+        "explained_by_parts_ms": 0.718,
+        "unexplained_ms": -8.204,
+        "d1_fused_ms": 7.874,
+        "d2_split_ms": 7.492,
+        "gate_met": true
+      },
+      "32": {
+        "gap_constrained_vs_free_graph_pct": 630.3,
+        "graph_saves_ms": 69.782,
+        "free_eager_other_engine_ms": null,
+        "grammar_extra_over_control_ms": -5.361,
+        "explained_by_parts_ms": 1.728,
+        "unexplained_ms": -7.089,
+        "d1_fused_ms": 12.083,
+        "d2_split_ms": 11.14,
+        "gate_met": true
+      }
+    }
+  }
+}
