@@ -1,0 +1,54 @@
+{
+  "schema": "ayaka.sse-encode/1",
+  "machine": {
+    "date": "2026-11-19T22:24:53+00:00",
+    "gpu": null,
+    "capability": null,
+    "driver": null,
+    "os": "Windows-11-10.0.26200-SP0",
+    "wsl2": false,
+    "python": "3.13.5",
+    "torch": "2.14.1+cpu",
+    "torch_cuda": null,
+    "flashinfer": null,
+    "ayaka": "0.0.1",
+    "commit": "23c815a75b0c147438e824daec8b113de7cdd71a-dirty"
+  },
+  "settings": {
+    "rounds": 5,
+    "iterations": 20000,
+    "delta_samples": 8
+  },
+  "protocols": {
+    "chat": {
+      "rounds_us_per_frame": [
+        4.636684999786667,
+        4.996200000095996,
+        4.707494999820483,
+        4.667669999980717,
+        4.579300000114017
+      ],
+      "median_us_per_frame": 4.667669999980717
+    },
+    "responses": {
+      "rounds_us_per_frame": [
+        4.1400800000701565,
+        4.270164999979897,
+        4.13417500021751,
+        4.150940000181436,
+        4.119639999771607
+      ],
+      "median_us_per_frame": 4.1400800000701565
+    },
+    "messages": {
+      "rounds_us_per_frame": [
+        3.4120050000638003,
+        3.3344949999445817,
+        3.478059999906691,
+        3.333289999864064,
+        3.343355000106385
+      ],
+      "median_us_per_frame": 3.343355000106385
+    }
+  }
+}

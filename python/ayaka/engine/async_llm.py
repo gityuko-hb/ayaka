@@ -50,6 +50,8 @@ from dataclasses import dataclass, replace
 from queue import Empty, SimpleQueue
 from typing import TYPE_CHECKING, Final, Self
 
+from prometheus_client import CollectorRegistry, Histogram
+
 from ayaka.core.errors import EngineDeadError, EngineError, ErrorInfo
 from ayaka.core.outputs import CompletionOutput, RequestOutput
 from ayaka.core.types import FinishReason
@@ -229,10 +231,38 @@ class AsyncLLM:
             :class:`RequestStream`).
     """
 
-    def __init__(self, engine: EngineCore, *, max_pending: int = DEFAULT_MAX_PENDING) -> None:
+    def __init__(
+        self,
+        engine: EngineCore,
+        *,
+        max_pending: int = DEFAULT_MAX_PENDING,
+        registry: CollectorRegistry | None = None,
+    ) -> None:
         self._engine = engine
         self._info = engine.info
         self._max_pending = max_pending
+        self.registry = registry if registry is not None else CollectorRegistry()
+        self._step_gap = Histogram(
+            "ayaka_engine_step_gap_seconds",
+            "Seconds between the end of one engine step and the start of the next",
+            buckets=(
+                0.00005,
+                0.0001,
+                0.00025,
+                0.0005,
+                0.001,
+                0.0025,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1.0,
+            ),
+            registry=self.registry,
+        )
         self._commands: SimpleQueue[_Command] = SimpleQueue()
         self._wake = threading.Event()
         self._idle = threading.Event()
@@ -249,7 +279,11 @@ class AsyncLLM:
 
     @classmethod
     def from_config(
-        cls, config: EngineConfig, *, tokenizer: LoadedTokenizer | None = None
+        cls,
+        config: EngineConfig,
+        *,
+        tokenizer: LoadedTokenizer | None = None,
+        registry: CollectorRegistry | None = None,
     ) -> AsyncLLM:
         """Build an engine and wrap it; this blocks for as long as the build takes.
 
@@ -258,7 +292,7 @@ class AsyncLLM:
         """
         from ayaka.engine.build import build_engine
 
-        return cls(build_engine(config, tokenizer=tokenizer))
+        return cls(build_engine(config, tokenizer=tokenizer), registry=registry)
 
     # -- state -----------------------------------------------------------------------------
 
@@ -449,20 +483,26 @@ class AsyncLLM:
     def _run(self) -> None:
         engine = self._engine
         stopping = False
+        last_step_end: float | None = None
         try:
             while True:
                 stopping = self._execute_commands() or stopping
                 if stopping and not engine.has_unfinished:
                     break
                 if engine.has_unfinished:
+                    if last_step_end is not None:
+                        self._step_gap.observe(max(0.0, time.monotonic() - last_step_end))
                     outputs = engine.step()
-                    self._progress_at = time.monotonic()
+                    now = time.monotonic()
+                    self._progress_at = now
+                    last_step_end = now
                     if outputs:
                         for output in outputs:
                             if output.finished:
                                 self._admitted.discard(output.request_id)
                         self._post(self._deliver, outputs)
                     continue
+                last_step_end = None
                 with self._idle_lock:
                     if self._commands.empty():
                         self._idle.set()

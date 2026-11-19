@@ -345,3 +345,40 @@ class TestMerge:
 
         assert stream.pending == 1
         assert stream.finished
+
+
+class TestStepGapMetric:
+    def test_step_gap_records_consecutive_steps_and_resets_when_idle(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        async def body(llm: AsyncLLM) -> None:
+            steps = 0
+            real_step = llm.engine.step
+
+            def counted_step() -> list[RequestOutput]:
+                nonlocal steps
+                steps += 1
+                return real_step()
+
+            llm.engine.step = counted_step  # type: ignore[method-assign]  # count engine steps
+            first = await llm.add(_request("first", "x", 5))
+            await _collect(first)
+            count_after_first = llm.registry.get_sample_value("ayaka_engine_step_gap_seconds_count")
+            assert steps >= 2
+            assert count_after_first == float(steps - 1)
+
+            # Wait while the engine is parked idle, then run a single-step request.
+            await asyncio.sleep(0.06)
+            before_idle_sum = llm.registry.get_sample_value("ayaka_engine_step_gap_seconds_sum")
+            second = await llm.add(_request("second", "x", 1))
+            await _collect(second)
+            count_after_second = llm.registry.get_sample_value(
+                "ayaka_engine_step_gap_seconds_count"
+            )
+            sum_after_second = llm.registry.get_sample_value("ayaka_engine_step_gap_seconds_sum")
+            assert before_idle_sum is not None
+            assert sum_after_second is not None
+            assert count_after_second == count_after_first
+            assert sum_after_second - before_idle_sum == 0.0
+
+        _run(checkpoint, body)
