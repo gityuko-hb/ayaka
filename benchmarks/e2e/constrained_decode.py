@@ -1,28 +1,24 @@
-"""What a constrained decode step costs, and how much of it a CUDA graph wins back.
+"""What a constrained decode step costs next to a free one, with the mask inside the CUDA graph.
 
-A request with an output constraint (a JSON schema, a strict tool, a forced tool call) used to run
-its decode steps eagerly: the runner replayed a graph only when no row needed a mask. Now the graph
-applies the mask, which the host computes before the replay. This script measures the step either
-way, so the same run puts numbers on the gap before the change and on what the change won; the
-``graph_replays`` of the ``constrained`` row say which path the engine took. It separates what it
-measured from what it only estimates.
+A request with an output constraint (a JSON schema, a strict tool, a forced tool call) replays a
+graph like any other: the host computes the mask of the token about to be drawn before the replay,
+and the captured sampling path applies it. This script measures how much that step costs over a
+free one, and what the graphs cost in memory.
 
 Measured, per batch size, on a real engine (greedy, ``ignore_eos``, one prompt per request):
 
-    free_graph     no constraint, CUDA graphs on     the step a graph replays today
-    eager_control  a zero logit bias, graphs on      the same eager step without a grammar: the
-                                                     control for what the grammar adds, and what
-                                                     the graph saves (same engine, same ops)
-    constrained    JSON schema, CUDA graphs on       the step with a mask active: eager before the
-                                                     graph applied masks, a replay after
+    free_graph     no constraint, CUDA graphs on     the step a graph replays without a mask
+    eager_control  a zero logit bias, graphs on      the same step run eagerly, without a grammar:
+                                                     what a constrained step cost before its mask
+                                                     went into the graph (same engine, same ops)
+    constrained    JSON schema, CUDA graphs on       the step with a mask active
     free_eager     no constraint, CUDA graphs off    only with ``--free-eager``: another engine, ops
                                                      loaded without the graph, for reference only
 
 Each is the decode time per step: a run of ``--tokens`` tokens minus a run of one token (the
 prefill), divided by ``--tokens - 1``, repeated ``--repeat`` times after a warm-up. Each row also
-records the graph replays it caused: ``free_graph`` must have some and ``eager_control`` none, or
-the script stops, because the arm would not measure what it is named for. ``constrained`` is
-whatever the engine does with a mask.
+records the graph replays it caused: ``free_graph`` and ``constrained`` must have some and
+``eager_control`` none, or the script stops, because the arm would not measure what it is named for.
 
 Measured in isolation, per batch size, to split the constrained step into its parts:
 
@@ -31,16 +27,15 @@ Measured in isolation, per batch size, to split the constrained step into its pa
                            to the GPU
     gpu_mask_ms            the float32 copy of the logits and ``apply_token_bitmask`` on the GPU
 
-Estimated, never measured (``estimates``): what a fused graph with the mask inside (D1: the mask is
-computed on the host before the replay) and a graph split at the logits (D2: the host computes the
-mask while the forward graph runs) would cost. They combine the numbers above and are there to
-decide whether a prototype is worth writing, not to stand in for one.
+``graphs`` records what the captured graphs took (the memory plan's ``graph_bytes``). ``summary``
+only subtracts the measured numbers; it estimates nothing.
 
     uv run python benchmarks/e2e/constrained_decode.py --model /path/to/SmolLM2-135M \
-        --out benchmarks/results/<date>-<machine>/constrained-decode.json
+        --backends flashinfer torch
 
 Needs the ``structured`` extra (llguidance) and a GPU. Run it on the dev GPU; a number from another
-machine says nothing about this one.
+machine says nothing about this one. ``--out`` writes the JSON; put the numbers that matter in the
+PR and in ``docs/EXPERIMENTS.md`` instead of committing the file.
 """
 
 from __future__ import annotations
@@ -182,7 +177,11 @@ def _engine(args: argparse.Namespace, *, graphs: bool) -> LLM:
             graph_buckets=buckets,
         ),
         # Room for every request to hold its whole answer: no preemption inside a measurement.
-        cache=CacheConfig(block_size=16, kv_reserve_tokens=top * (args.tokens + 64)),
+        cache=CacheConfig(
+            block_size=16,
+            kv_reserve_tokens=top * (args.tokens + 64),
+            **({} if args.memory_ratio is None else {"memory_ratio": args.memory_ratio}),
+        ),
         scheduler=SchedulerConfig(max_running=top, max_tokens_per_step=512),
     )
     return LLM.from_config(config)
@@ -197,18 +196,17 @@ def _engine_arms(
     if llm.engine.runner.graph is None:
         raise RuntimeError("the graph engine captured no graphs; check device.cuda_graph")
     for batch in args.batch:
-        for arm, constraint, bias in (
-            ("free_graph", None, False),
-            ("eager_control", None, True),
-            ("constrained", structured, False),
+        for arm, constraint, bias, replays_expected in (
+            ("free_graph", None, False, True),
+            ("eager_control", None, True, False),
+            ("constrained", structured, False, True),
         ):
             _progress(f"{arm} batch {batch}")
             before = _replays(llm)
             runs, last = _per_step_ms(llm, batch, args.tokens, args.repeat, constraint, bias=bias)
             replays = _replays(llm) - before
             # The arm is what it says only if the graph did, or did not, run the steps.
-            replays_expected = {"free_graph": True, "eager_control": False}.get(arm)
-            if replays_expected is not None and replays_expected != (replays > 0):
+            if replays_expected != (replays > 0):
                 raise RuntimeError(
                     f"{arm} at batch {batch}: {replays} graph replays; the arm does not "
                     "measure what it is named for (is the batch above the largest bucket?)"
@@ -351,44 +349,69 @@ def _events(call: Any, repeat: int) -> float:
     return statistics.median(times)
 
 
-def _estimates(
-    rows: Sequence[dict[str, Any]], isolated: dict[str, Any], gate_pct: float
-) -> dict[str, Any]:
-    """Combine the measured parts into the two designs' step times, and the verdict on the gate."""
+def _summary(rows: Sequence[dict[str, Any]], isolated: dict[str, Any]) -> dict[str, Any]:
+    """Subtract the measured step times from each other, per batch size; nothing is estimated."""
     median = {(row["arm"], row["batch"]): row["median_ms"] for row in rows}
-    out: dict[str, Any] = {
-        "note": (
-            "estimates, not measurements: each adds measured parts. D1 = free_graph + gpu_mask + "
-            "the whole host mask cost, serial before the replay. D2 = free_graph + gpu_mask + the "
-            "part of the host mask cost that the forward (taken as free_graph) cannot hide."
-        ),
-        "gate_pct": gate_pct,
-        "per_batch": {},
-    }
+    out: dict[str, Any] = {}
     accept_ms = isolated["host_accept_us_per_row"]["p50"] / 1e3
     for batch, parts in isolated["per_batch"].items():
         free = median[("free_graph", batch)]
         control = median[("eager_control", batch)]
         constrained = median[("constrained", batch)]
-        host = parts["host_controls_cuda_ms"]
-        gpu = parts["gpu_mask_ms"]
-        gap_pct = (constrained / free - 1) * 100
-        # What the parts measured alone explain of the grammar's extra cost over the control, and
+        # What the parts measured alone say of the constrained step's cost over a free one, and
         # what they leave unexplained: a large remainder is a cost this script does not see.
-        explained = host + accept_ms * batch + max(0.0, gpu - parts["gpu_float_copy_ms"])
-        reference = median.get(("free_eager", batch))
-        out["per_batch"][batch] = {
-            "gap_constrained_vs_free_graph_pct": round(gap_pct, 1),
-            "graph_saves_ms": round(control - free, 3),
-            "free_eager_other_engine_ms": None if reference is None else round(reference, 3),
-            "grammar_extra_over_control_ms": round(constrained - control, 3),
+        # The masked graph also copies the logits to float32, which the free graph does not.
+        explained = parts["host_controls_cuda_ms"] + accept_ms * batch + parts["gpu_mask_ms"]
+        out[batch] = {
+            "constrained_over_free_graph_pct": round((constrained / free - 1) * 100, 1),
+            "constrained_over_free_graph_ms": round(constrained - free, 3),
+            "eager_control_over_free_graph_ms": round(control - free, 3),
+            "gpu_mask_over_free_graph_pct": round(parts["gpu_mask_ms"] / free * 100, 1),
             "explained_by_parts_ms": round(explained, 3),
-            "unexplained_ms": round(constrained - control - explained, 3),
-            "d1_fused_ms": round(free + gpu + host + accept_ms * batch, 3),
-            "d2_split_ms": round(free + gpu + max(0.0, host + accept_ms * batch - free), 3),
-            "gate_met": gap_pct >= gate_pct,
+            "unexplained_ms": round(constrained - free - explained, 3),
         }
     return out
+
+
+def _check_memory(llm: LLM) -> dict[str, Any]:
+    """The memory ledger against the allocator after start-up; an over-committed GPU is not timed.
+
+    Under WSL2 the driver serves memory beyond the device's from the host, so every step time of
+    an over-committed engine would measure paging, not the step (exit 2). Lower ``--memory-ratio``
+    to leave room for the graphs.
+    """
+    startup = llm.engine.startup
+    if startup is None:
+        raise RuntimeError("the engine has no start-up report: it did not start on a GPU")
+    found = startup.reconciliation
+    out = {
+        "matches": found.matches,
+        "ledger_bytes": found.ledger_bytes,
+        "measured_bytes": found.measured_bytes,
+        "difference_bytes": found.difference_bytes,
+        "tolerance_bytes": found.tolerance_bytes,
+    }
+    if not found.matches:
+        _progress(
+            f"invalid run: the allocator holds {found.difference_bytes / 2**20:,.0f} MiB more than "
+            f"the plan (tolerance {found.tolerance_bytes / 2**20:,.0f} MiB); the GPU is "
+            "over-committed. Lower --memory-ratio."
+        )
+        raise SystemExit(2)
+    return out
+
+
+def _graph_memory(llm: LLM) -> dict[str, Any]:
+    """What the engine's start-up captured: bytes the allocator kept, per bucket and in all."""
+    startup = llm.engine.startup
+    captured = startup.graphs if startup is not None else ()
+    return {
+        "buckets": [
+            {"bucket": item.bucket, "bytes": item.bytes, "seconds": round(item.seconds, 2)}
+            for item in captured
+        ],
+        "total_bytes": sum(item.bytes for item in captured),
+    }
 
 
 def main() -> None:
@@ -408,11 +431,11 @@ def main() -> None:
         help="minLength of the schema's string, so the answer cannot end before --tokens",
     )
     parser.add_argument(
-        "--gate-pct",
+        "--memory-ratio",
         type=float,
-        default=15.0,
-        help="the gap (constrained over free_graph) below which a graph is not worth building; "
-        "write the value into the issue before the run",
+        default=None,
+        help="cache.memory_ratio (the engine's default when omitted); the graphs of many buckets "
+        "need room beside the weights and the KV cache, or the run is refused as over-committed",
     )
     parser.add_argument(
         "--free-eager",
@@ -425,6 +448,8 @@ def main() -> None:
 
     structured = StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=_schema(args.min_length))
     with _engine(args, graphs=True) as llm:
+        memory = _check_memory(llm)
+        graphs = _graph_memory(llm)
         rows, answer = _engine_arms(args, llm, structured)
         isolated = _isolated(args, structured, answer, llm.engine._input.compiler)
     if args.free_eager:
@@ -439,8 +464,11 @@ def main() -> None:
             "backends": args.backends,
             "min_length": args.min_length,
             "machine": machine(),
+            "memory_ratio": args.memory_ratio,
+            "memory": memory,
+            "graphs": graphs,
             "measured": {"steps": rows, "isolated": isolated},
-            "estimates": _estimates(rows, isolated, args.gate_pct),
+            "summary": _summary(rows, isolated),
         },
         args.out,
     )
