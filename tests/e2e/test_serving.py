@@ -90,10 +90,12 @@ def _sdk(kind: Any, **options: Any) -> Any:
     return client
 
 
-def _run(checkpoint: TinyCheckpoint, body: Body, **options: Any) -> None:
+def _run(checkpoint: TinyCheckpoint | Path, body: Body, **options: Any) -> None:
+    directory = checkpoint if isinstance(checkpoint, Path) else checkpoint.directory
+
     async def main() -> None:
         config = ServerConfig(api_key=_KEY, served_model_names=("tiny",))
-        async with serve(checkpoint.directory, config=config, **options) as (client, _, _):
+        async with serve(directory, config=config, **options) as (client, _, _):
             try:
                 await body(_base(client))
             finally:
@@ -427,9 +429,9 @@ class TestRecordedRequests:
     """The sanitized recordings (#50), replayed and parsed with the tool's own client library.
 
     The replay sends the recording the way the tool did -- its path, headers and body, unknown
-    fields included -- and checks the answer with the SDK the tool is built on. Streaming is
-    covered by the unit replays (``tests/entrypoints/test_replay.py``); here the answer is one
-    JSON document, so the SDK's model can validate it whole.
+    fields included -- and checks the answer with the SDK the tool is built on: once as one JSON
+    document the SDK's model validates whole, once streamed and read by the SDK's stream parser.
+    The streamed bytes themselves are locked by ``tests/entrypoints/test_replay.py``.
     """
 
     @pytest.fixture(scope="class")
@@ -485,6 +487,82 @@ class TestRecordedRequests:
                 await body(_base(client))
 
         asyncio.run(main())
+
+    @pytest.mark.parametrize(
+        ("protocol", "fixture_path"), _RECORDED, ids=[protocol for protocol, _ in _RECORDED]
+    )
+    def test_the_recorded_request_streams_and_the_sdk_reads_the_stream(
+        self, long_checkpoint: Any, protocol: str, fixture_path: Path
+    ) -> None:
+        """The same recordings, streamed, sent through the SDK as the tool sends them.
+
+        The fields the SDK has no argument for go through ``extra_body``, the tool's headers
+        through ``extra_headers``: the server sees the recorded body, the SDK parses the stream.
+        """
+        recording = json.loads(fixture_path.read_text(encoding="utf-8"))
+        body = dict(recording["body"])
+        body.pop("model", None)
+        body.pop("stream", None)
+        headers = {
+            key: value
+            for key, value in recording["headers"].items()
+            if key.lower() not in ("content-length", "host", "authorization", "x-api-key")
+        }
+
+        async def run(base: str) -> None:
+            if protocol == "anthropic":
+                client = _sdk(anthropic.AsyncAnthropic, base_url=base, api_key=_KEY)
+                messages = body.pop("messages")
+                max_tokens = body.pop("max_tokens")
+                async with client.messages.stream(
+                    model="tiny",
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    extra_body=body,
+                    extra_headers=headers,
+                ) as stream:
+                    message = await stream.get_final_message()
+                assert message.role == "assistant"
+                assert "".join(b.text for b in message.content if b.type == "text") == "Hello!"
+                assert message.stop_reason in ("end_turn", "stop_sequence", "max_tokens")
+                return
+            client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY)
+            if protocol == "openai-responses":
+                stream = await client.responses.create(
+                    model="tiny",
+                    input=body.pop("input"),
+                    stream=True,
+                    extra_body=body,
+                    extra_headers=headers,
+                )
+                events = [event async for event in stream]
+                assert events[0].type == "response.created"
+                assert events[-1].type == "response.completed"
+                assert events[-1].response.output_text == "Hello!"
+                return
+            stream = await client.chat.completions.create(
+                model="tiny",
+                messages=body.pop("messages"),
+                stream=True,
+                extra_body=body,
+                extra_headers=headers,
+            )
+            text = ""
+            finish = None
+            async for chunk in stream:
+                for choice in chunk.choices:
+                    text += choice.delta.content or ""
+                    finish = choice.finish_reason or finish
+            assert text == "Hello!"
+            assert finish == "stop"
+
+        _run(
+            long_checkpoint,
+            run,
+            output_format=_TOOLS,
+            scripts=[script("Hel", "lo!")],
+            num_blocks=17000,
+        )
 
 
 # -- real signals, in a child process ---------------------------------------------------------

@@ -58,9 +58,10 @@ _TERMINAL = {
 
 
 def _cases() -> Iterator[tuple[str, Path]]:
-    """The recorded-request fixtures: one directory per tool, not the normalizer's shapes."""
+    """The recorded-request fixtures: one directory per tool, not the normalizer's shapes or the
+    golden wire bytes."""
     for directory in sorted(FIXTURES.iterdir()):
-        if not directory.is_dir() or directory.name == "normalize":
+        if not directory.is_dir() or directory.name in ("normalize", "golden"):
             continue
         for file in sorted(directory.glob("*.json")):
             yield f"{directory.name}/{file.name}", file
@@ -151,6 +152,44 @@ class TestReplay:
             assert frames[-1][1] == "[DONE]"
         else:
             assert terminal in {event for event, _ in frames}
+
+    @pytest.mark.parametrize(("case", "fixture_path"), _CASES, ids=[case for case, _ in _CASES])
+    def test_the_streamed_answer_is_the_golden_bytes(
+        self, long_checkpoint: Any, fixture_path: Path, case: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole wire of a recorded request's streamed answer, with the ids and clock fixed.
+
+        The request id is the only random part of a stream and ``created`` the only clock one;
+        with both fixed, the bytes depend on the recording, the scripted answer and the encoders.
+        """
+        import types
+
+        from ayaka.entrypoints import http as http_module
+        from ayaka.entrypoints.openai import chat as chat_module
+        from ayaka.entrypoints.openai import responses as responses_module
+        from golden import check_golden
+        from tokenizer_fakes import ToolTokenizer
+
+        fixed_id = types.SimpleNamespace(hex="0123456789abcdef0123456789abcdef")
+        monkeypatch.setattr(http_module, "uuid", types.SimpleNamespace(uuid4=lambda: fixed_id))
+        clock = types.SimpleNamespace(time=lambda: 1700000000.0)
+        monkeypatch.setattr(chat_module, "time", clock)
+        monkeypatch.setattr(responses_module, "time", clock)
+        recording = _load(fixture_path, stream=True)
+
+        async def run() -> tuple[int, bytes]:
+            async with serve(
+                long_checkpoint,
+                scripts=[script("Hel", "lo!")],
+                **_server(ToolTokenizer()),
+            ) as (client, _, _):
+                response = await _post(client, recording)
+                return response.status, await response.read()
+
+        status, body = asyncio.run(run())
+
+        assert status == 200, body
+        check_golden(f"replay/{case.removesuffix('.json')}.sse", body)
 
     def test_a_refused_field_names_itself(self, long_checkpoint: Any) -> None:
         """Claude Code can turn richer input on; a block the server cannot take names itself."""

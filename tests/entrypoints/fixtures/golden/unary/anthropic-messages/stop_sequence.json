@@ -1,0 +1,1 @@
+{"id": "msg_0123456789abcdef0123456789abcdef", "type": "message", "role": "assistant", "model": "tiny", "content": [{"type": "text", "text": "one two"}], "stop_reason": "stop_sequence", "stop_sequence": "###", "usage": {"input_tokens": 7, "output_tokens": 7, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4}}

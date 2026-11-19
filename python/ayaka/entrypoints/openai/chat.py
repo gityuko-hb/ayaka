@@ -64,6 +64,8 @@ if TYPE_CHECKING:
 __all__ = [
     "ChatStreamEncoder",
     "CompletionStreamEncoder",
+    "chat_completion_body",
+    "completion_body",
     "create_chat_completion",
     "create_completion",
 ]
@@ -264,6 +266,50 @@ def _error_chunk(event: ErrorEvent, request_id: str) -> bytes:
     return sse_json(openai_error(failure_for_event(event, request_id)))
 
 
+# -- whole answers ----------------------------------------------------------------------------
+
+
+def chat_completion_body(meta: _Meta, answers: list[Collected]) -> dict[str, object]:
+    """The ``chat.completion`` object of a whole answer, one choice per answer."""
+    return {
+        "id": meta.id,
+        "object": "chat.completion",
+        "created": meta.created,
+        "model": meta.model,
+        "system_fingerprint": None,
+        "choices": [
+            {
+                "index": index,
+                "message": chat_message(answer),
+                "logprobs": chat_logprobs(answer.logprobs) if answer.logprobs else None,
+                "finish_reason": _finish(answer),
+            }
+            for index, answer in enumerate(answers)
+        ],
+        "usage": openai_usage(answers[0].usage),
+    }
+
+
+def completion_body(meta: _Meta, answers: list[Collected]) -> dict[str, object]:
+    """The ``text_completion`` object of a whole answer, one choice per answer."""
+    return {
+        "id": meta.id,
+        "object": "text_completion",
+        "created": meta.created,
+        "model": meta.model,
+        "choices": [
+            {
+                "index": index,
+                "text": answer.reasoning + answer.text,
+                "logprobs": (completion_logprobs(answer.logprobs) if answer.logprobs else None),
+                "finish_reason": _finish(answer),
+            }
+            for index, answer in enumerate(answers)
+        ],
+        "usage": openai_usage(answers[0].usage),
+    }
+
+
 # -- handlers ---------------------------------------------------------------------------------
 
 
@@ -300,25 +346,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
             encoder = ChatStreamEncoder(meta, include_usage=chat.include_usage, choices=sampling.n)
             return await serving.stream(request, generation, encoder)
         answers = await _answers(serving, generation, sampling.n)
-        return web.json_response(
-            {
-                "id": meta.id,
-                "object": "chat.completion",
-                "created": meta.created,
-                "model": meta.model,
-                "system_fingerprint": None,
-                "choices": [
-                    {
-                        "index": index,
-                        "message": chat_message(answer),
-                        "logprobs": chat_logprobs(answer.logprobs) if answer.logprobs else None,
-                        "finish_reason": _finish(answer),
-                    }
-                    for index, answer in enumerate(answers)
-                ],
-                "usage": openai_usage(answers[0].usage),
-            }
-        )
+        return web.json_response(chat_completion_body(meta, answers))
     finally:
         serving.finish(generation)
 
@@ -343,26 +371,7 @@ async def create_completion(request: web.Request) -> web.StreamResponse:
             )
             return await serving.stream(request, generation, encoder)
         answers = await _answers(serving, generation, sampling.n)
-        return web.json_response(
-            {
-                "id": meta.id,
-                "object": "text_completion",
-                "created": meta.created,
-                "model": meta.model,
-                "choices": [
-                    {
-                        "index": index,
-                        "text": answer.reasoning + answer.text,
-                        "logprobs": (
-                            completion_logprobs(answer.logprobs) if answer.logprobs else None
-                        ),
-                        "finish_reason": _finish(answer),
-                    }
-                    for index, answer in enumerate(answers)
-                ],
-                "usage": openai_usage(answers[0].usage),
-            }
-        )
+        return web.json_response(completion_body(meta, answers))
     finally:
         serving.finish(generation)
 

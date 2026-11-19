@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-0123456789abcdef0123456789abcdef","object":"chat.completion.chunk","created":1700000000,"model":"tiny","system_fingerprint":null,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
+
+: keepalive
+
+data: {"id":"chatcmpl-0123456789abcdef0123456789abcdef","object":"chat.completion.chunk","created":1700000000,"model":"tiny","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"partial"},"logprobs":null,"finish_reason":null}]}
+
+data: {"error":{"message":"the engine stopped","type":"service_unavailable_error","param":null,"code":"engine_dead"}}
+
+data: [DONE]
+

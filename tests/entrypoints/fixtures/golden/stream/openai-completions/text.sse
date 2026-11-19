@@ -1,0 +1,10 @@
+: keepalive
+
+data: {"id":"cmpl-0123456789abcdef0123456789abcdef","object":"text_completion","created":1700000000,"model":"tiny","choices":[{"index":0,"text":"Hel","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-0123456789abcdef0123456789abcdef","object":"text_completion","created":1700000000,"model":"tiny","choices":[{"index":0,"text":"say \"hi\"\\\n\u0001 wörld 😀","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-0123456789abcdef0123456789abcdef","object":"text_completion","created":1700000000,"model":"tiny","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":"stop"}]}
+
+data: [DONE]
+

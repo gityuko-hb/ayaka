@@ -1,0 +1,12 @@
+: keepalive
+
+data: {"id":"cmpl-0123456789abcdef0123456789abcdef","object":"text_completion","created":1700000000,"model":"tiny","choices":[{"index":0,"text":"let me ","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-0123456789abcdef0123456789abcdef","object":"text_completion","created":1700000000,"model":"tiny","choices":[{"index":0,"text":"think","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-0123456789abcdef0123456789abcdef","object":"text_completion","created":1700000000,"model":"tiny","choices":[{"index":0,"text":"Answer.","logprobs":null,"finish_reason":null}]}
+
+data: {"id":"cmpl-0123456789abcdef0123456789abcdef","object":"text_completion","created":1700000000,"model":"tiny","choices":[{"index":0,"text":"","logprobs":null,"finish_reason":"stop"}]}
+
+data: [DONE]
+

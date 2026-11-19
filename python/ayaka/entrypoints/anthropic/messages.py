@@ -55,6 +55,7 @@ __all__ = [
     "MessagesStreamEncoder",
     "count_tokens",
     "create_message",
+    "message_body",
     "message_content",
     "models_listing",
 ]
@@ -222,6 +223,24 @@ def _tool_use(call: CollectedToolCall) -> dict[str, object]:
     return {"type": "tool_use", "id": call.id, "name": call.name, "input": arguments}
 
 
+def message_body(
+    message_id: str, model: str, answer: Collected, *, prompt_tokens: int
+) -> dict[str, object]:
+    """The ``message`` object of a whole answer."""
+    finish = answer.finish
+    assert finish is not None  # noqa: S101  # collecting raises on an error
+    return {
+        "id": message_id,
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": message_content(answer),
+        "stop_reason": stop_reason(finish),
+        "stop_sequence": finish.stop_sequence,
+        "usage": anthropic_usage(answer.usage, prompt_tokens=prompt_tokens),
+    }
+
+
 # -- handlers ---------------------------------------------------------------------------------
 
 
@@ -259,18 +278,8 @@ async def create_message(request: web.Request) -> web.StreamResponse:
             )
             return await serving.stream(request, generation, encoder)
         answer = await serving.collect(generation)
-        assert answer.finish is not None  # noqa: S101  # collect raises on an error
         return web.json_response(
-            {
-                "id": message_id,
-                "type": "message",
-                "role": "assistant",
-                "model": serving.model_name,
-                "content": message_content(answer),
-                "stop_reason": stop_reason(answer.finish),
-                "stop_sequence": answer.finish.stop_sequence,
-                "usage": anthropic_usage(answer.usage, prompt_tokens=len(prompt)),
-            }
+            message_body(message_id, serving.model_name, answer, prompt_tokens=len(prompt))
         )
     finally:
         serving.finish(generation)
