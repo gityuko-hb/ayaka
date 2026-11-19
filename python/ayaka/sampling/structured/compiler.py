@@ -167,6 +167,7 @@ class GrammarCompiler:
             params.kind is ConstraintKind.TOOL_CALL
             and params.syntax is not None
             and not params.syntax.opening
+            and not params.syntax.bare
         ):
             raise UnsupportedFeatureError(
                 f"tool-call constraints need the tokens of the opening marker "

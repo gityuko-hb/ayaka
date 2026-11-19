@@ -65,7 +65,7 @@ class ToolCallSyntax:
 
     The server builds it from the model's output format, the same record its parser reads
     (``ayaka.entrypoints.parsers.formats``), so the grammar and the parser agree on the markers
-    and on the keys of the body.
+    and on the key of the arguments.
 
     Attributes:
         open: The text of the opening marker.
@@ -78,8 +78,12 @@ class ToolCallSyntax:
         open_ids: The tokens of the opening marker as the tokenizer spells it, when it is not one
             token: a forced call is made to write exactly these, and a lazy call starts when the
             model wrote them (another spelling of the same text is not recognised).
-        name_key: The key of the function name in the body.
         arguments_key: The key of the arguments in the body.
+        separator: Between two calls written without markers, what the grammar writes (Llama
+            3.x: ``"; "``); empty with markers.
+
+    A format without markers (``open`` and ``close`` empty) has nothing a lazy constraint could
+    start on: its grammar only serves a call the request forces, from the first token.
     """
 
     open: str
@@ -87,8 +91,13 @@ class ToolCallSyntax:
     open_token: int | None = None
     close_token: int | None = None
     open_ids: tuple[int, ...] = ()
-    name_key: str = "name"
     arguments_key: str = "arguments"
+    separator: str = ""
+
+    @property
+    def bare(self) -> bool:
+        """Whether calls are written without markers."""
+        return not self.open and not self.close
 
     @property
     def opening(self) -> tuple[int, ...]:
@@ -140,6 +149,10 @@ class StructuredParams:
                 raise InvalidRequestError("a tool-call constraint needs at least one tool")
             if self.syntax is None:
                 raise InvalidRequestError("a tool-call constraint needs the model's call syntax")
+            if self.syntax.bare and self.tool_choice == "auto":
+                raise InvalidRequestError(
+                    "a call written without markers can only be constrained when it is forced"
+                )
             names = [tool.name for tool in self.tools]
             if self.tool_choice not in ("auto", "required") and self.tool_choice not in names:
                 raise InvalidRequestError(
@@ -169,14 +182,15 @@ class StructuredParams:
                     self.syntax.open,
                     self.syntax.close,
                     self.syntax.close_token,
-                    self.syntax.name_key,
                     self.syntax.arguments_key,
+                    self.syntax.separator,
                 ]
                 if self.syntax is not None
                 else None
             ),
             "tool_choice": self.tool_choice,
             "strict": self.strict,
+            "parallel": self.parallel if self.syntax is not None and self.syntax.bare else None,
         }
         try:
             # Key order is kept: the order of a schema's properties is the order they are written.

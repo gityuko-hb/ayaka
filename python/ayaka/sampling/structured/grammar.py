@@ -10,6 +10,10 @@ closing marker (demanded as its token when it is one). The opening marker is not
 grammar: the constraint starts once the model emitted it (a lazy call) or once the matcher made it
 emit it (a forced call). With ``strict`` the arguments follow each tool's schema; without it they
 are any JSON object.
+
+A format without markers (Llama 3.x, ``llama3_json``) is only constrained when the call is forced:
+the grammar is the answer itself, one object, or with ``parallel`` several joined by the format's
+separator. The key of the arguments comes from the format (``parameters`` for Llama).
 """
 
 from __future__ import annotations
@@ -48,7 +52,6 @@ def call_schema(
     *,
     strict: bool,
     only: str | None = None,
-    name_key: str = "name",
     arguments_key: str = "arguments",
 ) -> Mapping[str, object]:
     """The JSON schema of one call body: a tool name and its arguments.
@@ -57,7 +60,6 @@ def call_schema(
         tools: The functions the request offers.
         strict: Whether the arguments follow each tool's schema.
         only: The one tool a request forces, or ``None`` for any of them.
-        name_key: The key of the name in the model's format.
         arguments_key: The key of the arguments in the model's format (``parameters`` for
             ``llama3_json``).
     """
@@ -66,20 +68,20 @@ def call_schema(
         return {
             "type": "object",
             "properties": {
-                name_key: {"enum": [tool.name for tool in chosen]},
+                "name": {"enum": [tool.name for tool in chosen]},
                 arguments_key: {"type": "object"},
             },
-            "required": [name_key, arguments_key],
+            "required": ["name", arguments_key],
             "additionalProperties": False,
         }
     variants = [
         {
             "type": "object",
             "properties": {
-                name_key: {"const": tool.name},
+                "name": {"const": tool.name},
                 arguments_key: dict(tool.parameters) or {"type": "object"},
             },
-            "required": [name_key, arguments_key],
+            "required": ["name", arguments_key],
             "additionalProperties": False,
         }
         for tool in chosen
@@ -101,9 +103,11 @@ def grammar_text(params: StructuredParams) -> str:
         params.tools,
         strict=params.strict,
         only=only,
-        name_key=syntax.name_key,
         arguments_key=syntax.arguments_key,
     )
+    if syntax.bare:
+        more = f" ({_json(syntax.separator)} call)*" if params.parallel and syntax.separator else ""
+        return f"start: call{more}\ncall: %json {_json(_compact(schema))}\n"
     # A one-token marker is demanded as that token: the parser matches it by id.
     token = syntax.close_token
     close = f"<[{token}]>" if token is not None else _json(syntax.close)

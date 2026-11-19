@@ -11,7 +11,7 @@ the code or ask before assuming either way.
 | --- | --- | --- |
 | `GET /health` | | `{"status": "ready"}` with 200; `starting`, `draining` or `dead` with 503. No key needed. |
 | `GET /metrics` | Prometheus text | counters and histograms; no per-request labels |
-| `GET /v1/models` | OpenAI | each served name with `max_model_len`, `max_context_tokens` (what one request can hold on this machine) and `prefix_cache` |
+| `GET /v1/models` | OpenAI | each served name with `max_model_len`, `max_context_tokens` (what one request can hold on this machine), `prefix_cache` and, when detected from the chat template, `suggested_tool_call_parser` |
 | `POST /v1/chat/completions` | OpenAI Chat Completions | streaming, tools, `n`, logprobs, `response_format` |
 | `POST /v1/completions` | OpenAI Completions | streaming; `echo` and `suffix` are refused |
 | `POST /v1/responses` | OpenAI Responses | stateless: `previous_response_id` and `conversation` are refused; `n` must be 1 |
@@ -55,8 +55,9 @@ them); a known field that would change the answer and is not available is refuse
   A grammar starts where the parser starts reading: after the block, or at once when the model does not open one.
 - `llama3_json` reads the Llama 3.x layout: a bare JSON object `{"name": ..., "parameters": {...}}` at the start of
   the answer, and more calls separated by `;`. A string `function` next to `"type": "function"` counts as the name,
-  because Llama-3.2-1B writes that when the tools are shown wrapped that way. It has no grammar yet: a request that
-  forces a call (`tool_choice`) or asks for strict arguments is refused with 400 under it. It has been checked
+  because Llama-3.2-1B writes that when the tools are shown wrapped that way. With no marker to wait for, a forced
+  call (`tool_choice`) is constrained from the first token of the answer; strict arguments of an optional call
+  cannot be constrained and are refused with 400. It has been checked
   against recorded answers of Llama-3.2-1B-Instruct (`tests/entrypoints/parsers/fixtures/`), written outside
   `ayaka serve`; no Llama model has driven a coding tool through this parser yet.
 - With the `structured` extra: JSON answers (`response_format`, `text.format`, `output_format`), forced tool calls

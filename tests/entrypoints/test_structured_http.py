@@ -137,7 +137,8 @@ class TestChat:
 
 
 class TestFormatWithoutMarkers:
-    """``llama3_json`` has no marker to start a grammar on: free text, or a clear refusal."""
+    """``llama3_json`` has no marker to start a lazy grammar on: free text, a forced call written
+    from the first token, or a clear refusal for strict arguments of an optional call."""
 
     def test_auto_tools_are_accepted_and_free_text_is_not_forced(self, checkpoint: Path) -> None:
         async def body(client: TestClient[Any, Any]) -> None:
@@ -157,22 +158,45 @@ class TestFormatWithoutMarkers:
         _run(checkpoint, body, tool_calls="llama3_json")
 
     @pytest.mark.parametrize(
-        "extra",
-        [
-            {"tool_choice": "required"},
-            {"tool_choice": {"type": "function", "function": {"name": "get_weather"}}},
-            {},  # the tool itself asks for strict arguments
-        ],
+        "choice",
+        ["required", {"type": "function", "function": {"name": "get_weather"}}],
+        ids=["required", "named"],
     )
-    def test_a_forced_call_or_strict_arguments_are_refused(
-        self, checkpoint: Path, extra: dict[str, object]
+    @pytest.mark.parametrize("parallel", [False, True])
+    def test_a_forced_call_is_written_from_the_first_token(
+        self, checkpoint: Path, choice: object, parallel: bool
     ) -> None:
+        """No marker to wait for: the grammar is the whole answer, ``{"name", "parameters"}``."""
+
         async def body(client: TestClient[Any, Any]) -> None:
             request = {
                 "messages": [{"role": "user", "content": "weather?"}],
                 "tools": [_OPENAI_TOOL],
+                "tool_choice": choice,
+                "parallel_tool_calls": parallel,
+                "temperature": 1.0,
+                "seed": 2,
+                "max_tokens": 90,
+            }
+            response = await client.post("/v1/chat/completions", json=request)
+
+            assert response.status == 200, await response.text()
+            choice_ = (await response.json())["choices"][0]
+            assert choice_["finish_reason"] == "tool_calls"
+            # The random model may go on with "; {" and be cut by max_tokens in a later call.
+            first, *rest = choice_["message"]["tool_calls"]
+            assert first["function"]["name"] == "get_weather"
+            assert set(json.loads(first["function"]["arguments"])) == {"city"}
+            assert parallel or not rest
+
+        _run(checkpoint, body, tool_calls="llama3_json")
+
+    def test_strict_arguments_of_an_optional_call_are_refused(self, checkpoint: Path) -> None:
+        async def body(client: TestClient[Any, Any]) -> None:
+            request = {
+                "messages": [{"role": "user", "content": "weather?"}],
+                "tools": [_OPENAI_TOOL],  # strict, and the call is optional
                 "max_tokens": 20,
-                **extra,
             }
             response = await client.post("/v1/chat/completions", json=request)
 

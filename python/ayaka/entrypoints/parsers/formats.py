@@ -9,8 +9,8 @@ exactly where the parser starts reading a call.
 
 * :class:`ReasoningFormat`: the two markers of the block, and who opens it: the model with its
   first token (``think``), or the chat template in the prompt (``deepseek_r1``).
-* :class:`ToolCallFormat`: the markers around a call (or none), the keys of the call's JSON
-  object, and the separator between calls written without markers.
+* :class:`ToolCallFormat`: the markers around a call (or none), the key of its arguments, and
+  the separator between calls written without markers.
 
 Formats are chosen by name when the server starts (``--reasoning-parser``,
 ``--tool-call-parser``), never guessed from the output.
@@ -33,6 +33,7 @@ __all__ = [
     "ReasoningFormat",
     "ToolCallFormat",
     "reasoning_format",
+    "suggest_tool_call_parser",
     "tool_call_format",
 ]
 
@@ -116,11 +117,6 @@ class ToolCallFormat:
         if self.separator is not None and (self.open is not None or len(self.separator) != 1):
             raise ValueError("a separator is one character, for calls written without markers")
 
-    @property
-    def name_key(self) -> str:
-        """The key of the function name in the call's JSON object."""
-        return "name"
-
     def markers(self, tokenizer: TokenizerLike | None = None) -> tuple[Marker, Marker] | None:
         """The markers as ``tokenizer`` spells them (by text without one); ``None`` without any.
 
@@ -159,3 +155,23 @@ def tool_call_format(name: str) -> ToolCallFormat:
             "INVALID_CHOICE",
             f"unknown tool call parser {name!r}; known: {sorted(TOOL_CALL_FORMATS)}",
         ) from None
+
+
+def suggest_tool_call_parser(chat_template: str | None) -> str | None:
+    """The ``--tool-call-parser`` name suggested by ``chat_template``, or ``None``.
+
+    Reads only the model's declared chat template and returns ``None`` when the template is
+    absent or does not clearly match one of :data:`TOOL_CALL_FORMATS`.
+    """
+    if not chat_template:
+        return None
+    hermes_open = TOOL_CALL_FORMATS["hermes"].open
+    if hermes_open is not None and hermes_open in chat_template:
+        return "hermes"
+    if (
+        "<|start_header_id|>" in chat_template
+        and '"name"' in chat_template
+        and '"parameters"' in chat_template
+    ):
+        return "llama3_json"
+    return None
