@@ -165,3 +165,21 @@ next to a blocked write. The ratio is discarded; the run is not committed as a r
 - A B B A, five pairs; the measured value is unchanged (median gap between the readers' text
   frames, ratio B/A per pair).
 - Threshold, unchanged: isolation holds when the median ratio B/A is at most 1.25.
+
+### Second run: result
+
+`benchmarks/results/2026-11-19-rtx-3050-laptop-gpu/slow-client.json`, at `7cb60f9`, on mains.
+
+- Valid: in all 10 B phases the server was blocked from 29.5 to 32.4 s after the stuck client
+  opened, the readers ran from 40.0 to 41.2 s, and the cancellations came at 59.5 to 62.4 s; the
+  server logged 10 slow-client cancellations.
+- Median gap between text frames: A (alone) 6.4 to 7.4 ms, B (beside a blocked stuck client) 7.5 to
+  8.9 ms. Ratio B/A per pair: 1.245, 1.206, 1.232, 1.211, 1.173; **median 1.211**, within the
+  threshold of 1.25.
+- Decision: isolation holds by the threshold written before the run, with little margin.
+
+What the ratio contains, which the setup did not separate: while its writes are blocked, the
+stuck request keeps decoding, so a B phase decodes three sequences (CUDA graph bucket 4) where A
+decodes two (bucket 2). The 21% is therefore an upper bound on what a stuck client costs the
+others; a control with a third reader that keeps up would split it. Also, the unit tests ran on
+the same machine during part of this run (CPU only), which may have added noise to some phases.
