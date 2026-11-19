@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Final
 
 from aiohttp import web
 
-from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolCallSyntax, ToolSchema
+from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolSchema
 from ayaka.core.errors import EngineError, InvalidRequestError, UnsupportedFeatureError
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import RequestId
@@ -266,7 +266,8 @@ class Serving:
         """The output constraint a request asked for, with this model's syntax; ``None`` if none.
 
         A JSON answer is constrained from its first token, or from the end of the reasoning
-        block when the model reasons. A request with tools gets a lazy tool-call constraint
+        block when the model reasons (:meth:`OutputFormat.constraint_start`: the parser and the
+        grammar follow the same rule). A request with tools gets a lazy tool-call constraint
         when the structured extra is installed and the model's opening marker is one token, so
         a call it writes is a valid call and free text stays free; a request that forces a
         call or asks for strict arguments needs that constraint and is refused without it. A
@@ -276,10 +277,15 @@ class Serving:
             UnsupportedFeatureError: If the request needs a constraint this server cannot make.
         """
         fmt = self.output_format
-        start_after = fmt.reasoning_markers[1].token_id if fmt.reasoning_markers else None
+        start_after, reasoning_open = fmt.constraint_start()
         if output.response is not None:
             schema = output.schema if output.response is ConstraintKind.JSON_SCHEMA else None
-            return StructuredParams(kind=output.response, schema=schema, start_after=start_after)
+            return StructuredParams(
+                kind=output.response,
+                schema=schema,
+                start_after=start_after,
+                reasoning_open=reasoning_open,
+            )
         if not tools or conversation is None or not conversation.tools:
             return None
         if fmt.tool_calls is None:
@@ -296,7 +302,7 @@ class Serving:
                     context={"features": ("structured tool calls",), "param": "tool_choice"},
                 )
             return None  # free text; the parser finds the call
-        opening, closing = markers
+        opening = markers[0]
         if not wanted and (opening.token_id is None or not has_module("llguidance")):
             # Lazy constraints only for a one-token marker: a spelled one may come in other pieces.
             return None  # free text, as without the structured extra
@@ -307,13 +313,12 @@ class Serving:
         return StructuredParams(
             kind=ConstraintKind.TOOL_CALL,
             tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),
-            syntax=ToolCallSyntax(
-                opening.text, closing.text, opening.token_id, closing.token_id, spelled
-            ),
+            syntax=fmt.call_syntax(spelled),
             tool_choice=output.tool_choice,
             strict=output.strict,
             parallel=parallel_tool_calls,
             start_after=start_after,
+            reasoning_open=reasoning_open,
         )
 
     async def start(

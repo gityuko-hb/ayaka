@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from ayaka.core.constraints import ToolCallSyntax
 from ayaka.core.outputs import RequestOutput
 from ayaka.core.types import FinishReason
 from ayaka.entrypoints.conversation import (
@@ -31,16 +32,16 @@ from ayaka.entrypoints.conversation import (
     UsageEvent,
     merge_deltas,
 )
-from ayaka.entrypoints.parsers.reasoning import ReasoningParser, reasoning_format
-from ayaka.entrypoints.parsers.tool_calls import ToolCallParser, tool_call_format
+from ayaka.entrypoints.parsers.formats import reasoning_format, tool_call_format
+from ayaka.entrypoints.parsers.reasoning import ReasoningParser
+from ayaka.entrypoints.parsers.tool_calls import ToolCallParser
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ayaka.entrypoints.conversation import OutputEvent
+    from ayaka.entrypoints.parsers.formats import ReasoningFormat, ToolCallFormat
     from ayaka.entrypoints.parsers.markers import Marker
-    from ayaka.entrypoints.parsers.reasoning import ReasoningFormat
-    from ayaka.entrypoints.parsers.tool_calls import ToolCallFormat
     from ayaka.tokenizers.ports import TokenizerLike
 
 __all__ = ["ChoicesParser", "EventParser", "OutputFormat", "OutputParser"]
@@ -95,6 +96,48 @@ class OutputFormat:
             reasoning_markers=reasoning_fmt.markers(tokenizer) if reasoning_fmt else None,
             tool_calls=tool_fmt,
             tool_markers=tool_fmt.markers(tokenizer) if tool_fmt else None,
+        )
+
+    def constraint_start(self) -> tuple[int | None, int | None]:
+        """Where an output constraint starts: ``(start_after, reasoning_open)``.
+
+        The same rule the reasoning parser follows. Without a reasoning format a constraint
+        starts at the first token. With a block the prompt opened (``deepseek_r1``) it waits for
+        the closing marker. With one the model may open (``think``) it starts at once unless the
+        first token is the opening marker, and then waits for the closing one. A marker that is
+        not one token cannot be watched for: the constraint then waits for a closing marker it
+        may never see, so a model that does not reason is not constrained.
+        """
+        markers = self.reasoning_markers
+        if self.reasoning is None or markers is None:
+            return None, None
+        opening, closing = markers
+        if self.reasoning.starts_inside or opening.token_id is None:
+            return closing.token_id, None
+        return closing.token_id, opening.token_id
+
+    def call_syntax(self, spelled_open: tuple[int, ...] = ()) -> ToolCallSyntax | None:
+        """The tool-call syntax a grammar enforces: this format's markers and keys.
+
+        Args:
+            spelled_open: The tokens of the opening marker when it is not one token.
+
+        Returns:
+            ``None`` without a tool-call format, or for one written without markers (a grammar
+            for those has no marker to start on).
+        """
+        fmt, markers = self.tool_calls, self.tool_markers
+        if fmt is None or markers is None:
+            return None
+        opening, closing = markers
+        return ToolCallSyntax(
+            opening.text,
+            closing.text,
+            opening.token_id,
+            closing.token_id,
+            spelled_open if opening.token_id is None else (),
+            name_key=fmt.name_key,
+            arguments_key=fmt.arguments,
         )
 
     def parser(
@@ -159,6 +202,21 @@ class OutputParser:
     def generated_tokens(self) -> int:
         """Tokens fed so far."""
         return self._tokens
+
+    @property
+    def in_reasoning(self) -> bool:
+        """Whether the output is inside the reasoning block now."""
+        return self._reasoning is not None and self._reasoning.inside
+
+    @property
+    def in_call(self) -> bool:
+        """Whether the answer is inside the body of a call now."""
+        return self._calls is not None and self._calls.in_call
+
+    @property
+    def opened_calls(self) -> int:
+        """Call bodies the answer entered so far, with or without a name."""
+        return self._calls.opened_calls if self._calls is not None else 0
 
     def feed(self, output: RequestOutput) -> list[OutputEvent]:
         """The events of the next fragment; the final fragment also ends the stream."""

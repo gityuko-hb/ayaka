@@ -44,7 +44,12 @@ def _compact(schema: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def call_schema(
-    tools: tuple[ToolSchema, ...], *, strict: bool, only: str | None = None
+    tools: tuple[ToolSchema, ...],
+    *,
+    strict: bool,
+    only: str | None = None,
+    name_key: str = "name",
+    arguments_key: str = "arguments",
 ) -> Mapping[str, object]:
     """The JSON schema of one call body: a tool name and its arguments.
 
@@ -52,26 +57,29 @@ def call_schema(
         tools: The functions the request offers.
         strict: Whether the arguments follow each tool's schema.
         only: The one tool a request forces, or ``None`` for any of them.
+        name_key: The key of the name in the model's format.
+        arguments_key: The key of the arguments in the model's format (``parameters`` for
+            ``llama3_json``).
     """
     chosen = [tool for tool in tools if only is None or tool.name == only]
     if not strict:
         return {
             "type": "object",
             "properties": {
-                "name": {"enum": [tool.name for tool in chosen]},
-                "arguments": {"type": "object"},
+                name_key: {"enum": [tool.name for tool in chosen]},
+                arguments_key: {"type": "object"},
             },
-            "required": ["name", "arguments"],
+            "required": [name_key, arguments_key],
             "additionalProperties": False,
         }
     variants = [
         {
             "type": "object",
             "properties": {
-                "name": {"const": tool.name},
-                "arguments": dict(tool.parameters) or {"type": "object"},
+                name_key: {"const": tool.name},
+                arguments_key: dict(tool.parameters) or {"type": "object"},
             },
-            "required": ["name", "arguments"],
+            "required": [name_key, arguments_key],
             "additionalProperties": False,
         }
         for tool in chosen
@@ -89,7 +97,13 @@ def grammar_text(params: StructuredParams) -> str:
     syntax = params.syntax
     assert syntax is not None  # noqa: S101  # StructuredParams requires it for a tool call
     only = params.tool_choice if params.tool_choice not in ("auto", "required") else None
-    schema = call_schema(params.tools, strict=params.strict, only=only)
+    schema = call_schema(
+        params.tools,
+        strict=params.strict,
+        only=only,
+        name_key=syntax.name_key,
+        arguments_key=syntax.arguments_key,
+    )
     # A one-token marker is demanded as that token: the parser matches it by id.
     token = syntax.close_token
     close = f"<[{token}]>" if token is not None else _json(syntax.close)

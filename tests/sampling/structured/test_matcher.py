@@ -109,6 +109,30 @@ class TestJson:
         assert matcher.active
         assert _allowed(matcher.mask()) == [ord("{")]
 
+    def test_a_block_the_model_may_open_does_not_delay_the_constraint(self) -> None:
+        compiler = _compiler()
+        params = StructuredParams(kind=ConstraintKind.JSON_OBJECT, start_after=7, reasoning_open=6)
+
+        matcher = compiler.matcher(compiler.compile(params))
+
+        assert matcher.state == "MAYBE"
+        assert _allowed(matcher.mask()) == [6, ord("{")]  # the block, or the answer itself
+        matcher.accept([ord("{")])
+        assert matcher.state == "ON"
+        assert 6 not in _allowed(matcher.mask())  # a block cannot open after the answer began
+
+    def test_the_block_it_opens_leaves_the_output_free_until_it_closes(self) -> None:
+        compiler = _compiler()
+        params = StructuredParams(kind=ConstraintKind.JSON_OBJECT, start_after=7, reasoning_open=6)
+        matcher = compiler.matcher(compiler.compile(params))
+
+        matcher.accept([6, ord("x")])
+
+        assert matcher.state == "WAIT_START"
+        assert matcher.mask() is None
+        matcher.accept([7])
+        assert _allowed(matcher.mask()) == [ord("{")]
+
 
 class TestToolCalls:
     def test_a_lazy_call_is_free_until_the_opening_marker(self) -> None:

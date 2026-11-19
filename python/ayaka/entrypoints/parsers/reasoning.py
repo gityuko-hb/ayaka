@@ -9,8 +9,10 @@ Whitespace at the edges of the block is layout, not content: the whitespace righ
 opening marker, right before the closing one, and right after the closing one is dropped. It is
 decided character by character, so where the stream is cut never changes the result.
 
-Formats are chosen by name when the server starts (``--reasoning-parser``), never guessed from the
-output.
+Formats (:mod:`ayaka.entrypoints.parsers.formats`) are chosen by name when the server starts
+(``--reasoning-parser``), never guessed from the output. With a format the model opens itself
+(``think``), only the first thing it writes may open the block, as the output constraint assumes:
+an opening marker after answer text is answer text.
 
 When both markers are one token each, the parser also says which token ids of a fragment belong to
 the answer (:attr:`ReasoningParser.answer_tokens`), by following the same states over the ids. The
@@ -20,68 +22,17 @@ credited to the answer.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
-from ayaka.core.errors import ConfigError
-from ayaka.entrypoints.parsers.markers import Marker, MarkerScanner, resolve_marker
+from ayaka.entrypoints.parsers.markers import MarkerScanner
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from ayaka.tokenizers.ports import TokenizerLike
+    from ayaka.entrypoints.parsers.formats import ReasoningFormat
+    from ayaka.entrypoints.parsers.markers import Marker
 
-__all__ = ["REASONING_FORMATS", "ReasoningFormat", "ReasoningParser", "reasoning_format"]
-
-
-@dataclass(frozen=True, slots=True)
-class ReasoningFormat:
-    """How a model family marks its reasoning.
-
-    Attributes:
-        name: The name the server option uses.
-        open: The marker that opens the block.
-        close: The marker that closes it.
-        starts_inside: Whether the chat template already opened the block in the prompt, so the
-            output starts inside it.
-    """
-
-    name: str
-    open: str
-    close: str
-    starts_inside: bool = False
-
-    def markers(self, tokenizer: TokenizerLike | None = None) -> tuple[Marker, Marker]:
-        """The opening and closing markers as ``tokenizer`` spells them (by text without one).
-
-        Raises:
-            ConfigError: If a marker is a special token the detokenizer drops.
-        """
-        return resolve_marker(self.open, tokenizer), resolve_marker(self.close, tokenizer)
-
-
-REASONING_FORMATS: Final[dict[str, ReasoningFormat]] = {
-    # Qwen3, QwQ, SmolLM3 and others: the model writes both markers.
-    "think": ReasoningFormat("think", "<think>", "</think>"),
-    # DeepSeek-R1 and its distillations: the template ends the prompt with "<think>\n".
-    "deepseek_r1": ReasoningFormat("deepseek_r1", "<think>", "</think>", starts_inside=True),
-}
-
-
-def reasoning_format(name: str) -> ReasoningFormat:
-    """The format called ``name``.
-
-    Raises:
-        ConfigError: If there is no such format.
-    """
-    try:
-        return REASONING_FORMATS[name]
-    except KeyError:
-        raise ConfigError(
-            "server.reasoning_parser",
-            "INVALID_CHOICE",
-            f"unknown reasoning parser {name!r}; known: {sorted(REASONING_FORMATS)}",
-        ) from None
+__all__ = ["ReasoningParser"]
 
 
 class ReasoningParser:
@@ -97,6 +48,8 @@ class ReasoningParser:
         self._open, self._close = markers if markers is not None else fmt.markers()
         self._scanner = MarkerScanner((self._open, self._close))
         self._inside = fmt.starts_inside
+        # The model may open the block only with the first thing it writes.
+        self._may_open = not fmt.starts_inside
         self._strip_leading = fmt.starts_inside
         self._trailing: list[str] = []  # whitespace at the end of the reasoning seen so far
         self._answer_tokens: tuple[int, ...] = ()
@@ -124,14 +77,16 @@ class ReasoningParser:
         opening, closing = self._open.token_id, self._close.token_id
         if opening is None or closing is None:
             return ids
-        inside = self._inside
+        inside, may_open = self._inside, self._may_open
         answer: list[int] = []
         for token in ids:
-            if inside and token == closing:
-                inside = False
-            elif not inside and token == opening:
-                inside = True
-            elif not inside:
+            if inside:
+                if token == closing:
+                    inside, may_open = False, False
+            elif may_open and token == opening:
+                inside, may_open = True, False
+            else:
+                may_open = False
                 answer.append(token)
         return tuple(answer)
 
@@ -139,7 +94,10 @@ class ReasoningParser:
         """Take the next piece of text; return ``(is_reasoning, text)`` pieces."""
         pieces: list[tuple[bool, str]] = []
         while True:
-            active = (self._close,) if self._inside else (self._open,)
+            if self._inside:
+                active: tuple[Marker, ...] = (self._close,)
+            else:
+                active = (self._open,) if self._may_open else ()
             before, marker = self._scanner.scan(text, active)
             text = ""
             self._emit(before, pieces)
@@ -147,6 +105,7 @@ class ReasoningParser:
                 return pieces
             if self._inside:
                 self._trailing.clear()  # whitespace before the closing marker is layout
+            self._may_open = False
             self._inside = not self._inside
             self._strip_leading = True
 
@@ -168,6 +127,7 @@ class ReasoningParser:
         if not text:
             return
         if not self._inside:
+            self._may_open = False  # answer text came first: no block opens after it
             pieces.append((False, text))
             return
         body = text.rstrip()
