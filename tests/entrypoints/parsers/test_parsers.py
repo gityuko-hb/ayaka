@@ -10,6 +10,7 @@ events must always be the same.
 from __future__ import annotations
 
 import json
+import random
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -132,6 +133,14 @@ class TestMarkerScanner:
         assert scanner.scan("a <th", [marker]) == ("a ", None)
         assert scanner.scan("ere", [marker]) == ("<there", None)
         assert scanner.flush() == ""
+
+    def test_a_repeated_first_character_is_held_only_from_the_last_possible_start(self) -> None:
+        scanner = MarkerScanner()
+        marker = Marker("<tool_call>")
+
+        assert scanner.scan("a<<<", [marker]) == ("a<<", None)
+        assert scanner.held == "<"
+        assert scanner.scan("tool_call>b", [marker]) == ("", marker)
 
     def test_a_marker_matched_by_id_needs_its_token(self) -> None:
         scanner = MarkerScanner()
@@ -398,6 +407,14 @@ class TestToolCalls:
         assert events[1] == ToolCallStart(0, "call_x_0", "get_weather")
         assert ToolCallEnd(0, valid=False) in events  # cut by the end, not closed
 
+    def test_a_repeated_first_character_of_the_marker_is_text_up_to_the_last_one(self) -> None:
+        """``<<tool_call>``: the first ``<`` is text, the marker starts at the second."""
+        fmt = _format(reasoning=None, tools="hermes", by_id=False)
+
+        events = assert_cut_invariant(fmt, tokens("a<<tool_call>", _CALL, "</tool_call>"))
+
+        assert events[:2] == [TextDelta("a<"), ToolCallStart(0, "call_x_0", "get_weather")]
+
     def test_an_opening_marker_inside_a_call_is_part_of_its_body(self) -> None:
         fmt = _format(reasoning=None, tools="hermes")
         output = tokens("<tool_call>", '{"name": "f", "arguments": {"s": "', "<tool_call>")
@@ -411,6 +428,18 @@ class TestToolCalls:
             ToolCallEnd(0, valid=True),
         ]
 
+    def test_a_key_written_with_an_escape_is_the_key_it_decodes_to(self) -> None:
+        fmt = _format(reasoning=None, tools="hermes")
+        body = '{"\\u006eame": "f", "argu\\u006dents": {"a": 1}}'
+
+        events = assert_cut_invariant(fmt, tokens("<tool_call>", body, "</tool_call>"))
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "f"),
+            ToolCallDelta(0, '{"a": 1}'),
+            ToolCallEnd(0, valid=True),
+        ]
+
     def test_long_arguments_are_parsed_in_linear_time(self) -> None:
         fmt = _format(reasoning=None, tools="hermes")
         parser = fmt.parser(call_id_prefix="c", tools=True)
@@ -420,6 +449,122 @@ class TestToolCalls:
         events = run(parser, output, range(1, len(output), 7))
 
         assert ToolCallEnd(0, valid=True) in events
+        arguments = "".join(e.arguments for e in events if isinstance(e, ToolCallDelta))
+        assert arguments == '{"text": "' + "x" * 200_000 + '"}'
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            r'{"q": "say \"hi\" \\ "}',  # escaped quotes and a backslash
+            '{"\\u006eame": "x", "s": "}{]"}',  # an escaped key; braces inside a string
+            '{"a": [1, {"b": "}"}, [2]], "c": null, "d": -1.5e3, "e": true}',
+            '{"emoji": "\U0001f600 \u00e9", "nl": "a\\nb"}',
+        ],
+    )
+    def test_awkward_arguments_pass_through_at_every_cut(self, arguments: str) -> None:
+        fmt = _format(reasoning=None, tools="hermes")
+        body = '{"name": "f", "arguments": ' + arguments + "}"
+
+        events = assert_cut_invariant(fmt, tokens("<tool_call>", body, "</tool_call>"))
+
+        sent = "".join(e.arguments for e in events if isinstance(e, ToolCallDelta))
+        assert sent == arguments
+        assert ToolCallEnd(0, valid=True) in events
+
+    def test_a_long_whitespace_run_is_kept_whole(self) -> None:
+        """A small model writing 100K newlines: kept, cut at every 13th token, in linear time."""
+        fmt = _format(reasoning="think", tools="hermes")
+        output = tokens(
+            "<think>", "a" + "\n" * 100_000 + "b", "</think>", "c" + " " * 100_000 + "d"
+        )
+        parser = fmt.parser(call_id_prefix="c", tools=True)
+
+        events = run(parser, output, range(1, len(output), 13))
+
+        assert events[0] == ReasoningDelta("a" + "\n" * 100_000 + "b")
+        assert events[1] == TextDelta("c" + " " * 100_000 + "d")
+
+
+class TestToolBodyProperty:
+    """Random calls cut at random places, with a fixed seed: cutting changes nothing."""
+
+    @staticmethod
+    def _value(rng: random.Random, depth: int = 0) -> object:
+        kind = rng.randrange(6 if depth < 3 else 4)
+        match kind:
+            case 0:
+                return rng.choice([True, False, None, 0, -12, 3.5])
+            case 1 | 2:
+                return "".join(
+                    rng.choice('ab"\\{}[]:, \n\u00e9\U0001f600') for _ in range(rng.randrange(8))
+                )
+            case 3:
+                return rng.randrange(1000)
+            case 4:
+                items = rng.randrange(3)
+                return [TestToolBodyProperty._value(rng, depth + 1) for _ in range(items)]
+            case _:
+                items = rng.randrange(3)
+                return {f"k{i}": TestToolBodyProperty._value(rng, depth + 1) for i in range(items)}
+
+    @classmethod
+    def _arguments(cls, rng: random.Random) -> str:
+        return json.dumps(
+            {f"p{i}": cls._value(rng) for i in range(rng.randrange(1, 4))},
+            ensure_ascii=rng.random() < 0.5,
+            separators=rng.choice([(",", ":"), (", ", ": ")]),
+        )
+
+    @staticmethod
+    def _same_at_random_cuts(rng: random.Random, output: list[Token]) -> list[OutputEvent]:
+        """The events of ``output`` cut nowhere; ten random cuttings must give the same."""
+        fmt = _format(reasoning=None, tools="hermes")
+        whole = run(fmt.parser(call_id_prefix="c", tools=True), output, [])
+        for _ in range(10):
+            count = rng.randrange(1, min(20, len(output)))
+            cuts = sorted(rng.sample(range(1, len(output)), count))
+            assert run(fmt.parser(call_id_prefix="c", tools=True), output, cuts) == whole
+        return whole
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_random_cuts_equal_no_cut_and_the_pieces_are_the_model_text(self, seed: int) -> None:
+        rng = random.Random(seed)  # noqa: S311  # a seeded property test, not security
+        arguments = self._arguments(rng)
+        body = '{"name": "tool", "arguments": ' + arguments + "}"
+
+        whole = self._same_at_random_cuts(rng, tokens("<tool_call>", body, "</tool_call>"))
+
+        sent = "".join(e.arguments for e in whole if isinstance(e, ToolCallDelta))
+        assert sent == arguments
+        assert ToolCallEnd(0, valid=True) in whole
+
+    @pytest.mark.parametrize("seed", range(30))
+    def test_a_damaged_body_is_cut_the_same_and_ends_valid_only_if_it_parses(
+        self, seed: int
+    ) -> None:
+        rng = random.Random(1000 + seed)  # noqa: S311  # a seeded property test, not security
+        body = '{"name": "tool", "arguments": ' + self._arguments(rng) + "}"
+        at = rng.randrange(len(body))
+        damage = rng.choice(["", '"', "\\", "{", "}", "]", ","])
+        body = body[:at] + damage + body[at + rng.randrange(2) :]
+
+        whole = self._same_at_random_cuts(rng, tokens("<tool_call>", body, "</tool_call>"))
+
+        ends = [event for event in whole if isinstance(event, ToolCallEnd)]
+        assert all(end.valid == _is_call(body) for end in ends)
+
+
+def _is_call(body: str) -> bool:
+    """Whether ``body`` is a call as the parser means it: a JSON object with name and arguments."""
+    try:
+        value = json.loads(body)
+    except ValueError:
+        return False
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("name"), str)
+        and isinstance(value.get("arguments"), dict)
+    )
 
 
 _LLAMA_CALL = '{"name": "get_weather", "parameters": {"city": "Paris", "days": [1, 2]}}'

@@ -46,6 +46,7 @@ so a string ``function`` next to ``"type": "function"`` counts as the name (``ty
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -134,27 +135,63 @@ type _Phase = Literal[
     "start", "key", "in_key", "colon", "value", "in_value", "after_value", "done", "broken"
 ]
 _WHITESPACE: Final = " \t\r\n"
+#: Inside a string value: the next character that can end it or escape one.
+_STRING_STOP: Final = re.compile(r'["\\]')
+#: Inside an object or array value, outside strings: the next character that changes the nesting.
+_CONTAINER_STOP: Final = re.compile(r'["\\{}\[\]]')
 
 
 class _MemberScanner:
-    """Follows the members of one JSON object character by character.
+    """Follows the members of one JSON object, a piece at a time, in time linear in its length.
 
-    It records each top-level member's key and the raw text of its value. It only tracks
-    structure (strings, nesting); the final judgement of validity is a real JSON parse.
+    It records where each top-level member's value lies (:attr:`spans`) and keeps the raw text of
+    the few values the parser reads (``keep``: the name and its type). It only tracks structure
+    (strings, nesting); the final judgement of validity is a real JSON parse.
+
+    The only state carried from one piece to the next is the phase, the nesting depth and whether
+    the scan is inside a string or right after a backslash. Inside a value it jumps from one
+    structural character to the next with a regular expression, so the characters in between are
+    looked at by C code, not by this loop. The pieces are kept in a list and joined once, when
+    the whole text is needed.
+
+    Args:
+        keep: Keys whose finished values are kept as text in :attr:`values`.
     """
 
-    def __init__(self) -> None:
-        self.text = ""
+    def __init__(self, keep: frozenset[str] = frozenset()) -> None:
+        self._keep = keep
+        self._pieces: list[str] = []
+        self._length = 0  # characters taken so far
         self.phase: _Phase = "start"
         self.key: str | None = None  # key of the member being read
-        self.value_start = 0
-        self.values: dict[str, str] = {}  # finished members: key -> raw value text
+        self.value_start = 0  # absolute index where the value being read starts
+        self.spans: dict[str, tuple[int, int]] = {}  # finished members: key -> (start, end)
+        self.values: dict[str, str] = {}  # finished members kept as text: key -> raw value
         self._key_chars: list[str] = []
         self._depth = 0
         self._in_string = False
         self._escape = False
         self._kind: Literal["string", "container", "literal"] = "literal"
-        self._end = 0
+
+    @property
+    def length(self) -> int:
+        """Characters taken so far."""
+        return self._length
+
+    @property
+    def text(self) -> str:
+        """Everything taken so far, joined (once per change)."""
+        if len(self._pieces) > 1:
+            self._pieces = ["".join(self._pieces)]
+        return self._pieces[0] if self._pieces else ""
+
+    def slice(self, start: int, end: int) -> str:
+        """Characters ``start`` to ``end`` of what was taken; cheap inside the last piece."""
+        last = self._pieces[-1] if self._pieces else ""
+        base = self._length - len(last)
+        if start >= base:
+            return last[start - base : end - base]
+        return self.text[start:end]
 
     def feed(self, text: str, *, until_end: bool = False) -> str:
         """Take the next piece of the object.
@@ -163,17 +200,56 @@ class _MemberScanner:
         to it and the characters after it are returned. Otherwise everything is kept (inside
         markers, what follows the object is part of the body) and ``""`` is returned.
         """
-        base = len(self.text)
-        self.text += text
-        for offset, char in enumerate(text):
-            self._end = base + offset + 1  # index just after ``char``
-            self._step(char)
+        base = self._length
+        index = 0
+        size = len(text)
+        while index < size:
+            if self.phase == "in_value" and self._kind != "literal":
+                index = self._skip(text, index, base)
+                continue
+            self._step(text[index], base + index + 1, text)
+            index += 1
             if until_end and self.phase == "done":
-                self.text = self.text[: self._end]
-                return text[offset + 1 :]
+                self._take(text[:index])
+                return text[index:]
+        self._take(text)
         return ""
 
-    def _step(self, char: str) -> None:
+    def _take(self, text: str) -> None:
+        if text:
+            self._pieces.append(text)
+            self._length += len(text)
+
+    def _skip(self, text: str, index: int, base: int) -> int:
+        """Move through a string or container value; return the index after what it consumed."""
+        if self._escape:
+            self._escape = False
+            return index + 1
+        stop = (_STRING_STOP if self._in_string else _CONTAINER_STOP).search(text, index)
+        if stop is None:
+            return len(text)
+        position = stop.start()
+        char = text[position]
+        end = base + position + 1
+        if self._in_string:
+            if char == "\\":
+                self._escape = True
+            else:  # the closing quote
+                self._in_string = False
+                if self._kind == "string":
+                    self._end_value(end, text)
+        elif char == '"':
+            self._in_string = True
+        elif char in "{[":
+            self._depth += 1
+        else:
+            self._depth -= 1
+            if self._depth == 0:
+                self._end_value(end, text)
+        return position + 1
+
+    def _step(self, char: str, end: int, text: str) -> None:
+        """One character outside a string or container value; ``end`` is the index after it."""
         match self.phase:
             case "start":
                 if char == "{":
@@ -208,7 +284,7 @@ class _MemberScanner:
             case "value":
                 if char in _WHITESPACE:
                     return
-                self.value_start = self._end - 1
+                self.value_start = end - 1
                 self.phase = "in_value"
                 self._depth, self._in_string, self._escape = 0, False, False
                 if char == '"':
@@ -217,8 +293,10 @@ class _MemberScanner:
                     self._kind, self._depth = "container", 1
                 else:
                     self._kind = "literal"
-            case "in_value":
-                self._in_value(char)
+            case "in_value":  # a literal: true, false, null or a number
+                if char in ",}" or char in _WHITESPACE:
+                    self._end_value(end - 1, text)
+                    self._step(char, end, text)
             case "after_value":
                 if char == ",":
                     self.phase = "key"
@@ -230,35 +308,18 @@ class _MemberScanner:
                 if char not in _WHITESPACE:
                     self.phase = "broken"
 
-    def _in_value(self, char: str) -> None:
-        if self._kind == "literal":
-            if char in ",}" or char in _WHITESPACE:
-                self._end_value(self._end - 1)
-                self.phase = "after_value"
-                self._step(char)
-            return
-        if self._in_string:
-            if self._escape:
-                self._escape = False
-            elif char == "\\":
-                self._escape = True
-            elif char == '"':
-                self._in_string = False
-                if self._kind == "string":
-                    self._end_value(self._end)
-            return
-        if char == '"':
-            self._in_string = True
-        elif char in "{[":
-            self._depth += 1
-        elif char in "}]":
-            self._depth -= 1
-            if self._depth == 0:
-                self._end_value(self._end)
-
-    def _end_value(self, end: int) -> None:
-        if self.key is not None:
-            self.values[self.key] = self.text[self.value_start : end]
+    def _end_value(self, end: int, text: str) -> None:
+        """The value being read ends at absolute ``end``; ``text`` is the piece not taken yet."""
+        key = self.key
+        if key is not None:
+            start = self.value_start
+            self.spans[key] = (start, end)
+            if key in self._keep:
+                base = self._length
+                if start >= base:
+                    self.values[key] = text[start - base : end - base]
+                else:
+                    self.values[key] = self.text[start:] + text[: end - base]
         self.key = None
         self.phase = "after_value"
 
@@ -268,15 +329,34 @@ class _MemberScanner:
         return self.key if self.phase == "in_value" else None
 
 
+class _Run:
+    """Text gathered a piece at a time and read once: a list, so a long run costs its length."""
+
+    __slots__ = ("_parts",)
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+
+    def add(self, text: str) -> None:
+        if text:
+            self._parts.append(text)
+
+    def take(self) -> str:
+        """The text gathered so far; the run is empty afterwards."""
+        text = "".join(self._parts)
+        self._parts.clear()
+        return text
+
+
 class _Call:
     """One call being parsed; it gets its index when it is reported."""
 
-    def __init__(self) -> None:
+    def __init__(self, keep: frozenset[str]) -> None:
         self.index = -1
-        self.members = _MemberScanner()
+        self.members = _MemberScanner(keep)
         self.name: str | None = None
         self.started = False
-        self.sent = 0  # characters of the arguments value already reported
+        self.sent = 0  # absolute index up to which the arguments were reported
 
 
 class ToolCallParser:
@@ -300,16 +380,19 @@ class ToolCallParser:
         self._markers = markers if markers is not None else fmt.markers()
         self._arguments = fmt.arguments
         self._typed_name = fmt.typed_name
+        # The member values the parser reads as text; the arguments are only ever sliced.
+        self._keep = frozenset({"name", "type"} | ({fmt.typed_name} if fmt.typed_name else set()))
         self._prefix = call_id_prefix
         self._scanner = MarkerScanner(self._markers or ())
         self._call: _Call | None = None
         self._calls = 0  # calls reported to the client; the next call's index
-        self._space = ""  # whitespace held back in the text state
+        self._space = _Run()  # whitespace held back in the text state
         # Without markers: "start" (nothing but whitespace yet), "call" (inside the object that
         # may be a call), "between" (a call ended: whitespace and one ``;`` may lead to the next)
         # or "text" (the answer is text from here on).
         self._mode: Literal["start", "call", "between", "text"] = "start"
-        self._pending = ""  # the whitespace and ``;`` read in the "between" mode
+        self._pending = _Run()  # the whitespace and ``;`` read in the "between" mode
+        self._semicolon = False  # whether the "between" mode read its one ``;``
 
     @property
     def num_calls(self) -> int:
@@ -335,8 +418,8 @@ class ToolCallParser:
                 self._text(before, events)
                 if marker is None:
                     return events
-                self._space = ""  # whitespace before a call is layout
-                self._call = _Call()
+                self._space.take()  # whitespace before a call is layout
+                self._call = _Call(self._keep)
             else:
                 self._body(before, events)
                 if marker is None:
@@ -354,9 +437,9 @@ class ToolCallParser:
             self._end_call(events, closed=False)
         else:
             self._text(rest, events)
-            if self._space and self._calls == 0:
-                events.append(TextDelta(self._space))
-            self._space = ""
+            space = self._space.take()
+            if space and self._calls == 0:
+                events.append(TextDelta(space))
         return events
 
     # -- the text state ----------------------------------------------------------------------
@@ -364,11 +447,12 @@ class ToolCallParser:
     def _text(self, text: str, events: list[OutputEvent]) -> None:
         if not text:
             return
-        text = self._space + text
         body = text.rstrip(_WHITESPACE)
-        self._space = text[len(body) :]
-        if body:
-            events.append(TextDelta(body))
+        if not body:
+            self._space.add(text)  # only whitespace: held until text follows or the end
+            return
+        events.append(TextDelta(self._space.take() + body))
+        self._space.add(text[len(body) :])
 
     # -- a call without markers --------------------------------------------------------------
 
@@ -378,11 +462,11 @@ class ToolCallParser:
             match self._mode:
                 case "start":
                     body = text.lstrip(_WHITESPACE)
-                    self._space += text[: len(text) - len(body)]  # layout, or text: not known yet
+                    self._space.add(text[: len(text) - len(body)])  # layout or text: not known yet
                     text = body
                     if text:
                         opens = text[0] == "{"
-                        self._call = _Call() if opens else None
+                        self._call = _Call(self._keep) if opens else None
                         self._mode = "call" if opens else "text"
                 case "call":
                     text = self._object(text, events)
@@ -396,19 +480,26 @@ class ToolCallParser:
     def _between(self, text: str, events: list[OutputEvent]) -> str:
         """After a call: whitespace, then maybe ``;`` and a ``{`` that starts the next call."""
         char = text[0]
-        if char in _WHITESPACE or (char == ";" and ";" not in self._pending):
-            self._pending += char
-        elif char == "{" and ";" in self._pending:
-            self._space, self._pending = self._pending, ""  # dropped once the call has a name
-            self._call = _Call()
+        if char in _WHITESPACE:
+            rest = text.lstrip(_WHITESPACE)
+            self._pending.add(text[: len(text) - len(rest)])
+            return rest
+        if char == ";" and not self._semicolon:
+            self._pending.add(char)
+            self._semicolon = True
+            return text[1:]
+        separator = self._pending.take()
+        if char == "{" and self._semicolon:
+            self._space.take()
+            self._space.add(separator)  # dropped once the call has a name
+            self._semicolon = False
+            self._call = _Call(self._keep)
             self._mode = "call"
             return text  # the brace belongs to the call
-        else:
-            pending, self._pending = self._pending, ""
-            self._mode = "text"
-            self._text(pending, events)
-            return text
-        return text[1:]
+        self._semicolon = False
+        self._mode = "text"
+        self._text(separator, events)
+        return text
 
     def _object(self, text: str, events: list[OutputEvent]) -> str:
         """Feed the object that may be a call; return the text after its closing brace."""
@@ -416,7 +507,7 @@ class ToolCallParser:
         call = self._call
         assert call is not None  # noqa: S101  # only called in the call state
         if call.started:
-            self._space = ""  # whitespace before a call is layout
+            self._space.take()  # whitespace before a call is layout
         phase = call.members.phase
         if phase == "done" or (phase == "broken" and not call.started):
             # A broken call keeps swallowing the answer, as one inside markers does.
@@ -426,14 +517,15 @@ class ToolCallParser:
 
     def _finish_bare(self) -> list[OutputEvent]:
         events: list[OutputEvent] = []
+        separator = self._pending.take()
         if self._call is not None:
             self._end_call(events, closed=False)
-        elif self._mode == "between" and ";" in self._pending:
-            self._text(self._pending, events)  # a separator with no call after it is text
-        self._pending = ""
-        if self._space and self._calls == 0:
-            events.append(TextDelta(self._space))
-        self._space = ""
+        elif self._mode == "between" and self._semicolon:
+            self._text(separator, events)  # a separator with no call after it is text
+        self._semicolon = False
+        space = self._space.take()
+        if space and self._calls == 0:
+            events.append(TextDelta(space))
         return events
 
     # -- the call state ----------------------------------------------------------------------
@@ -463,16 +555,23 @@ class ToolCallParser:
         return None
 
     def _send_arguments(self, call: _Call, events: list[OutputEvent]) -> None:
+        """Report the arguments written since the last report: a slice of the new piece.
+
+        Only the first report of a call whose arguments came before its name reads earlier
+        pieces back; every other report is a slice of the piece just taken.
+        """
         members = call.members
-        if self._arguments in members.values:
-            raw = members.values[self._arguments]
+        span = members.spans.get(self._arguments)
+        if span is not None:
+            start, end = span
         elif members.reading == self._arguments:
-            raw = members.text[members.value_start :]
+            start, end = members.value_start, members.length
         else:
             return
-        if len(raw) > call.sent:
-            events.append(ToolCallDelta(call.index, raw[call.sent :]))
-            call.sent = len(raw)
+        start = max(start, call.sent)
+        if end > start:
+            events.append(ToolCallDelta(call.index, members.slice(start, end)))
+            call.sent = end
 
     def _end_call(self, events: list[OutputEvent], *, closed: bool) -> None:
         call = self._call

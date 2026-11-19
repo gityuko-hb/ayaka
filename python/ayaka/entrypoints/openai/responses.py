@@ -470,9 +470,10 @@ class ResponsesStreamEncoder:
         self._sequence = 0
         self._output: list[dict[str, object]] = []
         self._open: Literal["reasoning", "message"] | None = None
-        self._text = ""
+        self._texts: list[str] = []  # the open item's text, joined when it closes
         self._item_id = ""
         self._calls: dict[int, tuple[int, dict[str, object]]] = {}  # index -> output index, item
+        self._arguments: dict[int, list[str]] = {}  # index -> the open call's argument pieces
 
     def _event(self, kind: str, **fields: object) -> bytes:
         payload: dict[str, object] = {"type": kind, "sequence_number": self._sequence, **fields}
@@ -480,6 +481,8 @@ class ResponsesStreamEncoder:
         return sse_json(payload, event=kind)
 
     def _response(self) -> dict[str, object]:
+        for index, (_, item) in self._calls.items():  # an open call shows what it has so far
+            item["arguments"] = "".join(self._arguments[index])
         self._snapshot.output = self._output
         return self._snapshot.render()
 
@@ -499,13 +502,14 @@ class ResponsesStreamEncoder:
                 position = len(self._output)
                 item = _call_item(f"fc_{self._public}_{index}", call_id, name, "", "in_progress")
                 self._calls[index] = (position, item)
+                self._arguments[index] = []
                 self._output.append(item)
                 return frames + self._event(
                     "response.output_item.added", output_index=position, item=dict(item)
                 )
             case ToolCallDelta(index, arguments):
                 position, item = self._calls[index]
-                item["arguments"] = cast("str", item["arguments"]) + arguments
+                self._arguments[index].append(arguments)
                 return self._event(
                     "response.function_call_arguments.delta",
                     item_id=item["id"],
@@ -514,6 +518,7 @@ class ResponsesStreamEncoder:
                 )
             case ToolCallEnd(index):
                 position, item = self._calls.pop(index)
+                item["arguments"] = "".join(self._arguments.pop(index))
                 item["status"] = "completed"
                 return self._event(
                     "response.function_call_arguments.done",
@@ -554,7 +559,8 @@ class ResponsesStreamEncoder:
             count = sum(1 for item in self._output if item["type"] == kind)
             prefix = "rs" if kind == "reasoning" else "msg"
             self._item_id = f"{prefix}_{self._public}_{count}"
-            self._open, self._text = kind, ""
+            self._open = kind
+            self._texts.clear()
             item: dict[str, object] = (
                 {"id": self._item_id, "type": "reasoning", "summary": [], "content": []}
                 if kind == "reasoning"
@@ -570,7 +576,7 @@ class ResponsesStreamEncoder:
                     content_index=0,
                     part=_text_part(""),
                 )
-        self._text += text
+        self._texts.append(text)
         if kind == "reasoning":
             return frames + self._event(
                 "response.reasoning_text.delta",
@@ -592,7 +598,7 @@ class ResponsesStreamEncoder:
         if self._open is None:
             return b""
         position = len(self._output) - 1
-        text, item_id = self._text, self._item_id
+        text, item_id = "".join(self._texts), self._item_id
         if self._open == "reasoning":
             item = _reasoning_item(item_id, text)
             frames = self._event(

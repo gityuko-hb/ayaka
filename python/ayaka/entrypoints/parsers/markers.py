@@ -160,12 +160,19 @@ class MarkerScanner:
 
 
 def _possible_start(buffer: str, active: Sequence[Marker], start: int) -> int:
-    """Index of the earliest suffix of ``buffer`` that is a proper prefix of an active marker."""
+    """Index of the earliest suffix of ``buffer`` that is a proper prefix of an active marker.
+
+    Only the last ``len(marker) - 1`` characters can start one, and only where the marker's first
+    character is: ``str.find`` jumps between those places, so a scan costs the marker's length,
+    not its square.
+    """
     keep = len(buffer)
     for marker in active:
-        longest = min(len(marker.text) - 1, len(buffer) - start)
-        for size in range(longest, 0, -1):
-            if marker.text.startswith(buffer[len(buffer) - size :]):
-                keep = min(keep, len(buffer) - size)
+        text = marker.text
+        position = buffer.find(text[0], max(start, len(buffer) - len(text) + 1))
+        while position != -1 and position < keep:
+            if text.startswith(buffer[position:]):
+                keep = position
                 break
+            position = buffer.find(text[0], position + 1)
     return keep
