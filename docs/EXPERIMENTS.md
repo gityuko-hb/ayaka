@@ -129,3 +129,13 @@ Same flags, the profile in its honest state (681 MB after the run):
 GPU temperature stayed between 57 and 74 °C. Ayaka is slower on every line except the 1K prompt
 read, where the two are level. The battery run had generation level (0.98); on mains llama.cpp
 gains more from the higher clocks than Ayaka does.
+
+## Slow-client isolation (#50)
+
+- Question: does a client that stops reading its stream slow the other streams down?
+- Setup, written before the run: `ayaka serve` on HuggingFaceTB/SmolLM2-135M, CUDA fp16, the
+  default `--slow-client-timeout` (30 s); `benchmarks/e2e/slow_client.py` streams 2 chat
+  completions of 128 tokens at once, alone (A) and next to a client that opened a stream with a
+  1 KiB receive buffer and never reads (B); A B B A, five pairs; the measured value is the median
+  time between text frames of the two readers, and the ratio B/A per pair.
+- Threshold, written before the run: isolation holds when the median ratio B/A is at most 1.25.
