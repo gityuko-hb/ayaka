@@ -1,0 +1,1 @@
+{"id": "msg_0123456789abcdef0123456789abcdef", "type": "message", "role": "assistant", "model": "tiny", "content": [{"type": "text", "text": "Helsay \"hi\"\\\n\u0001\u2028w\u00f6rld \ud83d\ude00"}], "stop_reason": "end_turn", "stop_sequence": null, "usage": {"input_tokens": 7, "output_tokens": 7, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 4}}

@@ -46,3 +46,12 @@ repository; only these sanitized fixtures are committed.
    The hygiene test must pass, and the replay tests must stay green.
 4. If the tool's request shape changed in a way the server refuses or mis-handles, fix the
    protocol adapter and add what the new shape needs to the replay tests.
+
+## Golden wire bytes
+
+`golden/` is not a recording: it holds the exact bytes the server writes, compared byte for byte
+by `tests/entrypoints/test_golden_frames.py` (every stream encoder, whole answer and error shape on
+fixed events) and `tests/entrypoints/test_replay.py` (`golden/replay/`, the streamed answer to each
+recording above with the request id and clock fixed). Rewrite them with
+`AYAKA_UPDATE_GOLDEN=1 uv run pytest tests/entrypoints/test_golden_frames.py tests/entrypoints/test_replay.py`
+and review the diff: a changed file is a changed wire.

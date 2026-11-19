@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-0123456789abcdef0123456789abcdef","object":"chat.completion.chunk","created":1700000000,"model":"tiny","system_fingerprint":null,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
+
+: keepalive
+
+data: {"id":"chatcmpl-0123456789abcdef0123456789abcdef","object":"chat.completion.chunk","created":1700000000,"model":"tiny","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"Hel"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0123456789abcdef0123456789abcdef","object":"chat.completion.chunk","created":1700000000,"model":"tiny","system_fingerprint":null,"choices":[{"index":0,"delta":{"content":"say \"hi\"\\\n\u0001 wörld 😀"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-0123456789abcdef0123456789abcdef","object":"chat.completion.chunk","created":1700000000,"model":"tiny","system_fingerprint":null,"choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: [DONE]
+

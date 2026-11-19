@@ -73,6 +73,7 @@ __all__ = [
     "ResponsesStreamEncoder",
     "create_response",
     "parse_responses_request",
+    "response_body",
     "response_output",
 ]
 
@@ -451,6 +452,15 @@ def response_output(answer: Collected, public_id: str) -> list[dict[str, object]
     return items
 
 
+def response_body(snapshot: _Snapshot, answer: Collected, public_id: str) -> dict[str, object]:
+    """The ``response`` object of a whole answer, from the snapshot it started as."""
+    finish = answer.finish
+    assert finish is not None  # noqa: S101  # collecting raises on an error
+    snapshot.status, snapshot.incomplete = _finish_status(finish)
+    snapshot.output, snapshot.usage = response_output(answer, public_id), answer.usage
+    return snapshot.render()
+
+
 class ResponsesStreamEncoder:
     """Responses events for one answer.
 
@@ -653,9 +663,6 @@ async def create_response(request: web.Request) -> web.StreamResponse:
             encoder = ResponsesStreamEncoder(snapshot, public_id)
             return await serving.stream(request, generation, encoder)
         answer = await serving.collect(generation)
-        assert answer.finish is not None  # noqa: S101  # collect raises on an error
-        snapshot.status, snapshot.incomplete = _finish_status(answer.finish)
-        snapshot.output, snapshot.usage = response_output(answer, public_id), answer.usage
-        return web.json_response(snapshot.render())
+        return web.json_response(response_body(snapshot, answer, public_id))
     finally:
         serving.finish(generation)

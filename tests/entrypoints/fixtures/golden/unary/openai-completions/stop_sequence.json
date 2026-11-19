@@ -1,0 +1,1 @@
+{"id": "cmpl-0123456789abcdef0123456789abcdef", "object": "text_completion", "created": 1700000000, "model": "tiny", "choices": [{"index": 0, "text": "one two", "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18, "prompt_tokens_details": {"cached_tokens": 4}, "completion_tokens_details": {"reasoning_tokens": 0}}}
