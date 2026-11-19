@@ -8,7 +8,7 @@ Reading follows one policy for every field (``OUT-9``):
 * A known field that would change the answer and that Ayaka cannot honour is refused with 400,
   naming it. Nothing is accepted and then quietly done differently.
 * Sampling fields go to ``SamplingParams`` as they are; the engine refuses the ones it cannot
-  serve yet (``n > 1``, penalties, ``logit_bias``, ``logprobs``) with ``UnsupportedFeatureError``.
+  serve yet (penalties, ``logit_bias``, ``logprobs``) with ``UnsupportedFeatureError``.
 """
 
 from __future__ import annotations

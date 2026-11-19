@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from types import FrameType
 
+    from prometheus_client import CollectorRegistry
+
     from ayaka.configs.engine import EngineConfig
     from ayaka.configs.server import ServerConfig
     from ayaka.engine.core import EngineCore
@@ -125,7 +127,9 @@ async def serve(
         await site.start()
         host, port = runner.addresses[0][:2]
         say(f"listening on http://{_format_host(host)}:{port}; loading {model_name}")
-        core = await asyncio.to_thread(engine if callable(engine) else _builder(engine))
+        core = await asyncio.to_thread(
+            engine if callable(engine) else _builder(engine, serving.metrics.registry)
+        )
         llm = AsyncLLM(core)
         llm.start()
         output_format = OutputFormat.resolve(
@@ -157,11 +161,12 @@ async def serve(
     say("stopped")
 
 
-def _builder(config: EngineConfig) -> Callable[[], EngineCore]:
+def _builder(config: EngineConfig, registry: CollectorRegistry) -> Callable[[], EngineCore]:
     def build() -> EngineCore:
         from ayaka.engine.build import build_engine
+        from ayaka.metrics.loggers import PrometheusStatLogger
 
-        return build_engine(config)
+        return build_engine(config, stat_loggers=(PrometheusStatLogger(registry=registry),))
 
     return build
 

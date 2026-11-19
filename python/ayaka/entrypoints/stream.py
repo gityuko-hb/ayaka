@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     from ayaka.engine.async_llm import RequestStream
     from ayaka.entrypoints.conversation import OutputEvent
-    from ayaka.entrypoints.parsers.output import OutputParser
+    from ayaka.entrypoints.parsers.output import EventParser
 
 __all__ = [
     "KEEPALIVE_COMMENT",
@@ -108,7 +108,7 @@ async def _write(writer: Writer, data: bytes, deadline: float) -> None:
 
 async def pump(
     stream: RequestStream,
-    parser: OutputParser,
+    parser: EventParser,
     encoder: StreamEncoder,
     writer: Writer,
     *,
@@ -170,7 +170,7 @@ async def pump(
 
 async def collect_events(
     stream: RequestStream,
-    parser: OutputParser,
+    parser: EventParser,
     *,
     observe: Callable[[Sequence[OutputEvent]], None] | None = None,
 ) -> list[OutputEvent]:

@@ -111,6 +111,8 @@ class TokenizedRequest:
         priority: Scheduler priority; higher values are served first.
         cache_salt: Isolation salt for the prefix-cache hash chain.
         prefix_cache: Whether this request may reuse cached prompt blocks.
+        sequence_index: Which output sequence of a parent request with ``n > 1`` this is; it
+            selects the random stream. 0 for an ordinary request.
     """
 
     request_id: RequestId
@@ -120,6 +122,7 @@ class TokenizedRequest:
     priority: int = 0
     cache_salt: str | None = None
     prefix_cache: bool = True
+    sequence_index: int = 0
 
     def __post_init__(self) -> None:
         _validate_envelope(
@@ -130,6 +133,7 @@ class TokenizedRequest:
             self.prefix_cache,
         )
         _validate_token_ids(self.prompt_token_ids, "prompt_token_id")
+        require_int(self.sequence_index, "sequence_index")
 
     @property
     def prompt_length(self) -> int:

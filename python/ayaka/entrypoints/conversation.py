@@ -356,6 +356,21 @@ class ErrorEvent:
     retryable: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ChoiceEvent:
+    """An event of one sequence of a request with ``n > 1`` (an OpenAI ``choice``).
+
+    The request's usage and its terminal event are not wrapped: they describe all the choices.
+
+    Attributes:
+        index: The sequence, from 0.
+        event: What that sequence said.
+    """
+
+    index: int
+    event: OutputEvent
+
+
 type OutputEvent = (
     TextDelta
     | ReasoningDelta
@@ -365,6 +380,7 @@ type OutputEvent = (
     | UsageEvent
     | FinishEvent
     | ErrorEvent
+    | ChoiceEvent
 )
 """Anything a request's output stream says."""
 
@@ -433,6 +449,27 @@ class Collected:
     error: ErrorEvent | None = None
 
 
+def collect_choices(events: Iterable[OutputEvent], count: int) -> list[Collected]:
+    """Gather the events of a request with ``count`` choices into one answer per choice.
+
+    Each answer gets the request's usage, and its error when the request failed.
+    """
+    per_choice: list[list[OutputEvent]] = [[] for _ in range(count)]
+    shared: list[OutputEvent] = []
+    for event in events:
+        if isinstance(event, ChoiceEvent):
+            per_choice[event.index].append(event.event)
+        else:
+            shared.append(event)
+    overall = collect(shared)
+    answers = [collect(choice) for choice in per_choice]
+    for answer in answers:
+        answer.usage = overall.usage
+        if overall.error is not None:
+            answer.error = overall.error
+    return answers
+
+
 def collect(events: Iterable[OutputEvent]) -> Collected:
     """Gather a stream of events into one answer."""
     answer = Collected()
@@ -456,4 +493,6 @@ def collect(events: Iterable[OutputEvent]) -> Collected:
                 answer.finish = event
             case ErrorEvent():
                 answer.error = event
+            case ChoiceEvent():
+                pass  # one choice of several: collect_choices sorts those
     return answer

@@ -122,6 +122,7 @@ _KEYS: Final = frozenset(
         "cache_control",
         "output_format",
         "output_config",
+        "n",
     }
 )
 
@@ -131,6 +132,8 @@ def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
     for field in ("container", "mcp_servers"):
         if body.has(field):
             raise _unsupported(field, "not available on this server")
+    if body.has("n") and body.raw("n") != 1:
+        raise _unsupported("n", "Messages returns one answer per request")
     if body.has("output_format"):
         raise _unsupported("output_format", "structured output is not available yet")
     output_config = body.child("output_config")

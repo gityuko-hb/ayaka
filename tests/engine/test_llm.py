@@ -405,14 +405,14 @@ class TestRefusals:
     @pytest.mark.parametrize(
         "sampling",
         [
-            SamplingParams(temperature=0.8, n=2),
+            SamplingParams(return_sampling_support=True),
             SamplingParams(logprobs=1),
             SamplingParams(repetition_penalty=1.2),
             SamplingParams(presence_penalty=0.5),
             SamplingParams(logit_bias={3: 1.0}),
             SamplingParams(allowed_token_ids=frozenset({1, 2})),
         ],
-        ids=["n", "logprobs", "repetition", "presence", "logit_bias", "allowed_ids"],
+        ids=["sampling_support", "logprobs", "repetition", "presence", "logit_bias", "allowed_ids"],
     )
     def test_an_unsupported_feature_is_refused_before_anything_is_queued(
         self, llm: LLM, sampling: SamplingParams

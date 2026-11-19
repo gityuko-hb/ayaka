@@ -61,6 +61,8 @@ class StepInput:
         sampling_params: The request's frozen sampling parameters.
         table_updates: ``(group, row, start, stop)`` ranges of the block table that changed since
             the previous step and must reach the device, freed rows included.
+        sequence_indices: Per request, which output sequence of its parent it is (``n > 1``); it
+            selects an independent random stream. Empty means 0 for every request.
 
     Raises:
         EngineError: If the fields disagree, a row count is below 1, or the mode does not fit the
@@ -77,20 +79,23 @@ class StepInput:
     need_logits: tuple[bool, ...]
     sampling_params: tuple[SamplingParams, ...]
     table_updates: tuple[tuple[int, int, int, int], ...] = ()
+    sequence_indices: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        _require_same_length(
-            self.step_id,
-            {
-                "request_ids": len(self.request_ids),
-                "batch_rows": len(self.batch_rows),
-                "rows_per_request": len(self.rows_per_request),
-                "start_positions": len(self.start_positions),
-                "tokens": len(self.tokens),
-                "need_logits": len(self.need_logits),
-                "sampling_params": len(self.sampling_params),
-            },
-        )
+        lengths = {
+            "request_ids": len(self.request_ids),
+            "batch_rows": len(self.batch_rows),
+            "rows_per_request": len(self.rows_per_request),
+            "start_positions": len(self.start_positions),
+            "tokens": len(self.tokens),
+            "need_logits": len(self.need_logits),
+            "sampling_params": len(self.sampling_params),
+        }
+        if self.sequence_indices:
+            lengths["sequence_indices"] = len(self.sequence_indices)
+            if min(self.sequence_indices) < 0:
+                raise EngineError(f"step {self.step_id}: a sequence index is negative")
+        _require_same_length(self.step_id, lengths)
         if self.mode not in _STEP_MODES:
             raise EngineError(f"step {self.step_id}: a step cannot run in mode {self.mode}")
         if not self.request_ids:
@@ -112,6 +117,10 @@ class StepInput:
                 raise EngineError(f"step {self.step_id}: a prefill chunk knows all its tokens")
             if self.mode is ForwardMode.DECODE and rows != 1:
                 raise EngineError(f"step {self.step_id}: a DECODE step has one row per request")
+
+    def sequence_index(self, index: int) -> int:
+        """The output sequence of the request at batch position ``index``."""
+        return self.sequence_indices[index] if self.sequence_indices else 0
 
     @property
     def num_requests(self) -> int:

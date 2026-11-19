@@ -118,6 +118,9 @@ class Request:
         cache_salt: Isolation salt of the prefix cache.
         prefix_cache: Whether the request may reuse and share cached blocks.
         cached_tokens: Prompt tokens whose KV was attached from the prefix cache at admission.
+        sequence_index: Which output sequence of a parent with ``n > 1`` this request is.
+        blocked_on: A sibling whose prompt prefill this request waits for, so it can attach the
+            shared prefix instead of computing it again; ``None`` for no wait.
     """
 
     request_id: RequestId
@@ -135,11 +138,18 @@ class Request:
     cache_salt: str | None = None
     prefix_cache: bool = True
     cached_tokens: int = 0
+    sequence_index: int = 0
+    blocked_on: RequestId | None = None
     _status: RequestStatus = field(default=RequestStatus.WAITING, init=False)
 
     @classmethod
     def from_tokenized(
-        cls, request: TokenizedRequest, *, arrival: float, deadline: float | None = None
+        cls,
+        request: TokenizedRequest,
+        *,
+        arrival: float,
+        deadline: float | None = None,
+        blocked_on: RequestId | None = None,
     ) -> Request:
         """Start tracking a request that passed admission."""
         return cls(
@@ -151,6 +161,8 @@ class Request:
             deadline=deadline,
             cache_salt=request.cache_salt,
             prefix_cache=request.prefix_cache,
+            sequence_index=request.sequence_index,
+            blocked_on=blocked_on,
         )
 
     @property

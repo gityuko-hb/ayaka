@@ -13,7 +13,7 @@
     KV cache                          tensors (KVPool), bookkeeping (KVCacheManager) and, unless
                                       the config turns it off, the prefix cache
     tokenizer                         checked against the model's vocabulary and context
-    scheduler, runner, processors     and the engine that runs them
+    scheduler, runner, processors     and the engine that runs them, with the stat loggers
     start-up run (GPU only)           measure activations and runtime memory, capture the decode
                                       graphs, reserve it all in the ledger, compare the ledger with
                                       the device, save the profile for the next start-up
@@ -57,12 +57,14 @@ from ayaka.kvcache.manager import KVCacheManager
 from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
 from ayaka.kvcache.prefix.hashing import ChainRoot
 from ayaka.memory.budget import BudgetInputs, KVCost, MemoryBudget, plan_budget
+from ayaka.metrics.loggers import LoggingStatLogger
+from ayaka.metrics.manager import StatLoggerManager
 from ayaka.scheduler.scheduler import Scheduler
 from ayaka.tokenizers.service import TokenizerService
 from ayaka.utils.math_utils import div_ceil
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from ayaka.configs.device import DeviceConfig
     from ayaka.configs.engine import EngineConfig
@@ -70,6 +72,7 @@ if TYPE_CHECKING:
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.storage.pool import KVPool
     from ayaka.memory.budget import BudgetPlan
+    from ayaka.metrics.loggers import StatLogger
     from ayaka.models.base import CausalLM
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
@@ -77,18 +80,29 @@ __all__ = ["build_engine"]
 
 logger = logging.getLogger(__name__)
 
+#: Seconds between two lines of the logging stat logger.
+STATS_LOG_INTERVAL: Final = 10.0
+
 #: Requests that run at once on the host CPU when the config does not say. The CPU shares its RAM
 #: with everything else, so the KV cache is sized for this many requests of full context.
 _HOST_MAX_RUNNING: Final = 8
 
 
-def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = None) -> EngineCore:
+def build_engine(
+    config: EngineConfig,
+    *,
+    tokenizer: LoadedTokenizer | None = None,
+    stat_loggers: Sequence[StatLogger] = (),
+) -> EngineCore:
     """Build an engine: load the model, size and allocate the cache, and wire the loop.
 
     Args:
         config: Everything that describes the run.
         tokenizer: A tokenizer to use instead of loading the one the configuration names; for
             tests and for callers that already hold one.
+        stat_loggers: Loggers that get every step besides the logging one (which writes a line
+            every :data:`STATS_LOG_INTERVAL` seconds at INFO); the server passes its Prometheus
+            logger.
 
     Returns:
         An engine ready to take requests. Call :meth:`~ayaka.engine.core.EngineCore.shutdown`
@@ -268,6 +282,9 @@ def build_engine(config: EngineConfig, *, tokenizer: LoadedTokenizer | None = No
         model_config=model_config,
         plan=plan,
         startup=startup,
+        stats=StatLoggerManager(
+            loggers=(LoggingStatLogger(), *stat_loggers), log_interval=STATS_LOG_INTERVAL
+        ),
     )
 
 

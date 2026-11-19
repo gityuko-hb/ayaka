@@ -114,7 +114,7 @@ class TestRefusals:
         monkeypatch.setattr(service, "encode", never)
 
         with pytest.raises(UnsupportedFeatureError):
-            processor.process(_request("x", temperature=0.7, n=2))
+            processor.process(_request("x", return_sampling_support=True))
 
     def test_every_unsupported_feature_of_a_request_is_named(self) -> None:
         sampling = SamplingParams(repetition_penalty=1.3, logprobs=2, frequency_penalty=0.1)
