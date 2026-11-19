@@ -119,6 +119,22 @@ def _generate(llm: LLM, sampling: SamplingParams) -> list[tuple[int, ...]]:
     return [out.outputs[0].token_ids for out in outs]
 
 
+def _json_request(name: str, prompt: str, *, seed: int) -> GenerateRequest:
+    """A sampled request whose answer must be a JSON object with one integer ``n``."""
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "integer", "minimum": 0, "maximum": 9}},
+        "required": ["n"],
+        "additionalProperties": False,
+    }
+    return GenerateRequest(
+        request_id=RequestId(name),
+        prompt=prompt,
+        sampling=SamplingParams(temperature=1.0, seed=seed, max_tokens=12),
+        structured=StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema),
+    )
+
+
 def _greedy() -> SamplingParams:
     # ignore_eos fixes the length without a min_tokens mask, which would make the steps eager.
     return SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, ignore_eos=True)
@@ -249,21 +265,10 @@ def test_sampling_controls_run_on_the_gpu_beside_graphs(
 def test_a_json_constraint_holds_on_the_gpu_beside_graphs(
     gpt2: tuple[Path, ModelConfig, dict[str, Any]], backends: tuple[str, ...]
 ) -> None:
-    """A schema-constrained request runs eagerly and always parses; the plain one keeps graphs."""
+    """A schema-constrained request always parses, with graphs and without, beside a plain one."""
     pytest.importorskip("llguidance", reason="the structured extra is not installed")
     directory, _, _ = gpt2
-    schema = {
-        "type": "object",
-        "properties": {"n": {"type": "integer", "minimum": 0, "maximum": 9}},
-        "required": ["n"],
-        "additionalProperties": False,
-    }
-    constrained = GenerateRequest(
-        request_id=RequestId("json"),
-        prompt=PROMPTS[0],
-        sampling=SamplingParams(temperature=1.0, seed=3, max_tokens=12),
-        structured=StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema),
-    )
+    constrained = _json_request("json", PROMPTS[0], seed=3)
     results = []
     for graphs in (False, True):
         with _llm(directory, backends=backends, dtype=DType.FP16, graphs=graphs) as llm:
@@ -281,6 +286,32 @@ def test_a_json_constraint_holds_on_the_gpu_beside_graphs(
             assert set(json.loads(outs[0].outputs[0].text)) == {"n"}
             if graphs:
                 assert llm.engine.runner.graph is not None
+                assert llm.engine.runner.graph.replays > 0
+            results.append([out.outputs[0].token_ids for out in outs])
+            assert_cache_released(llm.engine)
+
+    assert results[0] == results[1]
+
+
+@pytest.mark.parametrize("backends", [("torch",), ("flashinfer", "torch")], ids=["torch", "fi"])
+def test_constrained_decode_steps_replay_graphs_with_the_eager_tokens(
+    gpt2: tuple[Path, ModelConfig, dict[str, Any]], backends: tuple[str, ...]
+) -> None:
+    """With only constrained requests, every decode step that replays is a masked one."""
+    pytest.importorskip("llguidance", reason="the structured extra is not installed")
+    directory, _, _ = gpt2
+    requests = [_json_request(f"json{seed}", PROMPTS[seed], seed=seed) for seed in range(3)]
+    results = []
+    for graphs in (False, True):
+        with _llm(directory, backends=backends, dtype=DType.FP16, graphs=graphs) as llm:
+            outs = llm.generate(requests)
+            assert isinstance(outs, list)
+            for out in outs:
+                assert out.error is None, out.error
+                assert set(json.loads(out.outputs[0].text)) == {"n"}
+            if graphs:
+                assert llm.engine.runner.graph is not None
+                # Before masks went into the graph, no step of these requests could replay.
                 assert llm.engine.runner.graph.replays > 0
             results.append([out.outputs[0].token_ids for out in outs])
             assert_cache_released(llm.engine)

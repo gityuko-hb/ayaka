@@ -190,10 +190,14 @@ def apply_token_bitmask(logits: torch.Tensor, bitmask: torch.Tensor) -> None:
     rows, vocab = _check_workspace(op, logits)
     words = (vocab + 31) // 32
     require_like(op, "bitmask", bitmask, (rows, words), torch.int32)
-    ids = torch.arange(vocab, device=logits.device)
-    unsigned = bitmask.to(torch.int64) & _WORD
-    bits = (unsigned.index_select(1, ids // 32) >> (ids % 32)) & 1
-    logits.masked_fill_(bits == 0, -torch.inf)
+    # Token t is bit t % 8 of byte t // 8 of the row: the words are little endian in memory, on the
+    # CPU and the GPU alike. One byte per token and no int64, so a batch of 32 rows at a 128k
+    # vocabulary needs about 8 MiB of scratch (the int64 form needed about 67 MiB, which every
+    # captured graph that applies a mask kept in its pool), and the call is a few kernels without
+    # a host read, so it can be captured.
+    shifts = torch.arange(8, device=bitmask.device, dtype=torch.uint8)
+    bits = (bitmask.contiguous().view(torch.uint8).unsqueeze(-1) >> shifts).bitwise_and_(1)
+    logits.masked_fill_(bits.reshape(rows, words * 32)[:, :vocab] == 0, -torch.inf)
 
 
 def apply_logit_bias(

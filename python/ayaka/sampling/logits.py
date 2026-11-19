@@ -178,8 +178,12 @@ def _bitmask(
     structural: Sequence[NDArray[np.uint32] | None],
 ) -> torch.Tensor | None:
     words = (vocab + 31) // 32
-    masks: list[np.ndarray | None] = []
-    for row, grammar in zip(rows, structural, strict=True):
+    # One uint32 table, a row per logit row; a row that masks nothing stays all ones. It goes to
+    # the device as one buffer: going through Python lists costs milliseconds per step at a
+    # 128k vocabulary and a batch of 32 rows.
+    table = np.full((len(rows), words), _ALL_BITS, dtype=np.uint32)
+    masked = False
+    for index, (row, grammar) in enumerate(zip(rows, structural, strict=True)):
         params = row.params
         banned: set[int] = set()
         if row.produced < params.min_tokens:
@@ -187,7 +191,9 @@ def _bitmask(
             if not params.ignore_eos:
                 banned |= set(eos)
         if params.allowed_token_ids is None and not banned:
-            masks.append(grammar[:words].astype(np.uint64) if grammar is not None else None)
+            if grammar is not None:
+                table[index] = grammar[:words]
+                masked = True
             continue
         if params.allowed_token_ids is None:
             bits = np.full(words, _ALL_BITS, dtype=np.uint64)
@@ -201,13 +207,11 @@ def _bitmask(
                 bits[token // 32] &= ~np.uint64(1 << (token % 32)) & np.uint64(_ALL_BITS)
         if grammar is not None:
             bits &= grammar[:words].astype(np.uint64)
-        masks.append(bits)
-    if all(mask is None for mask in masks):
+        table[index] = bits  # every word fits in 32 bits
+        masked = True
+    if not masked:
         return None
-    full = np.full(words, _ALL_BITS, dtype=np.uint64)
-    table = np.stack([mask if mask is not None else full for mask in masks])
-    signed = table.astype(np.uint32).view(np.int32)
-    return torch.tensor(signed.tolist(), dtype=torch.int32, device=device)
+    return torch.as_tensor(table.view(np.int32), device=device)
 
 
 def _bias(

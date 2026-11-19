@@ -183,3 +183,226 @@ stuck request keeps decoding, so a B phase decodes three sequences (CUDA graph b
 decodes two (bucket 2). The 21% is therefore an upper bound on what a stuck client costs the
 others; a control with a third reader that keeps up would split it. Also, the unit tests ran on
 the same machine during part of this run (CPU only), which may have added noise to some phases.
+
+## Constrained decode inside CUDA graphs (#73)
+
+- Question: with the structural mask of an output constraint applied inside the captured sampling
+  path, how much slower is a constrained decode step than a free one, and what do the extra graphs
+  cost in memory?
+- Setup, written before the run: `benchmarks/e2e/constrained_decode.py` on the RTX 3050 Laptop GPU
+  (4 GB), WSL2, fp16, `--backends flashinfer torch`, on SmolLM2-135M and
+  unsloth/Llama-3.2-1B-Instruct; graph buckets 1, 2, 4, 8, 16 and 32; batches 1, 8 and 32; 129
+  tokens per request, greedy, `ignore_eos`; 5 runs per arm after a warm-up; the value is the median
+  decode time per step. The constraint is a JSON schema with one string of at least 2,048
+  characters, so the grammar cannot finish and every step carries a mask. Arms: `free_graph` (no
+  constraint), `eager_control` (a zero logit bias: the same step run eagerly, which is what a
+  constrained step cost before its mask went into the graph) and `constrained`. The script stops
+  if `free_graph` or `constrained` replays no graph, or `eager_control` replays one. The torch
+  backend's decode attention reads the whole padded block table, so it is not measured.
+- Thresholds, written before the run. An earlier run of the same script on an earlier state of
+  the code (the mask op was different) had given gaps of 0.4% to 23.1% over its six points, so
+  these are not blind; that run is not used below.
+  1. At batch 1 and 8, on both models, the median `constrained` step is at most 10% over
+     `free_graph`.
+  2. At every batch, the GPU work the mask adds (the float32 copy of the logits and
+     `apply_token_bitmask`, `gpu_mask_ms`) is at most 5% of the `free_graph` step.
+  3. `constrained` replays graphs at every batch (the script enforces it).
+- Reported, not judged: batch 32, where the grammar work on the host grows with the rows, and
+  memory: the allocator's growth around each captured graph, measured the same way on `main`
+  (`a416948`), on the first implementation (`dcf6473`) and on the change below.
+
+### Memory of the graphs, measured before the speed run
+
+The same method on all three trees (`torch.cuda.memory_reserved()` around every graph capture, a
+fresh profile cache, buckets 1, 2, 4, 8, 16 and 32, flashinfer and torch backends):
+
+| Tree | Graphs | Llama-3.2-1B | SmolLM2-135M |
+| --- | --- | --- | --- |
+| `main` | 12 (greedy or sampling, per bucket) | 482 MiB | 344 MiB |
+| `dcf6473` | 24 (each of those, with and without a mask) | 772 MiB | 606 MiB |
+| this change | 24 | 772 MiB | 606 MiB |
+
+Every graph at a bucket of 16 or fewer grows the allocator by about 20 MiB, masked or not, so the
+masked variants add about 20 MiB per graph, two graphs per bucket. Replacing the int64 mask op by
+a byte-wise one (below) changes how that growth is split between the graphs of bucket 32 but not
+its total: the peak of a captured sampling step is the sampler's full-vocabulary sort, not the
+mask's scratch, which the sort reuses.
+
+### First run: invalid, the GPU was over-committed (2026-11-20)
+
+The script on this change, a fresh profile cache and the engine's default `memory_ratio` (0.90).
+The start-up log of each engine said the allocator held more than the plan: 979 MiB more on
+Llama-3.2-1B (tolerance 257 MiB) and 635 MiB more on SmolLM2-135M (tolerance 239 MiB). The graphs
+of six buckets (772 and 606 MiB) do not fit into the 10% headroom (415 MiB). Under WSL2 the driver
+serves what exceeds the device from host memory, and the step times show it: on Llama, `free_graph`
+at batch 32 took 55 ms per step (26 ms in an earlier run on the same day), `eager_control` 220 to
+293 ms (about 38 ms earlier), and even batch 8 was slower than before. The run measured paging, not
+the step; it is discarded. On `main` the same six buckets also leave the start-up reserving 4,606
+MiB on this 4,096 MiB device (measured above, Llama-3.2-1B, graphs on, default ratio); its own
+start-up check was not run.
+
+The script now checks the engine's own reconciliation after start-up and stops with exit 2 when
+the allocator holds more than the plan allows, and takes `--memory-ratio`.
+
+### Second run: setup, written before the run
+
+- The same script, models, setup and thresholds, with `--memory-ratio` set to the highest of 0.80,
+  0.75, 0.70, 0.65 and 0.60 at which the script's start-up check passes, tried in that order, with
+  a fresh profile cache. The value is the same for every arm of a model and is recorded in the
+  result. A model for which none passes has no valid run.
+- Validity: the start-up check passes (exit 0). Nothing else is filtered; every run that passes
+  is reported.
+
+### Second run: Llama-3.2-1B has no valid run at six buckets; third run, written before it
+
+The second run went as set up for SmolLM2-135M (valid at 0.65, all batches). For
+Llama-3.2-1B none of the five ratios gave a valid run: 0.80 to 0.65 were refused as over-committed,
+and at 0.60 the engine did not start (`CapacityError`: the KV floor needs 2,674,528,256 bytes, 2,492,674,867
+are available). By the rule above there is no valid run of that model at batch 32 on this GPU, and
+this is reported as a finding, not repaired: the graphs of buckets up to 32 (772 MiB with masks,
+482 MiB without, both measured above) do not fit next to the weights of a 1.2 B model in 4 GB.
+
+Batch 1 and 8, where thresholds 1 and 2 are judged, need only the buckets 1, 2, 4 and 8, the
+engine's default. The third run, decided before any step time of the second run was read:
+
+- Llama-3.2-1B only, `--batch 1 8`, so the graph buckets are 1, 2, 4 and 8; everything else as
+  above, with `--memory-ratio` the highest of 0.90 (the engine's default), 0.85, 0.80, 0.75, 0.70
+  and 0.65 whose start-up check passes. The thresholds are unchanged and judged at these two
+  batches; at batch 32 the Llama model has no valid run.
+
+### Result
+
+On `dcf6473` plus the working tree that became this change (the byte-wise mask op below, the
+benchmark's start-up check). Commands: `uv run python benchmarks/e2e/constrained_decode.py --model
+<checkpoint> --backends flashinfer torch --memory-ratio <ratio>`, with `--batch 1 8` for Llama. The
+result files are not committed; these tables are the record. Median decode time per step in ms,
+five runs per arm.
+
+SmolLM2-135M, `--memory-ratio 0.65` (the first that passed; the allocator held 134 MiB more than the
+plan, tolerance 205 MiB), buckets 1 to 32, graphs 606 MiB:
+
+| Batch | `free_graph` | `eager_control` | `constrained` | `constrained` over `free_graph` | `gpu_mask_ms` over `free_graph` |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 6.06 | 41.53 | 6.07 | +0.2% | 8.0% |
+| 8 | 6.81 | 46.96 | 7.31 | +7.3% | 6.9% |
+| 32 | 8.66 | 49.48 | 9.36 | +8.1% | 2.4% |
+
+Llama-3.2-1B, batches 1 and 8, `--memory-ratio 0.70` (the first that passed; 174 MiB over the plan,
+tolerance 207 MiB), buckets 1, 2, 4, 8, graphs 378 MiB. There is no valid batch 32 run (above).
+
+| Batch | `free_graph` | `eager_control` | `constrained` | `constrained` over `free_graph` | `gpu_mask_ms` over `free_graph` |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 17.60 | 27.11 | 17.60 | +0.0% | 1.3% |
+| 8 | 20.36 | 29.24 | 21.00 | +3.2% | 0.8% |
+
+Every `constrained` and `free_graph` arm replayed graphs (768 replays each) and no `eager_control`
+arm did.
+
+Against the thresholds written before the run:
+
+1. Met. At batch 1 and 8 on both models the constrained step is at most 7.3% over the free one.
+2. **Not met as written**, on SmolLM2-135M at batch 1 (8.0%) and batch 8 (6.9%); met on Llama (1.3%,
+   0.8%) and on SmolLM2 at batch 32 (2.4%).
+3. Met.
+
+Threshold 2 uses `gpu_mask_ms`, which times the float32 copy and `apply_token_bitmask` launched
+eagerly, so it contains the gaps between kernel launches. It is launch-bound: on SmolLM2 it is
+0.48 ms at one row and 0.21 ms at 32. A diagnostic added after these results, so it does not
+replace the threshold, captures the same two calls in a CUDA graph and times the replay:
+
+| Vocabulary | Rows | In a graph | Eager |
+| --- | --- | --- | --- |
+| 49,152 (SmolLM2) | 1 / 8 / 32 | 0.091 / 0.055 / 0.210 ms | 0.118 / 0.129 / 0.246 ms |
+| 128,256 (Llama) | 1 / 8 / 32 | 0.064 / 0.125 / 0.531 ms | 0.207 / 0.182 / 0.544 ms |
+
+In a graph the mask part is 1.5%, 0.8% and 2.4% of the SmolLM2 `free_graph` step at 1, 8 and 32
+rows, and 0.4% and 0.6% of the Llama step at 1 and 8 rows. A later threshold should use this
+metric.
+
+What the graph wins: the same engine runs a step with the mask and no graph (`eager_control`, which
+has no grammar cost, so it understates the old cost) in 5.3 to 6.8 times the time on SmolLM2 and 1.4
+to 1.5 times on Llama; the constrained step in a graph is within 8.1% of a free step on SmolLM2 and
+within 3.2% on Llama. The grammar's own work on the host (`mask()` of llguidance) is 7.7 µs per row
+at p50 on SmolLM2 and 31.1 µs on Llama.
+
+### Repeat run: setup, written before the run
+
+The diagnostic above came from a throwaway script outside the repository, so nothing in the
+repository reproduces it. The benchmark script now times the same two calls captured in a CUDA
+graph (`gpu_mask_graph_ms`). The second and third runs are repeated with it, at the ratios that
+passed (SmolLM2-135M at 0.65, batches 1, 8 and 32; Llama-3.2-1B at 0.70, batches 1 and 8; if the
+start-up check refuses a ratio, the next lower one of the lists above), everything else unchanged.
+
+- The verdicts above stand; no threshold is edited. One more question is put to the new metric,
+  as threshold 2': `gpu_mask_graph_ms` is at most 5% of the `free_graph` step at every batch.
+- Everything the repeat measures is reported, whatever the numbers; it also shows how far a second
+  run of the same setup is from the first.
+
+### Repeat run: result
+
+The same setup and ratios, valid again (the allocator 134 MiB over the plan on SmolLM2-135M and
+174 MiB on Llama-3.2-1B, as before). Median decode time per step in ms, five runs per arm; the last
+two columns are the mask part (the float32 copy and `apply_token_bitmask`) launched eagerly
+(`gpu_mask_ms`, the metric of threshold 2) and replayed from a graph (`gpu_mask_graph_ms`), with
+their share of the `free_graph` step.
+
+| Model | Batch | `free_graph` | `eager_control` | `constrained` | `constrained` over `free_graph` | Mask, eager | Mask, in a graph |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| SmolLM2-135M | 1 | 6.01 | 41.42 | 6.17 | +2.7% | 0.123 ms (2.0%) | 0.013 ms (0.2%) |
+| SmolLM2-135M | 8 | 6.73 | 43.06 | 6.93 | +3.0% | 0.128 ms (1.9%) | 0.051 ms (0.8%) |
+| SmolLM2-135M | 32 | 8.66 | 47.12 | 8.87 | +2.5% | 0.214 ms (2.5%) | 0.200 ms (2.3%) |
+| Llama-3.2-1B | 1 | 17.59 | 27.12 | 17.71 | +0.7% | 0.124 ms (0.7%) | 0.065 ms (0.4%) |
+| Llama-3.2-1B | 8 | 20.68 | 29.49 | 20.92 | +1.2% | 0.182 ms (0.9%) | 0.125 ms (0.6%) |
+
+Every `constrained` and `free_graph` arm replayed graphs (768 replays), no `eager_control` arm did.
+
+- Threshold 1: met again, at most 3.0% over a free step (8.1% at most in the first run).
+- Threshold 2, as written: met in this run (at most 2.5%), after it was not met in the first run
+  (8.0% and 6.9%). The verdict of record stays the one of the run it was written for: **not met**.
+  The metric is not stable: the same eager measurement on SmolLM2 at one row gave 0.48 ms in the
+  first run and 0.12 ms in this one.
+- Threshold 2': met, at most 2.3% of the step, in a graph.
+- Threshold 3: met.
+
+What the two runs say together: the constrained step in a graph costs between 0% and 8% more than
+a free one, and a run of this setup differs from another by up to 5 points of that percentage
+(SmolLM2 at batch 8: 7.3% and 3.0%; at batch 32: 8.1% and 2.5%). On this laptop GPU, read a
+percentage of a single run with a margin of that size. The mask part in a graph is under 2.5% of
+the step in every case (the throwaway script's table above agrees with it for Llama; at one row
+of SmolLM2 it gave 0.091 ms where the script gave 0.013 ms, a difference of tens of microseconds
+that this timing cannot resolve).
+
+### What the graphs cost in memory
+
+The allocator's growth around the captures, same method as above, at the engine's default buckets
+1, 2, 4 and 8:
+
+| Model | `main` | this change |
+| --- | --- | --- |
+| Llama-3.2-1B | 236 MiB (8 graphs) | 410 MiB (16 graphs) |
+| SmolLM2-135M | 212 MiB (8 graphs) | 374 MiB (16 graphs) |
+
+About 75% more, 20 MiB per added graph, for every engine whether or not a request ever carries a
+constraint. On a 4 GB GPU that is also what decides which bucket lists start: Llama-3.2-1B with
+buckets up to 32 does not start validly (above). Options not taken, each with its cost: apply the
+mask in every graph with all-ones rows (two graphs per bucket again, but a float32 copy and the mask
+on every free step, 0.06 to 0.5 ms in a graph, and a different float path for free requests);
+capture the masked graphs on the first constrained request (an allocation while serving, which can
+fail); a setting to leave them out (one more option to explain).
+
+### The mask op
+
+`apply_token_bitmask` of the torch backend turned the mask into int64 and gathered it per token. It
+now shifts the bytes of the mask, one byte per token, with identical output (checked on random
+masks, including the sign bit and a vocabulary that is not a multiple of 32). Eager, on this GPU,
+median of 100 calls:
+
+| Rows | Vocabulary | Before | After | Scratch before | Scratch after |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 128,256 | 0.358 ms | 0.214 ms | 3.9 MiB | 0.2 MiB |
+| 8 | 128,256 | 0.599 ms | 0.169 ms | 18.1 MiB | 2.0 MiB |
+| 32 | 128,256 | 2.129 ms | 0.394 ms | 66.9 MiB | 8.3 MiB |
+| 32 | 49,152 | 0.867 ms | 0.247 ms | 25.1 MiB | 3.5 MiB |
+
+It does not change the memory of the graphs (see above): the captured sampling step peaks at the
+sampler's sort, which reuses the mask's scratch.

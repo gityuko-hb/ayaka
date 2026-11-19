@@ -143,6 +143,7 @@ class InputBuilder:
                 f"{table.num_groups}"
             )
         target = torch.device(device)
+        self._target = target
         self._attention = attention
         self._table = table
         self._block_size = block_size
@@ -174,6 +175,8 @@ class InputBuilder:
         self._graph_rows = torch.zeros(
             (requests, table.max_blocks_per_request), dtype=torch.int32, pin_memory=pinned
         )
+        # The token masks the masked graph variants read, made by `graph_mask` (it knows the width).
+        self._masks: _Mirrored | None = None
 
     @property
     def max_rows(self) -> int:
@@ -183,7 +186,7 @@ class InputBuilder:
     @property
     def buffers(self) -> Mapping[str, torch.Tensor]:
         """Every device buffer by name, for tests that check their addresses stay put."""
-        return {
+        buffers = {
             "tokens": self._tokens.device,
             "rows_per_request": self._rows_per_request.device,
             "kv_lengths": self._kv_lengths.device,
@@ -200,6 +203,9 @@ class InputBuilder:
             "min_p": self._min_p.device,
             "sampled": self._sampled.device,
         }
+        if self._masks is not None:
+            buffers["token_masks"] = self._masks.device
+        return buffers
 
     def resync(self) -> None:
         """Copy the whole host block table to the device mirror."""
@@ -343,6 +349,50 @@ class InputBuilder:
             all_greedy=False,
         )
         return self._tokens.device[:bucket], batch, self._sampled.device[:bucket]
+
+    def graph_mask(self, bucket: int, words: int) -> torch.Tensor:
+        """The ``[bucket, words]`` int32 token-mask buffer a masked graph reads.
+
+        The buffer is made on the first call, at the size of the largest step, so every bucket's
+        graph reads a view of the same tensor; every bit is set (every token allowed) until
+        :meth:`stage_mask` writes a step's masks. A bit is a token, as in
+        :func:`~ayaka.ops.sampling.SamplingOps.apply_token_bitmask`: bit ``t % 32`` of word
+        ``t // 32``.
+
+        Raises:
+            EngineError: If an earlier call used another width.
+        """
+        if self._masks is None:
+            self._masks = _Mirrored((self._max_requests, words), torch.int32, self._target)
+            self._masks.array[:] = -1
+            self._masks.push(self._max_requests)
+        elif self._masks.array.shape[1] != words:
+            raise EngineError(
+                f"the token masks are {self._masks.array.shape[1]} words wide, not {words}"
+            )
+        return self._masks.device[:bucket]
+
+    def stage_mask(self, masks: Mapping[int, NDArray[np.uint32]], bucket: int) -> None:
+        """Write the token masks of a decode step: one copy to the device, no wait.
+
+        Args:
+            masks: The allowed tokens, as ``uint32`` words, of the rows that have a constraint,
+                by row. Every other row of the bucket, padding included, allows every token.
+            bucket: Rows the graph runs.
+
+        Raises:
+            EngineError: If no masked graph made the buffer, or a row is outside the bucket.
+        """
+        buffer = self._masks
+        if buffer is None:
+            raise EngineError("no token mask buffer: capture a masked graph first")
+        if any(not 0 <= row < bucket for row in masks):
+            raise EngineError(f"a token mask names a row outside the bucket of {bucket}")
+        array = buffer.array
+        array[:bucket] = -1
+        for row, words in masks.items():
+            array[row] = words[: array.shape[1]].view(np.int32)
+        buffer.push(bucket)
 
     def stage_decode(self, step: StepInput, bucket: int) -> StagedDecode:
         """Write a decode step, padded to ``bucket`` requests, for a captured graph to replay.

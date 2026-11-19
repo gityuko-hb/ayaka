@@ -24,12 +24,14 @@ With :meth:`ModelRunner.capture_graphs`, plain decode steps that fit a captured 
 CUDA graph (:class:`~ayaka.execution.graph.GraphRunner`) instead of running eagerly; every other
 step runs as before. Both paths draw the same tokens.
 
-A request that asks for masks, a logit bias, ``min_tokens``, a penalty or logprobs, or whose
-output constraint is active, gets them from :mod:`ayaka.sampling.logits` in its step; such a step
-runs eagerly, never in a graph. The penalty counts and the constraint matchers are the
-per-request state of sampling: the runner keeps them in :attr:`ModelRunner.penalties` and
-:attr:`ModelRunner.constraints`, and the engine adds, feeds and drops them as requests are
-admitted, emit tokens and end.
+A request that asks for allowed ids, a logit bias, ``min_tokens``, a penalty or logprobs gets them
+from :mod:`ayaka.sampling.logits` in its step; such a step runs eagerly, never in a graph. The
+structural mask of an active output constraint is the exception: the runner computes it on the host
+before the replay and the graph applies it, so a constrained decode step replays like any other
+(unless one of its rows also asks for something above). The penalty counts and the constraint
+matchers are the per-request state of sampling: the runner keeps them in
+:attr:`ModelRunner.penalties` and :attr:`ModelRunner.constraints`, and the engine adds, feeds and
+drops them as requests are admitted, emit tokens and end.
 
 This module imports torch. Import it through ``ayaka.execution``, which loads it on first use.
 """
@@ -53,6 +55,9 @@ from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
+
+    import numpy as np
+    from numpy.typing import NDArray
 
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import RequestId, TokenId
@@ -210,7 +215,7 @@ class ModelRunner:
                     and self._graph.bucket_for(step)
                     and not self._needs_controls(step)
                 ):
-                    drawn = self._graph.run(step)
+                    drawn = self._graph.run(step, self._structural_masks(step))
                     return StepOutput(
                         step_id=step.step_id,
                         request_ids=step.request_ids,
@@ -250,14 +255,28 @@ class ModelRunner:
         return self._builder.read_sampled(count), logprobs
 
     def _needs_controls(self, step: StepInput) -> bool:
-        """Whether a request of the step needs masks, bias, penalties or logprobs now."""
+        """Whether a request of the step needs more than a structural mask: allowed ids, bias,
+        penalties, logprobs or a ``min_tokens`` hold-back, now."""
         has_eos = bool(self._eos)
-        constraints = self._constraints
         return any(
             needs_controls(params, step.output_length(index), has_eos=has_eos)
-            or (len(constraints) > 0 and constraints.active(step.request_ids[index]))
             for index, params in enumerate(step.sampling_params)
         )
+
+    def _structural_masks(self, step: StepInput) -> dict[int, NDArray[np.uint32]]:
+        """The allowed tokens of the requests of a decode step whose constraint is active.
+
+        By index in the step, which is also the row: a decode step has one row per request.
+        """
+        constraints = self._constraints
+        masks: dict[int, NDArray[np.uint32]] = {}
+        if not len(constraints):
+            return masks
+        for index, request_id in enumerate(step.request_ids):
+            mask = constraints.mask(request_id)
+            if mask is not None:
+                masks[index] = mask
+        return masks
 
     def _context(self, inputs: ModelInputs) -> ForwardContext:
         return ForwardContext(attention=inputs.attention, kv_buffers=self._buffers)
