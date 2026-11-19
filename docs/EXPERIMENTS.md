@@ -77,3 +77,55 @@ does not change the answer.
 - Decision: **keep** `claude-code.billing-header` (84.3 percentage points, above the 25-point
   threshold). The value it rewrites changes with every session of the same client version, so
   without the rule every new Claude Code session reads almost nothing from the cache.
+
+## llama.cpp comparison on mains, and an over-committed start-up profile (#59)
+
+- Question: how does Ayaka compare with llama.cpp on the dev GPU on mains power? The first
+  comparison (2026-11-18 folder) ran on battery with the GPU in P3.
+- Setup, the same as the battery run: Llama-3.2-1B-Instruct, Ayaka fp16 from the safetensors
+  (`--cuda-graph --backends flashinfer,torch --memory-ratio 0.86 --kv-reserve-tokens 8192`),
+  llama.cpp `edec462` with the f16 GGUF converted from the same file (`-ngl 99 -c 8192 -np 1`);
+  prompts of 1,038 and 4,110 tokens, 128 output tokens, six rounds in A B / B A order, one engine
+  up at a time. Both power readings `ac`. Commit `f65658d`.
+
+### The first mains run was not a measurement of the engine
+
+Its prompt read at 4K came out at 0.37x llama.cpp (2,025 against 5,429 tok/s), half of what
+`ayaka bench` measured on the same machine (#70). Checked before the run was used:
+
+- Not a first-request cost: three different 3,549-token prompts on one server read at 1,862,
+  1,936 and 1,982 tok/s.
+- In process, the same chunk of about 1,700 tokens took ~950 ms per step with this start's plan
+  (1,592 blocks, `max_running` 3) and ~420 ms with `max_running` 1, with `--kv-reserve-tokens
+  20480`, or with `--memory-ratio 0.80`. No allocator retries in any case; `cudaMemGetInfo` read 0
+  free.
+- The saved start-up profile held `runtime_bytes` = 266 MB. A start that fits measures 640 to
+  720 MB, which is the NVML/CUDA gap under WSL2 (`NVML 4154458112 bytes before the backend, CUDA
+  3459986228 bytes after it`) plus the context. With 266 MB the plan gives the allocator more than
+  CUDA's free memory; WDDM accepts it, and, as I read it (not proven: no Windows counter was read),
+  pages part of it out. Because free then reads 0, that start measures a low runtime again and
+  saves it, so the state repeats.
+- Once a fitting start had saved an honest profile, the same flags started 3 times out of 3 and
+  read 3,549 tokens at about 3,400 tok/s. With `--memory-ratio 0.82` the honest profile left the
+  KV floor 55 MB short on the next start, so a lower ratio is not a way around it either.
+
+The over-committed run is kept as `compare-llama-cpp-f16-oversubscribed.json`, not used for the
+table. The planning fault is a separate bug, written up for an issue.
+
+### Result (`benchmarks/results/2026-11-19-rtx-3050-laptop-gpu/compare-llama-cpp-f16.json`)
+
+Same flags, the profile in its honest state (681 MB after the run):
+
+| median of 6 | Ayaka | llama.cpp | Ayaka / llama.cpp (median of paired rounds) |
+| --- | --- | --- | --- |
+| prompt read, 4,110 tokens | 3,359 tok/s | 4,672 tok/s | 0.71 (rounds 0.71 to 0.73) |
+| prompt read, 1,038 tokens | 3,460 tok/s | 3,549 tok/s | 0.97 |
+| TTFT cold, 4,110 tokens | 1.22 s | 0.88 s | 1.40 (slower) |
+| TTFT warm, 4,110 tokens | 46 ms | 23 ms | 2.01 (slower) |
+| generation after 4,110 tokens | 51.0 tok/s | 58.7 tok/s | 0.87 |
+| generation after 1,038 tokens | 52.9 tok/s | 60.5 tok/s | 0.88 |
+| peak VRAM above idle | 3.46 to 3.53 GB | 2.73 GB | Ayaka fills the pool it plans |
+
+GPU temperature stayed between 57 and 74 °C. Ayaka is slower on every line except the 1K prompt
+read, where the two are level. The battery run had generation level (0.98); on mains llama.cpp
+gains more from the higher clocks than Ayaka does.

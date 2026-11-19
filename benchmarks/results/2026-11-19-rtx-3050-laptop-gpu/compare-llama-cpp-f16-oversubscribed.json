@@ -1,0 +1,637 @@
+{
+  "schema": "ayaka.compare/1",
+  "started": "2026-11-19T02:30:05+00:00",
+  "finished": "2026-11-19T02:34:03+00:00",
+  "machine": {
+    "date": "2026-11-19T02:34:04+00:00",
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "capability": [
+      8,
+      6
+    ],
+    "driver": "591.59",
+    "os": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "wsl2": true,
+    "python": "3.13.18",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "f65658da725cdbf87d1966ed70a252a3f1dbbfab"
+  },
+  "power": [
+    "ac",
+    "ac"
+  ],
+  "prompt_set": {
+    "version": 1,
+    "prompts": [
+      "prose-1024",
+      "prose-4096"
+    ]
+  },
+  "sampling": {
+    "temperature": 0,
+    "max_tokens": 128,
+    "ignore_eos": true
+  },
+  "engines": [
+    {
+      "name": "ayaka",
+      "version": "ayaka 0.0.1",
+      "flags": [
+        "ayaka_m1/.venv/bin/ayaka",
+        "serve",
+        ".cache/huggingface/hub/models--unsloth--Llama-3.2-1B-Instruct/snapshots/5a8abab4a5d6f164389b1079fb721cfab8d7126c",
+        "--device",
+        "cuda",
+        "--dtype",
+        "fp16",
+        "--backends",
+        "flashinfer,torch",
+        "--cuda-graph",
+        "--memory-ratio",
+        "0.86",
+        "--kv-reserve-tokens",
+        "8192",
+        "--served-model-name",
+        "model",
+        "--port",
+        "8000"
+      ],
+      "model_file": ".cache/huggingface/hub/models--unsloth--Llama-3.2-1B-Instruct/snapshots/5a8abab4a5d6f164389b1079fb721cfab8d7126c",
+      "precision": "fp16",
+      "hash": "1ff795ff6a07e6a68085d206fb84417da2f083f68391c2843cd2b8ac6df8538f"
+    },
+    {
+      "name": "llama.cpp",
+      "version": "version: 1.0.0-dev (build 1, commit edec462)",
+      "flags": [
+        "llama.cpp/build/bin/llama-server",
+        "-m",
+        "gguf/Llama-3.2-1B-Instruct-f16.gguf",
+        "-ngl",
+        "99",
+        "-c",
+        "8192",
+        "-np",
+        "1",
+        "--alias",
+        "model",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8080"
+      ],
+      "model_file": "gguf/Llama-3.2-1B-Instruct-f16.gguf",
+      "precision": "f16",
+      "hash": "dc1d0aa1ac150504782fb61fd9d6ab0357ffc9d20ea08179aea173eb368d3380"
+    }
+  ],
+  "opponent": {
+    "name": "llama.cpp",
+    "version": "version: 1.0.0-dev (build 1, commit edec462)",
+    "flags": [
+      "llama.cpp/build/bin/llama-server",
+      "-m",
+      "gguf/Llama-3.2-1B-Instruct-f16.gguf",
+      "-ngl",
+      "99",
+      "-c",
+      "8192",
+      "-np",
+      "1",
+      "--alias",
+      "model",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8080"
+    ],
+    "model_file": "gguf/Llama-3.2-1B-Instruct-f16.gguf",
+    "precision": "f16",
+    "hash": "dc1d0aa1ac150504782fb61fd9d6ab0357ffc9d20ea08179aea173eb368d3380",
+    "conversion": "convert_hf_to_gguf.py from llama.cpp edec462, --outtype f16, from the same model.safetensors (bf16 weights) that ayaka loads in fp16"
+  },
+  "differences": [
+    "ayaka loads .cache/huggingface/hub/models--unsloth--Llama-3.2-1B-Instruct/snapshots/5a8abab4a5d6f164389b1079fb721cfab8d7126c (fp16); llama.cpp loads gguf/Llama-3.2-1B-Instruct-f16.gguf (f16): not the same file",
+    "prompt token counts come from each engine's own tokenizer and template"
+  ],
+  "slots": [
+    {
+      "engine": "ayaka",
+      "round": 0,
+      "up": [
+        1795055406.4899528,
+        1795055434.6681345
+      ],
+      "gpu_temperature_c": [
+        53,
+        63
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.2765391110000053,
+          "ttft_warm_s": 0.09001958999999715,
+          "prompt_tok_s": 3753.5377771572435,
+          "generation_tok_s": 53.12000202214043
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 2.4383335580000107,
+          "ttft_warm_s": 0.04289405099999044,
+          "prompt_tok_s": 1685.577425006256,
+          "generation_tok_s": 52.961004494207955
+        }
+      ],
+      "vram_peak_above_idle_bytes": 4106752000
+    },
+    {
+      "engine": "llama.cpp",
+      "round": 0,
+      "up": [
+        1795055434.707944,
+        1795055448.8049722
+      ],
+      "gpu_temperature_c": [
+        63,
+        68
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.34563658499999406,
+          "ttft_warm_s": 0.0173521170000015,
+          "prompt_tok_s": 3003.1543101839693,
+          "generation_tok_s": 64.5468648491714
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.7688079179999932,
+          "ttft_warm_s": 0.02069712400000867,
+          "prompt_tok_s": 5345.938697785416,
+          "generation_tok_s": 59.44317536905485
+        }
+      ],
+      "vram_peak_above_idle_bytes": 2926055424
+    },
+    {
+      "engine": "llama.cpp",
+      "round": 1,
+      "up": [
+        1795055448.8391643,
+        1795055459.6445525
+      ],
+      "gpu_temperature_c": [
+        68,
+        73
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.24627426800000762,
+          "ttft_warm_s": 0.018227620000004663,
+          "prompt_tok_s": 4214.8130554994395,
+          "generation_tok_s": 64.45223962423148
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.7596260299999926,
+          "ttft_warm_s": 0.020313181000005898,
+          "prompt_tok_s": 5410.557086886609,
+          "generation_tok_s": 63.27444838953877
+        }
+      ],
+      "vram_peak_above_idle_bytes": 2926055424
+    },
+    {
+      "engine": "ayaka",
+      "round": 1,
+      "up": [
+        1795055459.7248144,
+        1795055488.969642
+      ],
+      "gpu_temperature_c": [
+        73,
+        66
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.3361423850000165,
+          "ttft_warm_s": 0.03656802699998707,
+          "prompt_tok_s": 3087.9771380212856,
+          "generation_tok_s": 55.83995803719515
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 2.1152175869999894,
+          "ttft_warm_s": 0.0424143509999908,
+          "prompt_tok_s": 1943.0625129347607,
+          "generation_tok_s": 54.48453304509099
+        }
+      ],
+      "vram_peak_above_idle_bytes": 4123529216
+    },
+    {
+      "engine": "ayaka",
+      "round": 2,
+      "up": [
+        1795055489.006968,
+        1795055514.702531
+      ],
+      "gpu_temperature_c": [
+        66,
+        67
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.27919078100001116,
+          "ttft_warm_s": 0.033045076999997036,
+          "prompt_tok_s": 3717.8878051849374,
+          "generation_tok_s": 55.42676828320015
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 1.7563311480000152,
+          "ttft_warm_s": 0.05749491000000262,
+          "prompt_tok_s": 2340.1053979371572,
+          "generation_tok_s": 52.657683388334306
+        }
+      ],
+      "vram_peak_above_idle_bytes": 4106752000
+    },
+    {
+      "engine": "llama.cpp",
+      "round": 2,
+      "up": [
+        1795055514.7429593,
+        1795055528.2729597
+      ],
+      "gpu_temperature_c": [
+        67,
+        75
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.31523650599996245,
+          "ttft_warm_s": 0.017814875999988544,
+          "prompt_tok_s": 3292.7658448292905,
+          "generation_tok_s": 63.634594995469435
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.7578314080000155,
+          "ttft_warm_s": 0.020659333999958562,
+          "prompt_tok_s": 5423.369837424205,
+          "generation_tok_s": 61.150418744730665
+        }
+      ],
+      "vram_peak_above_idle_bytes": 2926055424
+    },
+    {
+      "engine": "llama.cpp",
+      "round": 3,
+      "up": [
+        1795055528.320777,
+        1795055538.4536629
+      ],
+      "gpu_temperature_c": [
+        75,
+        76
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.2361701219999759,
+          "ttft_warm_s": 0.02837841899997784,
+          "prompt_tok_s": 4395.136824293574,
+          "generation_tok_s": 64.58455627941014
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.7343495430000075,
+          "ttft_warm_s": 0.01983787299997175,
+          "prompt_tok_s": 5596.789756564141,
+          "generation_tok_s": 62.19465939053405
+        }
+      ],
+      "vram_peak_above_idle_bytes": 2926055424
+    },
+    {
+      "engine": "ayaka",
+      "round": 3,
+      "up": [
+        1795055538.4976537,
+        1795055566.782472
+      ],
+      "gpu_temperature_c": [
+        76,
+        68
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.2711795110000139,
+          "ttft_warm_s": 0.03181145300004573,
+          "prompt_tok_s": 3827.7228105184786,
+          "generation_tok_s": 56.49920276866686
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 1.6493616189999898,
+          "ttft_warm_s": 0.04291046000003007,
+          "prompt_tok_s": 2491.873190605647,
+          "generation_tok_s": 54.04850243664839
+        }
+      ],
+      "vram_peak_above_idle_bytes": 4123529216
+    },
+    {
+      "engine": "ayaka",
+      "round": 4,
+      "up": [
+        1795055566.8589427,
+        1795055591.413785
+      ],
+      "gpu_temperature_c": [
+        68,
+        69
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.27342282700004716,
+          "ttft_warm_s": 0.04292418199997883,
+          "prompt_tok_s": 3796.318000910074,
+          "generation_tok_s": 56.20212006141819
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 1.9499867729999778,
+          "ttft_warm_s": 0.040183313,
+          "prompt_tok_s": 2107.7066044283606,
+          "generation_tok_s": 54.20563411713479
+        }
+      ],
+      "vram_peak_above_idle_bytes": 4104654848
+    },
+    {
+      "engine": "llama.cpp",
+      "round": 4,
+      "up": [
+        1795055591.4556322,
+        1795055604.3562133
+      ],
+      "gpu_temperature_c": [
+        69,
+        73
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.30109836600001927,
+          "ttft_warm_s": 0.018047582999997758,
+          "prompt_tok_s": 3447.37838929333,
+          "generation_tok_s": 64.62454498767596
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.7561973080000257,
+          "ttft_warm_s": 0.019390595000004396,
+          "prompt_tok_s": 5435.089435679213,
+          "generation_tok_s": 61.219511900958665
+        }
+      ],
+      "vram_peak_above_idle_bytes": 2926055424
+    },
+    {
+      "engine": "llama.cpp",
+      "round": 5,
+      "up": [
+        1795055604.402085,
+        1795055615.2342107
+      ],
+      "gpu_temperature_c": [
+        73,
+        77
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.2538788989999716,
+          "ttft_warm_s": 0.02844856800004436,
+          "prompt_tok_s": 4088.563500506263,
+          "generation_tok_s": 64.28901734188902
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.742169841999953,
+          "ttft_warm_s": 0.01984354500001473,
+          "prompt_tok_s": 5537.815965311429,
+          "generation_tok_s": 60.9679509133948
+        }
+      ],
+      "vram_peak_above_idle_bytes": 2926055424
+    },
+    {
+      "engine": "ayaka",
+      "round": 5,
+      "up": [
+        1795055615.2758102,
+        1795055643.6005714
+      ],
+      "gpu_temperature_c": [
+        77,
+        69
+      ],
+      "rows": [
+        {
+          "prompt": "prose-1024",
+          "prompt_tokens": 1038,
+          "completion_tokens": 128,
+          "ttft_cold_s": 0.2712353699999994,
+          "ttft_warm_s": 0.0432063250000283,
+          "prompt_tok_s": 3826.934518164066,
+          "generation_tok_s": 56.290643420797885
+        },
+        {
+          "prompt": "prose-4096",
+          "prompt_tokens": 4110,
+          "completion_tokens": 128,
+          "ttft_cold_s": 2.289023255000018,
+          "ttft_warm_s": 0.05702319800002442,
+          "prompt_tok_s": 1795.5256640675623,
+          "generation_tok_s": 53.830914910814975
+        }
+      ],
+      "vram_peak_above_idle_bytes": 4123529216
+    }
+  ],
+  "summary": {
+    "medians": {
+      "ayaka": {
+        "prose-1024": {
+          "ttft_cold_s": 0.2749809690000262,
+          "ttft_warm_s": 0.03974610449998295,
+          "prompt_tok_s": 3774.9278890336586,
+          "generation_tok_s": 56.02103904930667
+        },
+        "prose-4096": {
+          "ttft_cold_s": 2.0326021799999836,
+          "ttft_warm_s": 0.042902255500010256,
+          "prompt_tok_s": 2025.3845586815605,
+          "generation_tok_s": 53.93970867373169
+        }
+      },
+      "llama.cpp": {
+        "prose-1024": {
+          "ttft_cold_s": 0.27748863249999545,
+          "ttft_warm_s": 0.01813760150000121,
+          "prompt_tok_s": 3767.9709448997965,
+          "generation_tok_s": 64.49955223670145
+        },
+        "prose-4096": {
+          "ttft_cold_s": 0.7570143580000206,
+          "ttft_warm_s": 0.020078363000010313,
+          "prompt_tok_s": 5429.229636551709,
+          "generation_tok_s": 61.18496532284466
+        }
+      }
+    },
+    "ratios": {
+      "of": "ayaka/llama.cpp",
+      "per_round": {
+        "prose-1024": {
+          "ttft_cold_s": [
+            0.800086342133053,
+            1.3649107059776382,
+            0.8856549786782766,
+            1.1482380103950727,
+            0.908084725375194,
+            1.068365157830741
+          ],
+          "ttft_warm_s": [
+            5.187815988100436,
+            2.006187697569826,
+            1.8549147914371273,
+            1.1209734058853162,
+            2.3783895051201127,
+            1.5187521916730897
+          ],
+          "prompt_tok_s": [
+            1.2498651049760099,
+            0.7326486601801065,
+            1.1291078626265594,
+            0.8708995791351056,
+            1.1012188313010431,
+            0.9360095587827361
+          ],
+          "generation_tok_s": [
+            0.8229679651562867,
+            0.8663773107459488,
+            0.8710162811147983,
+            0.8748098001050922,
+            0.8696714239479142,
+            0.8755872425525533
+          ]
+        },
+        "prose-4096": {
+          "ttft_cold_s": [
+            3.171577062243566,
+            2.7845512179197045,
+            2.317575029827715,
+            2.2460170837199973,
+            2.578674576556297,
+            3.0842310283475016
+          ],
+          "ttft_warm_s": [
+            2.0724643191958685,
+            2.088021122835389,
+            2.7829992002703445,
+            2.1630575011792432,
+            2.072309436610423,
+            2.8736396646860274
+          ],
+          "prompt_tok_s": [
+            0.31530055249315064,
+            0.3591242975042437,
+            0.43148549114042634,
+            0.4452325885000553,
+            0.38779612173299305,
+            0.32422992661992295
+          ],
+          "generation_tok_s": [
+            0.8909518067532205,
+            0.8610827029208677,
+            0.8611172984464938,
+            0.8690216003478026,
+            0.885430681068301,
+            0.882937905970991
+          ]
+        }
+      },
+      "median": {
+        "prose-1024": {
+          "ttft_cold_s": 0.9882249416029675,
+          "ttft_warm_s": 1.9305512445034767,
+          "prompt_tok_s": 1.0186141950418897,
+          "generation_tok_s": 0.8703438525313563
+        },
+        "prose-4096": {
+          "ttft_cold_s": 2.6816128972380007,
+          "ttft_warm_s": 2.125539312007316,
+          "prompt_tok_s": 0.37346020961861837,
+          "generation_tok_s": 0.8759797531593968
+        }
+      }
+    }
+  }
+}

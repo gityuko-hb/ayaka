@@ -31,12 +31,12 @@ def _commit() -> str | None:
         )
     except (OSError, subprocess.CalledProcessError):
         return None
+    # Line endings alone (a copy of a Windows checkout) are not a change; untracked files neither.
     dirty = subprocess.run(  # noqa: S603
-        ["git", "-C", str(ROOT), "status", "--porcelain"],  # noqa: S607
+        ["git", "-C", str(ROOT), "diff", "--quiet", "--ignore-cr-at-eol", "HEAD", "--"],  # noqa: S607
         capture_output=True,
-        text=True,
         check=False,
-    ).stdout.strip()
+    ).returncode
     return result.stdout.strip() + ("-dirty" if dirty else "")
 
 
