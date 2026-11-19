@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from ayaka.engine.input import InputProcessor
     from ayaka.engine.output import OutputProcessor
     from ayaka.engine.profile import StartupReport
+    from ayaka.engine.recorder import SessionRecorder
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.manager import KVCacheManager
     from ayaka.memory.budget import BudgetPlan
@@ -112,6 +113,8 @@ class EngineCore:
         self._stats = stats
         self._clock = clock
         self._families: dict[RequestId, tuple[RequestId, ...]] = {}
+        #: Writes every finished request as token ids (``--record``); off when ``None``.
+        self.recorder: SessionRecorder | None = None
         self._dead: EngineDeadError | None = None
         self._closed = False
 
@@ -213,6 +216,8 @@ class EngineCore:
         except BaseException:
             self._scheduler.abort(request.request_id, FinishReason.CANCELLED)
             raise
+        if self.recorder is not None:
+            self.recorder.admitted(request)
 
     def _admit_constraint(self, request: TokenizedRequest) -> None:
         """Start the request's output constraint from its compiled grammar, if it has one."""
@@ -255,6 +260,8 @@ class EngineCore:
             self._output.discard(children[0].request_id)
             raise
         self._families[parent] = tuple(added)
+        if self.recorder is not None:
+            self.recorder.admitted(request)  # the family's outputs carry the parent's id
 
     # -- the loop --------------------------------------------------------------------------
 
@@ -322,6 +329,9 @@ class EngineCore:
             for output in outputs:
                 if output.finished:
                     self._families.pop(output.request_id, None)
+        if self.recorder is not None:
+            for output in outputs:
+                self.recorder.observed(output)
         return outputs
 
     # -- life cycle ------------------------------------------------------------------------
@@ -331,6 +341,8 @@ class EngineCore:
         if self._closed:
             return
         self._closed = True
+        if self.recorder is not None:
+            self.recorder.close()
         self._input.compiler.close()
         self._tokenizer.close()
 

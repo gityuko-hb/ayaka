@@ -32,6 +32,7 @@ from ayaka.tokenizers.contracts import EncodeOptions, TextInput
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
     from types import FrameType
 
     from prometheus_client import CollectorRegistry
@@ -98,6 +99,7 @@ async def serve(
     stop: asyncio.Event | None = None,
     handle_signals: bool = True,
     on_ready: Callable[[str, int], None] | None = None,
+    record: Path | None = None,
 ) -> None:
     """Run the server until stopped, then drain and shut down.
 
@@ -109,6 +111,7 @@ async def serve(
         stop: Set it to stop the server; a fresh event when ``None``.
         handle_signals: Let SIGINT and SIGTERM stop the server (main thread only).
         on_ready: Called with the bound host and port once the server accepts requests.
+        record: A directory for the session recorder (every request as token ids), or ``None``.
 
     Raises:
         ModelLoadError, ConfigError, CapabilityError, CapacityError: If the engine cannot be
@@ -140,6 +143,14 @@ async def serve(
         await _warm_up(llm)
         if stop.is_set():
             return
+        if record is not None:
+            from ayaka.engine.recorder import SessionRecorder
+
+            core.recorder = SessionRecorder(record)
+            say(
+                f"recording every request to {core.recorder.path}: prompts and answers as token "
+                "ids, readable by anyone who has the model's tokenizer"
+            )
         serving.attach(llm, output_format=output_format)
         say(f"ready: {', '.join(serving.model_names)} on http://{_format_host(host)}:{port}")
         if on_ready is not None:
