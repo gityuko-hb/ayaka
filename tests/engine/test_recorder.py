@@ -36,11 +36,10 @@ def checkpoint(tmp_path_factory: pytest.TempPathFactory) -> TinyCheckpoint:
 
 
 def _run(checkpoint: TinyCheckpoint, directory: Path, *, stream: bool) -> tuple[Any, Path]:
+    recorder = SessionRecorder(directory)
     with LLM.from_config(
-        tiny_engine_config(checkpoint.directory), tokenizer=tiny_tokenizer()
+        tiny_engine_config(checkpoint.directory), tokenizer=tiny_tokenizer(), recorder=recorder
     ) as llm:
-        recorder = SessionRecorder(directory)
-        llm.engine.recorder = recorder
         prompt = tuple(prompt_ids("the recorder keeps token ids"))
         request = GenerateRequest(
             request_id=RequestId("rec-1"),

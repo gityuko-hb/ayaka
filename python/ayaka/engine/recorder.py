@@ -1,9 +1,10 @@
 """The session recorder: what each request was and what it produced, as token ids.
 
-``ayaka serve --record DIR`` and ``ayaka bench --record DIR`` attach a :class:`SessionRecorder` to
-the engine. Every request that finishes becomes one JSON line in ``DIR/session-<UTC time>.jsonl``:
-its prompt token ids, the sampling parameters, the output token ids of each sequence, the finish
-reasons, the times (arrival, first token, end) and what the prefix cache gave it.
+``ayaka serve --record DIR`` and ``ayaka bench --record DIR`` give a :class:`SessionRecorder` to
+the engine when they build it. Every request that finishes becomes one JSON line in
+``DIR/session-<UTC time>.jsonl``: its prompt token ids, the sampling parameters, the output token
+ids of each sequence, the finish reasons, the times (arrival, first token, end) and what the
+prefix cache gave it.
 
 The records hold the session's content in token form, so the recorder is off by default, writes
 only to a directory the user names, makes its file owner-only on POSIX and logs counts only. The
@@ -122,6 +123,8 @@ class SessionRecorder:
         self._open: dict[str, _Open] = {}
         self._lock = threading.Lock()
         self.count = 0
+        self.recording = True
+        """Whether requests admitted now are recorded; the server pauses it for the warm-up."""
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         descriptor = os.open(self.path, flags, 0o600)  # owner-only from the first byte on POSIX
         self._stream = os.fdopen(descriptor, "a", encoding="utf-8")
@@ -129,6 +132,8 @@ class SessionRecorder:
 
     def admitted(self, request: TokenizedRequest) -> None:
         """A request entered the engine."""
+        if not self.recording:
+            return
         with self._lock:
             self._open[str(request.request_id)] = _Open(
                 prompt=tuple(request.prompt_token_ids),

@@ -30,7 +30,10 @@ if TYPE_CHECKING:
     from ayaka.configs.engine import EngineConfig
     from ayaka.core.outputs import RequestOutput
     from ayaka.engine.core import EngineCore
+    from ayaka.engine.recorder import SessionRecorder
+    from ayaka.engine.seam import EngineInfo
     from ayaka.tokenizers.contracts import LoadedTokenizer
+    from ayaka.tokenizers.service import TokenizerService
 
 __all__ = ["LLM"]
 
@@ -84,24 +87,41 @@ class LLM:
         self._pending: dict[RequestId, deque[RequestOutput]] = {}
 
     @classmethod
-    def from_config(cls, config: EngineConfig, *, tokenizer: LoadedTokenizer | None = None) -> LLM:
+    def from_config(
+        cls,
+        config: EngineConfig,
+        *,
+        tokenizer: LoadedTokenizer | None = None,
+        recorder: SessionRecorder | None = None,
+    ) -> LLM:
         """Build an engine from a configuration and wrap it.
 
         Args:
             config: What to load and how to run it.
             tokenizer: A tokenizer to use instead of loading the one the configuration names.
+            recorder: Writes every request as token ids; the engine closes it with the engine.
 
         Raises:
             ModelLoadError, ConfigError, CapabilityError, CapacityError: As ``build_engine``.
         """
         from ayaka.engine.build import build_engine
 
-        return cls(build_engine(config, tokenizer=tokenizer))
+        return cls(build_engine(config, tokenizer=tokenizer, recorder=recorder))
 
     @property
     def engine(self) -> EngineCore:
         """The engine this object drives."""
         return self._engine
+
+    @property
+    def info(self) -> EngineInfo:
+        """What the loaded engine allows, for a caller that does not read the engine itself."""
+        return self._engine.info
+
+    @property
+    def tokenizer(self) -> TokenizerService:
+        """The engine's tokenizer service."""
+        return self._engine.tokenizer
 
     def generate(
         self,

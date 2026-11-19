@@ -1,7 +1,7 @@
 """OpenAI Chat Completions: reading requests, the exact chunk sequence, tool calls and reasoning.
 
 Tool calls and reasoning need a model that writes them, which the tiny GPT-2 does not, so these
-tests answer with ``ScriptedLLM``: real HTTP, real tokenizing and parsing, scripted engine output.
+tests answer with ``FakeEngine``: real HTTP, real tokenizing and parsing, scripted engine output.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from tiny_model import TinyCheckpoint, write_tiny_gpt2
 
 if TYPE_CHECKING:
     from ayaka.core.outputs import RequestOutput
-    from serving_support import ScriptedLLM
+    from fake_engine import FakeEngine
 
 pytestmark = pytest.mark.unit
 
@@ -311,7 +311,7 @@ class TestToolCallsOverHttp:
                 calls = answer["choices"][0]["message"]["tool_calls"]
                 assert [c["function"]["name"] for c in calls] == ["a"]
                 assert answer["choices"][0]["finish_reason"] == "tool_calls"
-                scripted: ScriptedLLM = llm  # type: ignore[assignment]
+                scripted: FakeEngine = llm
                 assert scripted.aborted == [scripted.requests[0].request_id]
 
         asyncio.run(main())

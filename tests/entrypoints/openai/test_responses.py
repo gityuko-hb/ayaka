@@ -39,7 +39,7 @@ from tiny_model import TinyCheckpoint, greedy_reference, write_tiny_gpt2
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from serving_support import ScriptedLLM
+    from fake_engine import FakeEngine
 
 pytestmark = pytest.mark.unit
 
@@ -372,7 +372,7 @@ def test_one_conversation_in_three_protocols_gives_one_prompt(tmp_path: Path) ->
             ):
                 response = await client.post(path, json=body)
                 assert response.status == 200, await response.text()
-            scripted: ScriptedLLM = llm  # type: ignore[assignment]
+            scripted: FakeEngine = llm
             prompts = [request.prompt for request in scripted.requests]
             assert prompts[0] == prompts[1] == prompts[2]
 

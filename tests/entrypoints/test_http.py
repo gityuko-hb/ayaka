@@ -30,7 +30,7 @@ from ayaka.engine.build import build_engine  # noqa: E402
 from ayaka.entrypoints.conversation import ErrorEvent, FinishEvent  # noqa: E402
 from ayaka.entrypoints.parsers.output import OutputFormat  # noqa: E402
 from ayaka.entrypoints.stream import SlowClientError, pump  # noqa: E402
-from serving_support import parse_sse, read_sse, serve  # noqa: E402
+from serving_support import parse_sse, read_sse, script, serve  # noqa: E402
 from tiny_model import (  # noqa: E402  # needs the importorskip above
     TinyCheckpoint,
     assert_cache_released,
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from aiohttp.test_utils import TestClient
 
     from ayaka.entrypoints.serving import Serving
-    from ayaka.scheduler.step import StepOutput
+    from fake_engine import FakeEngine
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +60,7 @@ def checkpoint(tmp_path_factory: pytest.TempPathFactory) -> TinyCheckpoint:
 
 
 type Client = TestClient[Any, Any]
-type Body = Callable[[Client, Serving, AsyncLLM], Awaitable[None]]
+type Body = Callable[[Client, Serving, Any], Awaitable[None]]  # the engine client: real or fake
 
 
 def _run(checkpoint: TinyCheckpoint, body: Body, **options: Any) -> None:
@@ -277,38 +277,26 @@ class TestErrors:
         _run(checkpoint, body)
 
     def test_an_overloaded_engine_answers_429_with_retry_after(
-        self, checkpoint: TinyCheckpoint, monkeypatch: pytest.MonkeyPatch
+        self, checkpoint: TinyCheckpoint
     ) -> None:
-        async def full(self: AsyncLLM, request: GenerateRequest) -> None:
-            raise OverloadedError("the waiting queue is full")
-
-        monkeypatch.setattr(AsyncLLM, "add_request", full)
-
         async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
             response = await client.post(_CHAT, json=_chat("x", 2))
             assert response.status == 429
             assert response.headers["Retry-After"] == "1"
             assert (await response.json())["error"]["type"] == "rate_limit_error"
 
-        _run(checkpoint, body)
+        _run(checkpoint, body, scripts=[OverloadedError("the waiting queue is full")])
 
     def test_an_engine_that_dies_mid_stream_ends_it_with_an_error_and_done(
         self, checkpoint: TinyCheckpoint
     ) -> None:
-        async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
-            runner = llm.engine.runner
-            calls = 0
-            real = runner.execute
-
-            def flaky(step: Any, drafts: Any = None) -> StepOutput:
-                nonlocal calls
-                calls += 1
-                if calls > 3:
-                    raise RuntimeError("kernel on fire")
-                return real(step, drafts)
-
-            runner.execute = flaky  # type: ignore[method-assign]  # inject a failure
-            frames = await read_sse(await client.post(_CHAT, json=_chat("x", 50, stream=True)))
+        async def body(client: Client, serving: Serving, llm: FakeEngine) -> None:
+            # The script has no final output: the request hangs until the engine dies.
+            sent = asyncio.ensure_future(client.post(_CHAT, json=_chat("x", 50, stream=True)))
+            while not llm.requests:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+            llm.die()
+            frames = await read_sse(await sent)
             assert frames[-1] == (None, "[DONE]")
             error = frames[-2][1]["error"]
             assert error["code"] == "engine_dead"
@@ -319,7 +307,7 @@ class TestErrors:
             refused = await client.post(_CHAT, json=_chat("x", 2))
             assert refused.status == 503
 
-        _run(checkpoint, body)
+        _run(checkpoint, body, scripts=[script("one", "two")[:-1]])
 
 
 class TestKeysAndCors:
@@ -365,7 +353,7 @@ class TestStateEndpoints:
             refused = await client.post(_CHAT, json=_chat("x", 1))
             assert refused.status == 503
             assert refused.headers["Retry-After"] == "1"
-            serving.attach(llm)
+            serving.attach(llm, llm.engine.tokenizer)
             assert (await client.get("/health")).status == 200
             serving.begin_draining()
             draining = await client.get("/health")
@@ -496,8 +484,8 @@ class TestDisconnectsAndSlowClients:
             llm.start()
             try:
                 fmt = OutputFormat()
-                slow = await llm.add_request(request("slow", (256, *b"slow")))
-                fast = await llm.add_request(request("fast", prompt))
+                slow = await llm.add(request("slow", (256, *b"slow")))
+                fast = await llm.add(request("fast", prompt))
                 meta = _Meta("x", 0, "tiny")
 
                 async def slow_side() -> float:

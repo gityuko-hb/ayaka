@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING
 
 from ayaka.core.errors import EngineDeadError, EngineError, InvalidRequestError
 from ayaka.core.types import FinishReason, RequestId
+from ayaka.engine.seam import EngineInfo
 from ayaka.metrics.stats import IterationStats
 from ayaka.sampling.rng import resolve_seed
 
@@ -83,6 +84,8 @@ class EngineCore:
         plan: The memory plan the cache was sized from.
         startup: What the start-up run measured and reserved on a GPU; ``None`` on the CPU.
         stats: The stat loggers each step is recorded to, or ``None``.
+        recorder: Writes every finished request as token ids (``--record``), or ``None``; it is
+            closed by :meth:`shutdown`.
         clock: A monotonic clock in seconds, for the step time.
     """
 
@@ -99,6 +102,7 @@ class EngineCore:
         plan: BudgetPlan,
         startup: StartupReport | None = None,
         stats: StatLoggerManager | None = None,
+        recorder: SessionRecorder | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._scheduler = scheduler
@@ -113,8 +117,7 @@ class EngineCore:
         self._stats = stats
         self._clock = clock
         self._families: dict[RequestId, tuple[RequestId, ...]] = {}
-        #: Writes every finished request as token ids (``--record``); off when ``None``.
-        self.recorder: SessionRecorder | None = None
+        self._recorder = recorder
         self._dead: EngineDeadError | None = None
         self._closed = False
 
@@ -122,6 +125,16 @@ class EngineCore:
     def tokenizer(self) -> TokenizerService:
         """The engine's tokenizer service."""
         return self._tokenizer
+
+    @property
+    def info(self) -> EngineInfo:
+        """What a server needs to know about this engine."""
+        longest = self._tokenizer.max_model_len
+        return EngineInfo(
+            max_model_len=longest,
+            max_context_tokens=min(longest, self._kv.max_context_tokens),
+            prefix_caching=self._kv.prefix_caching,
+        )
 
     @property
     def scheduler(self) -> Scheduler:
@@ -216,8 +229,8 @@ class EngineCore:
         except BaseException:
             self._scheduler.abort(request.request_id, FinishReason.CANCELLED)
             raise
-        if self.recorder is not None:
-            self.recorder.admitted(request)
+        if self._recorder is not None:
+            self._recorder.admitted(request)
 
     def _admit_constraint(self, request: TokenizedRequest) -> None:
         """Start the request's output constraint from its compiled grammar, if it has one."""
@@ -260,8 +273,8 @@ class EngineCore:
             self._output.discard(children[0].request_id)
             raise
         self._families[parent] = tuple(added)
-        if self.recorder is not None:
-            self.recorder.admitted(request)  # the family's outputs carry the parent's id
+        if self._recorder is not None:
+            self._recorder.admitted(request)  # the family's outputs carry the parent's id
 
     # -- the loop --------------------------------------------------------------------------
 
@@ -329,9 +342,9 @@ class EngineCore:
             for output in outputs:
                 if output.finished:
                     self._families.pop(output.request_id, None)
-        if self.recorder is not None:
+        if self._recorder is not None:
             for output in outputs:
-                self.recorder.observed(output)
+                self._recorder.observed(output)
         return outputs
 
     # -- life cycle ------------------------------------------------------------------------
@@ -341,8 +354,8 @@ class EngineCore:
         if self._closed:
             return
         self._closed = True
-        if self.recorder is not None:
-            self.recorder.close()
+        if self._recorder is not None:
+            self._recorder.close()
         self._input.compiler.close()
         self._tokenizer.close()
 
