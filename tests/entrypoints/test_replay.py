@@ -23,7 +23,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from serving_support import read_sse, script, serve, write_long_gpt2
+pytest.importorskip("torch")
+pytest.importorskip("aiohttp")
+
+from serving_support import read_sse, script, serve, write_long_gpt2  # needs the importorskip above
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
