@@ -7,6 +7,7 @@ import json
 import pytest
 
 from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolCallSyntax, ToolSchema
+from ayaka.core.errors import InvalidRequestError
 from ayaka.sampling.structured.grammar import call_schema, grammar_text
 
 pytestmark = pytest.mark.unit
@@ -86,3 +87,28 @@ def test_a_one_token_closing_marker_is_demanded_by_id() -> None:
     params = StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(_WEATHER,), syntax=syntax)
 
     assert "close: <[261]>" in grammar_text(params)
+
+
+_BARE = ToolCallSyntax("", "", arguments_key="parameters", separator="; ")
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_a_call_without_markers_is_the_whole_answer_with_its_format_keys(parallel: bool) -> None:
+    params = StructuredParams(
+        kind=ConstraintKind.TOOL_CALL,
+        tools=(ToolSchema("f"),),
+        syntax=_BARE,
+        tool_choice="required",
+        parallel=parallel,
+    )
+
+    text = grammar_text(params)
+
+    first, call = text.splitlines()
+    assert first == ('start: call ("; " call)*' if parallel else "start: call")
+    assert '"required":["name","parameters"]' in call
+
+
+def test_an_optional_call_without_markers_cannot_be_constrained() -> None:
+    with pytest.raises(InvalidRequestError, match="forced"):
+        StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(ToolSchema("f"),), syntax=_BARE)

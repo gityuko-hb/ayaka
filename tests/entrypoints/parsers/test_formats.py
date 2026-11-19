@@ -23,6 +23,7 @@ from ayaka.entrypoints.parsers.formats import (
     REASONING_FORMATS,
     TOOL_CALL_FORMATS,
     reasoning_format,
+    suggest_tool_call_parser,
     tool_call_format,
 )
 from ayaka.entrypoints.parsers.markers import Marker
@@ -152,28 +153,38 @@ class TestRegistry:
         assert (opening.text, closing.text) == (fmt.open, fmt.close)
 
     @pytest.mark.parametrize("name", sorted(TOOL_CALL_FORMATS))
-    def test_every_call_format_resolves_and_gives_the_grammar_its_keys(self, name: str) -> None:
+    def test_every_call_format_resolves_and_gives_the_grammar_its_arguments_key(
+        self, name: str
+    ) -> None:
         fmt = tool_call_format(name)
         output = OutputFormat.resolve(tool_calls=name, tokenizer=ToolTokenizer())
         syntax = output.call_syntax()
 
-        if fmt.open is None:
-            assert syntax is None  # nothing for a grammar to start on
-            return
         assert syntax is not None
-        assert (syntax.name_key, syntax.arguments_key) == (fmt.name_key, fmt.arguments)
-        schema = call_schema(
-            (ToolSchema("f"),),
-            strict=False,
-            name_key=syntax.name_key,
-            arguments_key=syntax.arguments_key,
-        )
-        assert schema["required"] == [fmt.name_key, fmt.arguments]
+        assert syntax.bare == (fmt.open is None)  # no marker: only a forced call has a grammar
+        schema = call_schema((ToolSchema("f"),), strict=False, arguments_key=syntax.arguments_key)
+        assert syntax.arguments_key == fmt.arguments
+        assert schema["required"] == ["name", fmt.arguments]
 
     def test_the_constraint_starts_where_the_parser_does(self) -> None:
         assert _format(None).constraint_start() == (None, None)
         assert _format("think").constraint_start() == (_END_THINK, _THINK)
         assert _format("deepseek_r1").constraint_start() == (_END_THINK, None)
+
+    def test_suggest_tool_call_parser_reads_the_chat_template(self) -> None:
+        assert suggest_tool_call_parser(None) is None
+        assert suggest_tool_call_parser("") is None
+        assert suggest_tool_call_parser("<|im_start|>assistant\n<tool_call>\n") == "hermes"
+        llama_template = (
+            "<|start_header_id|>user<|end_header_id|>\n"
+            'Respond in the format {"name": function name, "parameters": dictionary}.\n'
+            "<|eot_id|>"
+        )
+        assert suggest_tool_call_parser(llama_template) == "llama3_json"
+        # A Llama-style template without function calling does not suggest a parser.
+        assert (
+            suggest_tool_call_parser("<|start_header_id|>user<|end_header_id|><|eot_id|>") is None
+        )
 
 
 @pytest.mark.parametrize("seed", range(12))

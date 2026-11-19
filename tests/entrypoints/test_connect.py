@@ -559,6 +559,16 @@ class TestCheckSteps:
 
             assert _step(_scripted(script), 5).ok is False, arguments
 
+    def test_a_failed_tool_call_names_the_suggested_parser_when_reported(self) -> None:
+        script = _Script()
+        script.arguments = "{broken"
+        script.models[0]["suggested_tool_call_parser"] = "llama3_json"
+
+        step = _step(_scripted(script), 5)
+
+        assert step.ok is False
+        assert "--tool-call-parser llama3_json" in (step.fix or "")
+
     def test_a_cache_miss_says_where_the_prompts_diverge(self) -> None:
         script = _Script()
         script.cached = 0

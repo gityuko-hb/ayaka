@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         ReasoningFormat,
         ToolCallFormat,
         reasoning_format,
+        suggest_tool_call_parser,
         tool_call_format,
     )
     from ayaka.entrypoints.parsers.markers import Marker, MarkerScanner, resolve_marker
@@ -38,6 +39,7 @@ __all__ = [
     "ToolCallParser",
     "reasoning_format",
     "resolve_marker",
+    "suggest_tool_call_parser",
     "tool_call_format",
 ]
 
@@ -50,6 +52,7 @@ _EXPORTS = {
         "ReasoningFormat",
         "ToolCallFormat",
         "reasoning_format",
+        "suggest_tool_call_parser",
         "tool_call_format",
     ),
     "reasoning": ("ReasoningParser",),

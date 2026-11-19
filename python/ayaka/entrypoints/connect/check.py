@@ -462,6 +462,12 @@ def run_check(
     answer = json_object(body) if status == 200 else None
     call = _call_of(record.protocol, answer) if answer is not None else None
     valid = call is not None and call[0] == _CHECK_TOOL["name"] and _valid_arguments(call[1])
+    suggested = entry.get("suggested_tool_call_parser")
+    parser_flag = (
+        f"--tool-call-parser {suggested}"
+        if isinstance(suggested, str) and suggested
+        else "the model's --tool-call-parser"
+    )
     steps.append(
         CheckStep(
             5,
@@ -470,7 +476,7 @@ def run_check(
             f"{path} answered {_answered(status, body)}; call: {call!r}"[:300],
             None
             if valid
-            else "serve with the model's --tool-call-parser and the structured extra "
+            else f"serve with {parser_flag} and the structured extra "
             "(uv sync --extra structured), so a forced call follows the schema",
         )
     )

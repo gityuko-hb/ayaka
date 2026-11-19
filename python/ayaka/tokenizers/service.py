@@ -215,6 +215,12 @@ class TokenizerService:
             return ()
         return tuple(sorted(self.tokenizer.eos_token_ids))
 
+    @property
+    def chat_template(self) -> str | None:
+        """The model's declared chat template, if the loaded adapter carries one."""
+        template = getattr(self.tokenizer, "chat_template", None)
+        return template if isinstance(template, str) else None
+
     # -- submission ------------------------------------------------------------
 
     def submit(

@@ -41,6 +41,7 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.failures import AnswerFailedError, NotReadyError
 from ayaka.entrypoints.metrics import ServingMetrics
 from ayaka.entrypoints.normalize import Normalizer, identify_client
+from ayaka.entrypoints.parsers.formats import suggest_tool_call_parser
 from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
 from ayaka.entrypoints.stream import SlowClientError, collect_events, pump
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
@@ -134,6 +135,7 @@ class Serving:
         self.max_model_len = 0
         self.max_context_tokens = 0
         self.prefix_cache: bool | None = None
+        self.suggested_tool_call_parser: str | None = None
 
     def normalized(
         self, conversation: Conversation, headers: Mapping[str, str], request_id: str = ""
@@ -162,6 +164,9 @@ class Serving:
         self.max_model_len = llm.engine.tokenizer.max_model_len
         self.max_context_tokens = min(self.max_model_len, llm.engine.kv.max_context_tokens)
         self.prefix_cache = llm.engine.kv.prefix_caching
+        self.suggested_tool_call_parser = suggest_tool_call_parser(
+            llm.engine.tokenizer.chat_template
+        )
         if output_format is not None:
             self.output_format = output_format
         self.status = Readiness.READY
@@ -271,7 +276,9 @@ class Serving:
         when the structured extra is installed and the model's opening marker is one token, so
         a call it writes is a valid call and free text stays free; a request that forces a
         call or asks for strict arguments needs that constraint and is refused without it. A
-        format without markers has no tool-call constraint at all: the same requests are refused.
+        format without markers (``llama3_json``) has no marker a lazy constraint could start on:
+        a forced call is constrained from the first token, strict arguments of an optional call
+        are refused.
 
         Raises:
             UnsupportedFeatureError: If the request needs a constraint this server cannot make.
@@ -292,24 +299,28 @@ class Serving:
             return None  # start() refuses tools without a tool-call parser
         markers = fmt.tool_markers
         wanted = output.wants_constraint
-        if markers is None:
-            # A format without markers (llama3_json) has no token a lazy grammar could start on,
-            # and no grammar for a forced or strict call is written for it yet.
-            if wanted:
-                raise UnsupportedFeatureError(
-                    f"tool_choice and strict: the tool-call parser {fmt.tool_calls.name!r} has no "
-                    "grammar yet, so a call cannot be forced or its arguments constrained",
-                    context={"features": ("structured tool calls",), "param": "tool_choice"},
-                )
-            return None  # free text; the parser finds the call
-        opening = markers[0]
-        if not wanted and (opening.token_id is None or not has_module("llguidance")):
-            # Lazy constraints only for a one-token marker: a spelled one may come in other pieces.
-            return None  # free text, as without the structured extra
         spelled: tuple[int, ...] = ()
-        tokenizer = self.llm.engine.tokenizer.tokenizer if self.llm is not None else None
-        if opening.token_id is None and tokenizer is not None:
-            spelled = tuple(tokenizer.encode(opening.text, add_special_tokens=False))
+        if markers is None:
+            # A format without markers (llama3_json) has no token a lazy grammar could start on:
+            # only a forced call can be constrained, from the first token of the answer.
+            if not wanted:
+                return None  # free text; the parser finds the call
+            if output.tool_choice == "auto":
+                raise UnsupportedFeatureError(
+                    f"strict: the tool-call parser {fmt.tool_calls.name!r} writes calls without "
+                    "markers, so the arguments of an optional call cannot be constrained; force "
+                    "the call with tool_choice",
+                    context={"features": ("structured tool calls",), "param": "tools"},
+                )
+        else:
+            opening = markers[0]
+            if not wanted and (opening.token_id is None or not has_module("llguidance")):
+                # Lazy constraints only for a one-token marker: a spelled one may come in other
+                # pieces.
+                return None  # free text, as without the structured extra
+            tokenizer = self.llm.engine.tokenizer.tokenizer if self.llm is not None else None
+            if opening.token_id is None and tokenizer is not None:
+                spelled = tuple(tokenizer.encode(opening.text, add_special_tokens=False))
         return StructuredParams(
             kind=ConstraintKind.TOOL_CALL,
             tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),

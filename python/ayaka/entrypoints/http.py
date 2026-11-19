@@ -324,8 +324,9 @@ async def _models(request: web.Request) -> web.Response:
         from ayaka.entrypoints.anthropic.messages import models_listing
 
         return web.json_response(models_listing(serving.model_names, serving.created))
-    data = [
-        {
+    data: list[dict[str, object]] = []
+    for name in serving.model_names:
+        entry: dict[str, object] = {
             "id": name,
             "object": "model",
             "created": serving.created,
@@ -336,8 +337,9 @@ async def _models(request: web.Request) -> web.Response:
             # Whether identical prompt prefixes are read from the cache (``ayaka connect`` step 6).
             "prefix_cache": serving.prefix_cache,
         }
-        for name in serving.model_names
-    ]
+        if serving.suggested_tool_call_parser is not None:
+            entry["suggested_tool_call_parser"] = serving.suggested_tool_call_parser
+        data.append(entry)
     return web.json_response({"object": "list", "data": data})
 
 

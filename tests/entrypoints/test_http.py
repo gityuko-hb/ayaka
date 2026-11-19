@@ -20,7 +20,7 @@ from ayaka.core.errors import ConfigError, OverloadedError
 from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import RequestId
-from tokenizer_fakes import FakeTokenizer
+from tokenizer_fakes import FakeTokenizer, loaded_for
 
 torch: Any = pytest.importorskip("torch")
 pytest.importorskip("aiohttp")
@@ -379,10 +379,27 @@ class TestStateEndpoints:
             listing = await (await client.get("/v1/models")).json()
             assert [model["id"] for model in listing["data"]] == ["tiny-a", "tiny-b"]
             assert listing["data"][0]["max_model_len"] == 128
+            assert "suggested_tool_call_parser" not in listing["data"][0]
             ok = await client.post(_CHAT, json=_chat("x", 1, model="tiny-b"))
             assert ok.status == 200
 
         _run(checkpoint, body, config=ServerConfig(served_model_names=("tiny-a", "tiny-b")))
+
+    def test_models_suggests_a_tool_call_parser_from_the_chat_template(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        class _LlamaTokenizer(FakeTokenizer):
+            chat_template = (
+                "<|start_header_id|>user<|end_header_id|>\n"
+                'Respond in the format {"name": function name, "parameters": dict}.\n'
+                "<|eot_id|>"
+            )
+
+        async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
+            listing = await (await client.get("/v1/models")).json()
+            assert listing["data"][0]["suggested_tool_call_parser"] == "llama3_json"
+
+        _run(checkpoint, body, tokenizer=loaded_for(_LlamaTokenizer()))
 
     def test_metrics_count_requests_without_per_request_labels(
         self, checkpoint: TinyCheckpoint

@@ -117,18 +117,26 @@ class OutputFormat:
         return closing.token_id, opening.token_id
 
     def call_syntax(self, spelled_open: tuple[int, ...] = ()) -> ToolCallSyntax | None:
-        """The tool-call syntax a grammar enforces: this format's markers and keys.
+        """The tool-call syntax a grammar enforces: this format's markers and arguments key.
 
         Args:
             spelled_open: The tokens of the opening marker when it is not one token.
 
         Returns:
-            ``None`` without a tool-call format, or for one written without markers (a grammar
-            for those has no marker to start on).
+            ``None`` without a tool-call format. A format written without markers gets a syntax
+            with empty markers: its grammar can only serve a forced call.
         """
         fmt, markers = self.tool_calls, self.tool_markers
-        if fmt is None or markers is None:
+        if fmt is None:
             return None
+        if markers is None:
+            separator = f"{fmt.separator} " if fmt.separator else ""
+            return ToolCallSyntax(
+                "",
+                "",
+                arguments_key=fmt.arguments,
+                separator=separator,
+            )
         opening, closing = markers
         return ToolCallSyntax(
             opening.text,
@@ -136,7 +144,6 @@ class OutputFormat:
             opening.token_id,
             closing.token_id,
             spelled_open if opening.token_id is None else (),
-            name_key=fmt.name_key,
             arguments_key=fmt.arguments,
         )
 
