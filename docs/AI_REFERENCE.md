@@ -49,8 +49,14 @@ them); a known field that would change the answer and is not available is refuse
 
 ## Tool calls and structured output
 
-- Tool calls need `--tool-call-parser` (`hermes` is the format available). Reasoning blocks need
+- Tool calls need `--tool-call-parser` (`hermes`, `llama3_json`). Reasoning blocks need
   `--reasoning-parser` (`think`, `deepseek_r1`).
+- `llama3_json` reads the Llama 3.x layout: a bare JSON object `{"name": ..., "parameters": {...}}` at the start of
+  the answer, and more calls separated by `;`. A string `function` next to `"type": "function"` counts as the name,
+  because Llama-3.2-1B writes that when the tools are shown wrapped that way. It has no grammar yet: a request that
+  forces a call (`tool_choice`) or asks for strict arguments is refused with 400 under it. It has been checked
+  against recorded answers of Llama-3.2-1B-Instruct (`tests/entrypoints/parsers/fixtures/`), written outside
+  `ayaka serve`; no Llama model has driven a coding tool through this parser yet.
 - With the `structured` extra: JSON answers (`response_format`, `text.format`, `output_format`), forced tool calls
   (`tool_choice`) and strict arguments are enforced by a grammar; a request that offers tools gets its calls checked
   while the rest of the answer stays free. Without the extra, a request that needs a grammar is refused.

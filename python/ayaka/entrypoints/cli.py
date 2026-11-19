@@ -502,7 +502,9 @@ def _server_flags(command: argparse.ArgumentParser) -> None:
         help="the model's reasoning format: think, deepseek_r1",
     )
     server.add_argument(
-        "--tool-call-parser", metavar="NAME", help="the model's tool-call format: hermes"
+        "--tool-call-parser",
+        metavar="NAME",
+        help="the model's tool-call format: hermes, llama3_json",
     )
     server.add_argument("--max-body-bytes", type=int, metavar="N", help="largest request body")
     server.add_argument(

@@ -52,13 +52,18 @@ def checkpoint(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return write_long_gpt2(tmp_path_factory.mktemp("long-gpt2"))
 
 
-def _run(checkpoint: Path, body: Callable[[TestClient[Any, Any]], Awaitable[None]]) -> None:
+def _run(
+    checkpoint: Path,
+    body: Callable[[TestClient[Any, Any]], Awaitable[None]],
+    *,
+    tool_calls: str = "hermes",
+) -> None:
     async def main() -> None:
         tokenizer = ToolTokenizer()
         async with serve(
             checkpoint,
             tokenizer=loaded_for(tokenizer, stream=False),
-            output_format=OutputFormat.resolve(tool_calls="hermes", tokenizer=tokenizer),
+            output_format=OutputFormat.resolve(tool_calls=tool_calls, tokenizer=tokenizer),
             max_tokens_per_step=64,
             num_blocks=600,  # a whole 1024-token context and then some
         ) as (client, _, _):
@@ -129,6 +134,53 @@ class TestChat:
             assert answer["choices"][0]["message"]["content"]  # greedy text, never a call
 
         _run(checkpoint, body)
+
+
+class TestFormatWithoutMarkers:
+    """``llama3_json`` has no marker to start a grammar on: free text, or a clear refusal."""
+
+    def test_auto_tools_are_accepted_and_free_text_is_not_forced(self, checkpoint: Path) -> None:
+        async def body(client: TestClient[Any, Any]) -> None:
+            plain = {"type": "function", "function": {"name": "f", "parameters": _PARAMETERS}}
+            request = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [plain],
+                "temperature": 0,
+                "max_tokens": 6,
+            }
+            response = await client.post("/v1/chat/completions", json=request)
+
+            assert response.status == 200
+            answer = await response.json()
+            assert answer["choices"][0]["message"]["content"]
+
+        _run(checkpoint, body, tool_calls="llama3_json")
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"tool_choice": "required"},
+            {"tool_choice": {"type": "function", "function": {"name": "get_weather"}}},
+            {},  # the tool itself asks for strict arguments
+        ],
+    )
+    def test_a_forced_call_or_strict_arguments_are_refused(
+        self, checkpoint: Path, extra: dict[str, object]
+    ) -> None:
+        async def body(client: TestClient[Any, Any]) -> None:
+            request = {
+                "messages": [{"role": "user", "content": "weather?"}],
+                "tools": [_OPENAI_TOOL],
+                "max_tokens": 20,
+                **extra,
+            }
+            response = await client.post("/v1/chat/completions", json=request)
+
+            assert response.status == 400
+            error = (await response.json())["error"]
+            assert "llama3_json" in error["message"]
+
+        _run(checkpoint, body, tool_calls="llama3_json")
 
 
 class TestResponses:

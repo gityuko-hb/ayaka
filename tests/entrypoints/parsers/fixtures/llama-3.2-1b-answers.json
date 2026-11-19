@@ -1,0 +1,138 @@
+{
+  "source": {
+    "model": "unsloth/Llama-3.2-1B-Instruct, f16 GGUF",
+    "date": "2026-11-19",
+    "how": "llama-server /completion on CPU, prompt token ids rendered by transformers apply_chat_template with two tools (get_weather, get_time); sampling greedy or temperature 0.6, top_p 0.9. NOT produced by ayaka serve.",
+    "templates": {
+      "llama3.2": "the checkpoint's own chat template",
+      "llama3.1-json": "tool_chat_template_llama3.1_json.jinja from the vLLM examples (written for Llama 3.1; this 3.2-1B model does not follow it well); not copied into this repository"
+    },
+    "tools_in_prompt": {
+      "wrapped": "{\"type\": \"function\", \"function\": {...}} as Ayaka renders tools",
+      "bare": "the function object alone"
+    },
+    "fields": {
+      "raw": "decoded with special tokens kept",
+      "text": "special tokens dropped: what the parser sees"
+    }
+  },
+  "answers": [
+    {
+      "id": "typed-single",
+      "template": "llama3.2",
+      "tools_in_prompt": "wrapped",
+      "user_turn": "single",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 265,
+      "completion_tokens": 24,
+      "ended_by": "eos",
+      "raw": "<|python_tag|>{\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}<|eom_id|>",
+      "text": "{\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}"
+    },
+    {
+      "id": "typed-two-same-tool",
+      "template": "llama3.2",
+      "tools_in_prompt": "wrapped",
+      "user_turn": "two_same_tool",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 268,
+      "completion_tokens": 48,
+      "ended_by": "eos",
+      "raw": "<|python_tag|>{\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Tokyo\"}}<|eom_id|>",
+      "text": "{\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Tokyo\"}}"
+    },
+    {
+      "id": "typed-two-tools",
+      "template": "llama3.2",
+      "tools_in_prompt": "wrapped",
+      "user_turn": "two_tools",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 273,
+      "completion_tokens": 48,
+      "ended_by": "eos",
+      "raw": "<|python_tag|>{\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"type\": \"function\", \"function\": \"get_time\", \"parameters\": {\"city\": \"Tokyo\"}}<|eom_id|>",
+      "text": "{\"type\": \"function\", \"function\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"type\": \"function\", \"function\": \"get_time\", \"parameters\": {\"city\": \"Tokyo\"}}"
+    },
+    {
+      "id": "named-after-tool-result",
+      "template": "llama3.2",
+      "tools_in_prompt": "wrapped",
+      "user_turn": "round_trip",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 299,
+      "completion_tokens": 18,
+      "ended_by": "eos",
+      "raw": "<|python_tag|>{\"name\": \"get_time\", \"parameters\": {\"city\": \"Paris\"}}<|eom_id|>",
+      "text": "{\"name\": \"get_time\", \"parameters\": {\"city\": \"Paris\"}}"
+    },
+    {
+      "id": "named-single",
+      "template": "llama3.2",
+      "tools_in_prompt": "bare",
+      "user_turn": "single",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 237,
+      "completion_tokens": 18,
+      "ended_by": "eos",
+      "raw": "<|python_tag|>{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}<|eom_id|>",
+      "text": "{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}"
+    },
+    {
+      "id": "named-two-same-tool",
+      "template": "llama3.2",
+      "tools_in_prompt": "bare",
+      "user_turn": "two_same_tool",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 240,
+      "completion_tokens": 36,
+      "ended_by": "eos",
+      "raw": "<|python_tag|>{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"name\": \"get_weather\", \"parameters\": {\"city\": \"Tokyo\"}}<|eom_id|>",
+      "text": "{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"name\": \"get_weather\", \"parameters\": {\"city\": \"Tokyo\"}}"
+    },
+    {
+      "id": "named-two-tools-sampled",
+      "template": "llama3.2",
+      "tools_in_prompt": "bare",
+      "user_turn": "two_tools",
+      "mode": "t0.6",
+      "seed": 100,
+      "prompt_tokens": 245,
+      "completion_tokens": 36,
+      "ended_by": "eos",
+      "raw": "<|python_tag|>{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"name\": \"get_time\", \"parameters\": {\"city\": \"Tokyo\"}}<|eom_id|>",
+      "text": "{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}; {\"name\": \"get_time\", \"parameters\": {\"city\": \"Tokyo\"}}"
+    },
+    {
+      "id": "python-dict-is-text",
+      "template": "llama3.1-json",
+      "tools_in_prompt": "wrapped",
+      "user_turn": "no_call",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 327,
+      "completion_tokens": 28,
+      "ended_by": "eos",
+      "raw": "{'type': 'function', 'function': {'name': 'get_time', 'parameters': {'city': 'New York'}}}<|eom_id|>",
+      "text": "{'type': 'function', 'function': {'name': 'get_time', 'parameters': {'city': 'New York'}}}"
+    },
+    {
+      "id": "code-is-text",
+      "template": "llama3.1-json",
+      "tools_in_prompt": "bare",
+      "user_turn": "two_tools",
+      "mode": "greedy",
+      "seed": 0,
+      "prompt_tokens": 307,
+      "completion_tokens": 160,
+      "ended_by": "limit",
+      "raw": "<|python_tag|>import json\n\ndef get_weather(city):\n    return {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"city\": {\n                    \"type\": \"string\"\n                }\n            },\n            \"required\": [\n                \"city\"\n            ]\n        }\n    }\n\ndef get_time(city):\n    return {\n        \"name\": \"get_time\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"city\": {\n                    \"type\": \"string\"\n                }\n            },\n            \"required\": [\n                \"city\"\n            ]\n        }\n    }\n\nweather = get_weather(\"Paris\")\ntime = get_time(\"Tokyo\")\n\nprint(json.dumps(weather, indent=4))\nprint(json.dumps(time",
+      "text": "import json\n\ndef get_weather(city):\n    return {\n        \"name\": \"get_weather\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"city\": {\n                    \"type\": \"string\"\n                }\n            },\n            \"required\": [\n                \"city\"\n            ]\n        }\n    }\n\ndef get_time(city):\n    return {\n        \"name\": \"get_time\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"city\": {\n                    \"type\": \"string\"\n                }\n            },\n            \"required\": [\n                \"city\"\n            ]\n        }\n    }\n\nweather = get_weather(\"Paris\")\ntime = get_time(\"Tokyo\")\n\nprint(json.dumps(weather, indent=4))\nprint(json.dumps(time"
+    }
+  ]
+}

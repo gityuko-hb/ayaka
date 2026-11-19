@@ -43,8 +43,8 @@ and do not report a step as done without its check's output.
        --api-key-file ~/.ayaka-key
    ```
 
-   Use the same memory flags as in step 2, and the tool-call parser of the model's format (`hermes` is the one
-   available). **Check:** the server prints `ready: local on http://127.0.0.1:8000`, and
+   Use the same memory flags as in step 2, and the tool-call parser of the model's format (`hermes`, or
+   `llama3_json` for Llama 3.x). **Check:** the server prints `ready: local on http://127.0.0.1:8000`, and
    `curl -s localhost:8000/health` answers `{"status": "ready"}`.
 
 4. Check the tool's protocol against the server (from another terminal):

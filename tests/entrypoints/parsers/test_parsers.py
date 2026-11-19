@@ -9,7 +9,9 @@ events must always be the same.
 
 from __future__ import annotations
 
+import json
 from itertools import pairwise
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -67,7 +69,7 @@ def _format(*, reasoning: str | None, tools: str | None, by_id: bool = True) -> 
         reasoning=REASONING_FORMATS[reasoning] if reasoning else None,
         reasoning_markers=_BY_ID["think"] if by_id and reasoning else None,
         tool_calls=TOOL_CALL_FORMATS[tools] if tools else None,
-        tool_markers=_BY_ID[tools] if by_id and tools else None,
+        tool_markers=_BY_ID.get(tools) if by_id and tools else None,  # llama3_json has none
     )
 
 
@@ -351,6 +353,358 @@ class TestToolCalls:
         events = run(parser, output, range(1, len(output), 7))
 
         assert ToolCallEnd(0, valid=True) in events
+
+
+_LLAMA_CALL = '{"name": "get_weather", "parameters": {"city": "Paris", "days": [1, 2]}}'
+
+
+class TestToolCallsWithoutMarkers:
+    """``llama3_json``: a bare JSON object whose arguments are called ``parameters``."""
+
+    def test_the_format_has_no_markers_and_the_other_key(self) -> None:
+        fmt = tool_call_format("llama3_json")
+
+        assert fmt.markers() is None
+        assert fmt.arguments == "parameters"
+        assert OutputFormat.resolve(tool_calls="llama3_json").tool_markers is None
+        assert tool_call_format("hermes").arguments == "arguments"
+
+    def test_a_call_streams_its_name_then_the_raw_parameters(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens("\n", _LLAMA_CALL))
+
+        assert events == [
+            ToolCallStart(0, "call_x_0", "get_weather"),
+            ToolCallDelta(0, '{"city": "Paris", "days": [1, 2]}'),
+            ToolCallEnd(0, valid=True),
+            UsageEvent(5, 0),
+            FinishEvent(FinishReason.STOP, tool_calls=True),
+        ]
+
+    def test_the_call_starts_before_its_parameters_are_complete(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        parser = fmt.parser(call_id_prefix="c", tools=True)
+        head = tokens('{"name": "f", "parameters": {"a": ')
+
+        events = parser.feed(_fragment(head, finished=False))
+
+        assert events == [ToolCallStart(0, "c_0", "f"), ToolCallDelta(0, '{"a": ')]
+
+    def test_a_name_that_comes_after_the_parameters_still_makes_a_call(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens('{"parameters": {"x": "}"}, "name": "b"}'))
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "b"),
+            ToolCallDelta(0, '{"x": "}"}'),
+            ToolCallEnd(0, valid=True),
+        ]
+
+    def test_the_hermes_key_is_not_the_arguments_of_this_format(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens('{"name": "f", "arguments": {"a": 1}}'))
+
+        assert events[:2] == [ToolCallStart(0, "call_x_0", "f"), ToolCallEnd(0, valid=False)]
+
+    def test_parameters_that_are_not_an_object_end_invalid(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens('{"name": "f", "parameters": [1]}'))
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "f"),
+            ToolCallDelta(0, "[1]"),
+            ToolCallEnd(0, valid=False),
+        ]
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            "It is sunny in Paris.",
+            "\n  Leading whitespace is part of a text answer.",
+            "Let me check {the weather}.",
+            "[1, 2]",
+        ],
+    )
+    def test_an_answer_that_does_not_start_with_a_brace_is_text(self, answer: str) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens(answer))
+
+        assert events[0] == TextDelta(answer)
+        assert events[-1] == FinishEvent(FinishReason.STOP)
+
+    def test_text_is_released_as_it_comes(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        parser = fmt.parser(call_id_prefix="c", tools=True)
+
+        events = parser.feed(_fragment(tokens("Hello wor"), finished=False))
+
+        assert events == [TextDelta("Hello wor")]
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            '{"city": "Paris"}',  # an object with no name: a JSON answer, not a call
+            '  {"city": "Paris"} and more',
+            '{"name": 7, "parameters": {}}',  # a name that is not a string
+            '{"na',  # cut before a name: held back, then released as text
+            "{",
+            "{oops",
+            '{"parameters": {"a": 1}}',
+        ],
+    )
+    def test_an_object_that_is_not_a_call_stays_the_text_it_was(self, answer: str) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens(answer))
+
+        assert events[0] == TextDelta(answer)
+        assert events[-1] == FinishEvent(FinishReason.STOP)
+
+    def test_a_call_cut_by_the_token_limit_ends_invalid(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens('{"name": "f", "parameters": {"a": "unfini'))
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "f"),
+            ToolCallDelta(0, '{"a": "unfini'),
+            ToolCallEnd(0, valid=False),
+        ]
+
+    def test_a_broken_call_swallows_the_rest_of_the_answer(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens('{"name": "f", oops "parameters": {}} after'))
+
+        assert events[:2] == [ToolCallStart(0, "call_x_0", "f"), ToolCallEnd(0, valid=False)]
+        assert not any(isinstance(event, TextDelta) for event in events)
+
+    def test_whitespace_after_the_call_is_layout_and_later_text_is_kept(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        quiet = assert_cut_invariant(fmt, tokens(_LLAMA_CALL, " \n"))
+        said = assert_cut_invariant(fmt, tokens(_LLAMA_CALL, "\nDone"))
+
+        assert not any(isinstance(event, TextDelta) for event in quiet)
+        assert TextDelta("\nDone") in said
+
+    def test_calls_separated_by_a_semicolon_are_several_calls(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        second = '{"name": "b", "parameters": {"x": 1}}'
+
+        events = assert_cut_invariant(fmt, tokens(_LLAMA_CALL, "; ", second, " \n"))
+
+        assert events[:6] == [
+            ToolCallStart(0, "call_x_0", "get_weather"),
+            ToolCallDelta(0, '{"city": "Paris", "days": [1, 2]}'),
+            ToolCallEnd(0, valid=True),
+            ToolCallStart(1, "call_x_1", "b"),
+            ToolCallDelta(1, '{"x": 1}'),
+            ToolCallEnd(1, valid=True),
+        ]
+        assert not any(isinstance(event, TextDelta) for event in events)
+
+    @pytest.mark.parametrize(
+        ("after", "text"),
+        [
+            ('\n{"name": "b", "parameters": {}}', '\n{"name": "b", "parameters": {}}'),  # no ';'
+            ('{"name": "b", "parameters": {}}', '{"name": "b", "parameters": {}}'),
+            (", " + '{"name": "b", "parameters": {}}', ', {"name": "b", "parameters": {}}'),
+            ("; and then", "; and then"),
+            (";; {", ";; {"),
+            (";", ";"),  # a separator with no call after it is shown, not dropped
+            ("; {oops", "; {oops"),
+            ('; {"a": 1}', '; {"a": 1}'),  # an object that is not a call
+        ],
+    )
+    def test_only_a_semicolon_leads_to_a_next_call_anything_else_is_text(
+        self, after: str, text: str
+    ) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens(_LLAMA_CALL, after))
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "get_weather"),
+            ToolCallDelta(0, '{"city": "Paris", "days": [1, 2]}'),
+            ToolCallEnd(0, valid=True),
+        ]
+        assert events[3] == TextDelta(text)
+        assert sum(isinstance(event, ToolCallStart) for event in events) == 1
+
+    def test_the_second_call_may_be_cut_by_the_token_limit(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens(_LLAMA_CALL, '; {"name": "b", "parameters": {"x'))
+
+        assert events[3:6] == [
+            ToolCallStart(1, "call_x_1", "b"),
+            ToolCallDelta(1, '{"x'),
+            ToolCallEnd(1, valid=False),
+        ]
+
+    def test_a_single_call_request_ends_after_the_first_call(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        parser = fmt.parser(call_id_prefix="c", tools=True, parallel_tool_calls=False)
+        output = tokens(_LLAMA_CALL, "; ", '{"name": "b", "parameters": {}}')
+
+        events = run(parser, output, [len(_LLAMA_CALL), len(_LLAMA_CALL) + 3])
+
+        assert parser.ended_early
+        assert sum(isinstance(event, ToolCallStart) for event in events) == 1
+        assert events[-1] == FinishEvent(FinishReason.STOP, tool_calls=True)
+
+    def test_a_function_key_next_to_the_function_type_is_the_name(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        call = '{"type": "function", "function": "get_weather", "parameters": {"city": "Paris"}}'
+
+        events = assert_cut_invariant(fmt, tokens(call))
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "get_weather"),
+            ToolCallDelta(0, '{"city": "Paris"}'),
+            ToolCallEnd(0, valid=True),
+        ]
+
+    def test_the_type_may_come_after_the_function(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        call = '{"function": "f", "parameters": {}, "type": "function"}'
+
+        events = assert_cut_invariant(fmt, tokens(call))
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "f"),
+            ToolCallDelta(0, "{}"),
+            ToolCallEnd(0, valid=True),
+        ]
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            '{"function": "f", "parameters": {}}',  # no type
+            '{"type": "tool", "function": "f", "parameters": {}}',  # another type
+            '{"type": "function", "function": {"name": "f"}, "parameters": {}}',  # not a string
+        ],
+    )
+    def test_a_function_key_alone_is_not_a_name(self, answer: str) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens(answer))
+
+        assert events[0] == TextDelta(answer)
+
+    def test_the_hermes_format_does_not_read_a_function_key(self) -> None:
+        fmt = _format(reasoning=None, tools="hermes")
+        call = '{"type": "function", "function": "f", "arguments": {}}'
+
+        events = assert_cut_invariant(fmt, tokens("<tool_call>", call, "</tool_call>"))
+
+        assert events[0] == TextDelta("<tool_call>" + call + "</tool_call>")
+
+    def test_without_tools_in_the_request_the_object_is_text(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+
+        events = assert_cut_invariant(fmt, tokens(_LLAMA_CALL), tools=False)
+
+        assert events[0] == TextDelta(_LLAMA_CALL)
+
+    def test_reasoning_then_a_call(self) -> None:
+        fmt = _format(reasoning="think", tools="llama3_json")
+        output = tokens("<think>", "need weather", "</think>", "\n\n", _LLAMA_CALL)
+
+        events = assert_cut_invariant(fmt, output)
+
+        assert events[:2] == [
+            ReasoningDelta("need weather"),
+            ToolCallStart(0, "call_x_0", "get_weather"),
+        ]
+
+    def test_a_marker_written_in_the_answer_is_not_special(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        output = tokens("<tool_call>", _CALL, "</tool_call>")
+
+        events = assert_cut_invariant(fmt, output)
+
+        assert events[0] == TextDelta("<tool_call>" + _CALL + "</tool_call>")
+
+    def test_long_parameters_are_parsed_in_linear_time(self) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        parser = fmt.parser(call_id_prefix="c", tools=True)
+        body = '{"name": "write", "parameters": {"text": "' + "x" * 200_000 + '"}}'
+        output = tokens(body)
+
+        events = run(parser, output, range(1, len(output), 7))
+
+        assert ToolCallEnd(0, valid=True) in events
+
+
+_LLAMA_ANSWERS = json.loads(
+    (Path(__file__).parent / "fixtures" / "llama-3.2-1b-answers.json").read_text(encoding="utf-8")
+)["answers"]
+_PARIS = ("get_weather", '{"city": "Paris"}')
+_TOKYO_WEATHER = ("get_weather", '{"city": "Tokyo"}')
+_TOKYO_TIME = ("get_time", '{"city": "Tokyo"}')
+# What each recorded answer holds, read off the text by hand: the calls as (name, raw parameters).
+_RECORDED_CALLS = {
+    "typed-single": [_PARIS],
+    "typed-two-same-tool": [_PARIS, _TOKYO_WEATHER],
+    "typed-two-tools": [_PARIS, _TOKYO_TIME],
+    "named-after-tool-result": [("get_time", '{"city": "Paris"}')],
+    "named-single": [_PARIS],
+    "named-two-same-tool": [_PARIS, _TOKYO_WEATHER],
+    "named-two-tools-sampled": [_PARIS, _TOKYO_TIME],
+}
+_RECORDED_TEXT = ("python-dict-is-text", "code-is-text")
+
+
+class TestRecordedLlamaAnswers:
+    """Answers of Llama-3.2-1B-Instruct, as written (see ``fixtures/llama-3.2-1b-answers.json``)."""
+
+    def test_the_fixture_holds_what_the_tests_expect(self) -> None:
+        assert {a["id"] for a in _LLAMA_ANSWERS} == {*_RECORDED_CALLS, *_RECORDED_TEXT}
+        for answer in _LLAMA_ANSWERS:
+            dropped = answer["raw"]
+            for special in ("<|python_tag|>", "<|eom_id|>", "<|eot_id|>"):
+                dropped = dropped.replace(special, "")
+            assert dropped == answer["text"], answer["id"]
+
+    @pytest.mark.parametrize("answer", _RECORDED_CALLS)
+    def test_a_recorded_answer_with_calls_parses_into_those_calls(self, answer: str) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        text = next(a["text"] for a in _LLAMA_ANSWERS if a["id"] == answer)
+
+        events = assert_cut_invariant(fmt, tokens(text))
+
+        expected: list[OutputEvent] = []
+        for index, (name, parameters) in enumerate(_RECORDED_CALLS[answer]):
+            expected += [
+                ToolCallStart(index, f"call_x_{index}", name),
+                ToolCallDelta(index, parameters),
+                ToolCallEnd(index, valid=True),
+            ]
+        assert events == [
+            *expected,
+            UsageEvent(5, 0),
+            FinishEvent(FinishReason.STOP, tool_calls=True),
+        ]
+
+    @pytest.mark.parametrize("answer", _RECORDED_TEXT)
+    def test_a_recorded_answer_that_is_not_a_call_stays_text(self, answer: str) -> None:
+        fmt = _format(reasoning=None, tools="llama3_json")
+        text = next(a["text"] for a in _LLAMA_ANSWERS if a["id"] == answer)
+
+        events = assert_cut_invariant(fmt, tokens(text))
+
+        assert events == [
+            TextDelta(text),
+            UsageEvent(5, 0),
+            FinishEvent(FinishReason.STOP),
+        ]
 
 
 class TestEnds:
