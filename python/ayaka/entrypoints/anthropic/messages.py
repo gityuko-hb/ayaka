@@ -45,7 +45,9 @@ from ayaka.entrypoints.conversation import (
     ToolCallStart,
     UsageEvent,
 )
-from ayaka.entrypoints.http import REQUEST_ID, SERVING, failure_for_event, read_body
+from ayaka.entrypoints.failures import failure_for_event
+from ayaka.entrypoints.http import read_body
+from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import sse_json
 
 if TYPE_CHECKING:

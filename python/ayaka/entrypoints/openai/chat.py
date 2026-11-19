@@ -38,12 +38,8 @@ from ayaka.entrypoints.conversation import (
     ToolCallStart,
     UsageEvent,
 )
-from ayaka.entrypoints.http import (
-    REQUEST_ID,
-    SERVING,
-    failure_for_event,
-    read_body,
-)
+from ayaka.entrypoints.failures import failure_for_event
+from ayaka.entrypoints.http import read_body
 from ayaka.entrypoints.openai.protocol import (
     chat_finish_reason,
     chat_logprobs,
@@ -54,12 +50,13 @@ from ayaka.entrypoints.openai.protocol import (
     parse_chat_request,
     parse_completion_request,
 )
+from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
 
 if TYPE_CHECKING:
     from ayaka.core.outputs import TokenLogprob
     from ayaka.entrypoints.conversation import Collected, OutputEvent
-    from ayaka.entrypoints.http import Generation, Serving
+    from ayaka.entrypoints.serving import Generation, Serving
 
 __all__ = [
     "ChatStreamEncoder",

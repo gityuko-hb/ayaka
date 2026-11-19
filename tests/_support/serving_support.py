@@ -28,7 +28,8 @@ from ayaka.core.outputs import CompletionOutput, RequestOutput, Usage
 from ayaka.core.types import FinishReason
 from ayaka.engine.async_llm import AsyncLLM, RequestStream
 from ayaka.engine.build import build_engine
-from ayaka.entrypoints.http import Serving, create_app
+from ayaka.entrypoints.http import create_app
+from ayaka.entrypoints.serving import Serving
 from gpt2_support import hf_state, tiny_config, write_checkpoint
 from tiny_model import tiny_engine_config, tiny_tokenizer
 from tokenizer_fakes import MODEL_VOCAB

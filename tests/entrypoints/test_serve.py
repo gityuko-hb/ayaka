@@ -16,7 +16,8 @@ import pytest
 
 from ayaka.configs.server import ServerConfig
 from ayaka.core.errors import ConfigError, InvalidRequestError
-from ayaka.entrypoints.cli import _parser, describe_server, main, server_config  # pyright: ignore[reportPrivateUsage]
+from ayaka.entrypoints.cli import _parser, main  # pyright: ignore[reportPrivateUsage]
+from ayaka.entrypoints.settings import describe_server, server_config
 
 torch: Any = pytest.importorskip("torch")
 aiohttp = pytest.importorskip("aiohttp")

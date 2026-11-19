@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from ayaka.core.errors import CapacityError
     from ayaka.engine.build import EnginePlan
-    from ayaka.entrypoints.connect import ToolRecord
+    from ayaka.entrypoints.connect.tools import ToolRecord
 
 __all__ = [
     "PlanShortfall",
@@ -215,7 +215,7 @@ class ToolFit:
 
 def tool_fit(plan: EnginePlan, record: ToolRecord) -> ToolFit:
     """The plan's context against the tool's measured floor, as ``ayaka connect --check`` does."""
-    from ayaka.entrypoints.connect import CONTEXT_MARGIN_TOKENS
+    from ayaka.entrypoints.connect.tools import CONTEXT_MARGIN_TOKENS
 
     return ToolFit(
         tool=record.name,

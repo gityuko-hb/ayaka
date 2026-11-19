@@ -10,17 +10,15 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from ayaka.entrypoints import bench
-from ayaka.entrypoints.bench import (
-    SCHEMA,
-    BenchOptions,
-    machine_slug,
-    power_source,
+from ayaka.entrypoints.bench import SCHEMA, BenchOptions
+from ayaka.entrypoints.bench_machine import machine_slug, power_source
+from ayaka.entrypoints.bench_prompts import GROUPS, build_prompt, material_text, prompt_digest
+from ayaka.entrypoints.bench_results import (
     summary_line,
     summary_lines,
     validate_results,
     write_results,
 )
-from ayaka.entrypoints.bench_prompts import GROUPS, build_prompt, material_text, prompt_digest
 
 if TYPE_CHECKING:
     from pathlib import Path

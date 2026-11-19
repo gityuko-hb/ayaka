@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
     from aiohttp.test_utils import TestClient
 
-    from ayaka.entrypoints.http import Serving
+    from ayaka.entrypoints.serving import Serving
     from ayaka.scheduler.step import StepOutput
 
 pytestmark = pytest.mark.unit

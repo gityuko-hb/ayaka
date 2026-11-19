@@ -533,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     plan = Plan(prompts, args.rounds, args.max_tokens, args.timeout, args.api_key)
     for engine in engines:
         engine.version = _version(engine.command)
-    from ayaka.entrypoints.bench import power_source
+    from ayaka.entrypoints.bench_machine import power_source
 
     power_start = power_source()
     if power_start == "battery":

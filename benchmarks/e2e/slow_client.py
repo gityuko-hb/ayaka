@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from _machine import machine
 
-    from ayaka.entrypoints.bench import power_source
+    from ayaka.entrypoints.bench_machine import power_source
 
     power = power_source()
     rows: list[dict[str, Any]] = []

@@ -54,14 +54,9 @@ from ayaka.entrypoints.conversation import (
     UsageEvent,
     parse_arguments,
 )
-from ayaka.entrypoints.http import (
-    REQUEST_ID,
-    SERVING,
-    JsonObject,
-    read_body,
-    sampling_params,
-)
+from ayaka.entrypoints.http import JsonObject, read_body, sampling_params
 from ayaka.entrypoints.openai.protocol import response_format
+from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
 
 if TYPE_CHECKING:
