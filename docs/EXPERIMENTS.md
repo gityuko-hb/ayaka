@@ -217,7 +217,7 @@ The same method on all three trees (`torch.cuda.memory_reserved()` around every 
 fresh profile cache, buckets 1, 2, 4, 8, 16 and 32, flashinfer and torch backends):
 
 | Tree | Graphs | Llama-3.2-1B | SmolLM2-135M |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `main` | 12 (greedy or sampling, per bucket) | 482 MiB | 344 MiB |
 | `dcf6473` | 24 (each of those, with and without a mask) | 772 MiB | 606 MiB |
 | this change | 24 | 772 MiB | 606 MiB |
@@ -282,7 +282,7 @@ SmolLM2-135M, `--memory-ratio 0.65` (the first that passed; the allocator held 1
 plan, tolerance 205 MiB), buckets 1 to 32, graphs 606 MiB:
 
 | Batch | `free_graph` | `eager_control` | `constrained` | `constrained` over `free_graph` | `gpu_mask_ms` over `free_graph` |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 1 | 6.06 | 41.53 | 6.07 | +0.2% | 8.0% |
 | 8 | 6.81 | 46.96 | 7.31 | +7.3% | 6.9% |
 | 32 | 8.66 | 49.48 | 9.36 | +8.1% | 2.4% |
@@ -291,7 +291,7 @@ Llama-3.2-1B, batches 1 and 8, `--memory-ratio 0.70` (the first that passed; 174
 tolerance 207 MiB), buckets 1, 2, 4, 8, graphs 378 MiB. There is no valid batch 32 run (above).
 
 | Batch | `free_graph` | `eager_control` | `constrained` | `constrained` over `free_graph` | `gpu_mask_ms` over `free_graph` |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 1 | 17.60 | 27.11 | 17.60 | +0.0% | 1.3% |
 | 8 | 20.36 | 29.24 | 21.00 | +3.2% | 0.8% |
 
@@ -311,7 +311,7 @@ eagerly, so it contains the gaps between kernel launches. It is launch-bound: on
 replace the threshold, captures the same two calls in a CUDA graph and times the replay:
 
 | Vocabulary | Rows | In a graph | Eager |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 49,152 (SmolLM2) | 1 / 8 / 32 | 0.091 / 0.055 / 0.210 ms | 0.118 / 0.129 / 0.246 ms |
 | 128,256 (Llama) | 1 / 8 / 32 | 0.064 / 0.125 / 0.531 ms | 0.207 / 0.182 / 0.544 ms |
 
@@ -325,13 +325,60 @@ to 1.5 times on Llama; the constrained step in a graph is within 8.1% of a free 
 within 3.2% on Llama. The grammar's own work on the host (`mask()` of llguidance) is 7.7 µs per row
 at p50 on SmolLM2 and 31.1 µs on Llama.
 
+### Repeat run: setup, written before the run
+
+The diagnostic above came from a throwaway script outside the repository, so nothing in the
+repository reproduces it. The benchmark script now times the same two calls captured in a CUDA
+graph (`gpu_mask_graph_ms`). The second and third runs are repeated with it, at the ratios that
+passed (SmolLM2-135M at 0.65, batches 1, 8 and 32; Llama-3.2-1B at 0.70, batches 1 and 8; if the
+start-up check refuses a ratio, the next lower one of the lists above), everything else unchanged.
+
+- The verdicts above stand; no threshold is edited. One more question is put to the new metric,
+  as threshold 2': `gpu_mask_graph_ms` is at most 5% of the `free_graph` step at every batch.
+- Everything the repeat measures is reported, whatever the numbers; it also shows how far a second
+  run of the same setup is from the first.
+
+### Repeat run: result
+
+The same setup and ratios, valid again (the allocator 134 MiB over the plan on SmolLM2-135M and
+174 MiB on Llama-3.2-1B, as before). Median decode time per step in ms, five runs per arm; the last
+two columns are the mask part (the float32 copy and `apply_token_bitmask`) launched eagerly
+(`gpu_mask_ms`, the metric of threshold 2) and replayed from a graph (`gpu_mask_graph_ms`), with
+their share of the `free_graph` step.
+
+| Model | Batch | `free_graph` | `eager_control` | `constrained` | `constrained` over `free_graph` | Mask, eager | Mask, in a graph |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| SmolLM2-135M | 1 | 6.01 | 41.42 | 6.17 | +2.7% | 0.123 ms (2.0%) | 0.013 ms (0.2%) |
+| SmolLM2-135M | 8 | 6.73 | 43.06 | 6.93 | +3.0% | 0.128 ms (1.9%) | 0.051 ms (0.8%) |
+| SmolLM2-135M | 32 | 8.66 | 47.12 | 8.87 | +2.5% | 0.214 ms (2.5%) | 0.200 ms (2.3%) |
+| Llama-3.2-1B | 1 | 17.59 | 27.12 | 17.71 | +0.7% | 0.124 ms (0.7%) | 0.065 ms (0.4%) |
+| Llama-3.2-1B | 8 | 20.68 | 29.49 | 20.92 | +1.2% | 0.182 ms (0.9%) | 0.125 ms (0.6%) |
+
+Every `constrained` and `free_graph` arm replayed graphs (768 replays), no `eager_control` arm did.
+
+- Threshold 1: met again, at most 3.0% over a free step (8.1% at most in the first run).
+- Threshold 2, as written: met in this run (at most 2.5%), after it was not met in the first run
+  (8.0% and 6.9%). The verdict of record stays the one of the run it was written for: **not met**.
+  The metric is not stable: the same eager measurement on SmolLM2 at one row gave 0.48 ms in the
+  first run and 0.12 ms in this one.
+- Threshold 2': met, at most 2.3% of the step, in a graph.
+- Threshold 3: met.
+
+What the two runs say together: the constrained step in a graph costs between 0% and 8% more than
+a free one, and a run of this setup differs from another by up to 5 points of that percentage
+(SmolLM2 at batch 8: 7.3% and 3.0%; at batch 32: 8.1% and 2.5%). On this laptop GPU, read a
+percentage of a single run with a margin of that size. The mask part in a graph is under 2.5% of
+the step in every case (the throwaway script's table above agrees with it for Llama; at one row
+of SmolLM2 it gave 0.091 ms where the script gave 0.013 ms, a difference of tens of microseconds
+that this timing cannot resolve).
+
 ### What the graphs cost in memory
 
 The allocator's growth around the captures, same method as above, at the engine's default buckets
 1, 2, 4 and 8:
 
 | Model | `main` | this change |
-|---|---|---|
+| --- | --- | --- |
 | Llama-3.2-1B | 236 MiB (8 graphs) | 410 MiB (16 graphs) |
 | SmolLM2-135M | 212 MiB (8 graphs) | 374 MiB (16 graphs) |
 
@@ -351,7 +398,7 @@ masks, including the sign bit and a vocabulary that is not a multiple of 32). Ea
 median of 100 calls:
 
 | Rows | Vocabulary | Before | After | Scratch before | Scratch after |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 1 | 128,256 | 0.358 ms | 0.214 ms | 3.9 MiB | 0.2 MiB |
 | 8 | 128,256 | 0.599 ms | 0.169 ms | 18.1 MiB | 2.0 MiB |
 | 32 | 128,256 | 2.129 ms | 0.394 ms | 66.9 MiB | 8.3 MiB |
