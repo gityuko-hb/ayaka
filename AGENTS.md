@@ -13,6 +13,10 @@ request, and follow them whether a person or an agent writes the text.
 ```text
 python/ayaka/     the package (ships py.typed); python/ayaka/__version__.py is the only place the version is set
 tests/            pytest tests, outside the package
+docs/             the public pages (INSTALL, TROUBLESHOOTING, CAPABILITIES, SAFETY, AI_SETUP, AI_REFERENCE) and
+                  EXPERIMENTS; .gitignore tracks them by name, everything else under docs/ is internal and ignored
+benchmarks/       benchmark scripts, results/ (one folder per run) and history/
+tools/            generate_capabilities.py writes docs/CAPABILITIES.md from docs/capabilities.toml
 .github/          issue forms, PR template, CI, SECURITY.md
 pyproject.toml    metadata, build backend and all tool configuration (ruff, pyright, pytest, coverage)
 uv.lock           committed; CI installs with `uv sync --locked`
@@ -44,6 +48,14 @@ Under WSL2, keep a separate checkout with its own `.venv` in the Linux file syst
 in the Windows checkout.
 
 CI runs the same commands on Ubuntu only for now. All of them must pass before review.
+
+## Documentation
+
+The public pages under `docs/` describe what the code does, nothing it does not. `docs/CAPABILITIES.md` is generated:
+edit `docs/capabilities.toml` (a row is `runs` only with a result file, `does-not-run` only with a result file and a
+reason, otherwise `untested`) and run `uv run python tools/generate_capabilities.py`; `tests/test_docs.py` fails when
+the page drifts, when a link breaks or when a page names an `ayaka` command or flag that does not exist. A new public
+page is added to the allowlist in `.gitignore` by name.
 
 ## Layering
 

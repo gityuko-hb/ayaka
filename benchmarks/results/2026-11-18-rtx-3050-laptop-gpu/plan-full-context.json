@@ -1,0 +1,14 @@
+{
+  "fits": false,
+  "model": "unsloth/Llama-3.2-1B-Instruct",
+  "shortfall": {
+    "what": "KV floor",
+    "need": 7018250240,
+    "have": 3739012300,
+    "short": 3279237940,
+    "bytes_per_token": 32768,
+    "weights_bytes": 2471628800,
+    "reserve_tokens": 131072,
+    "model_context": 131072
+  }
+}
