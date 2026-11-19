@@ -2,6 +2,9 @@
 
 :class:`ConstraintMatcher` is a small state machine around a grammar matcher::
 
+    MAYBE        the first draw of a model that may open a reasoning block: what the state after
+                 it allows, plus the block's opening token; that token leads to WAIT_START,
+                 anything else is learned by the state after it
     WAIT_START   free; waits for ``start_after`` (the end of a reasoning block)
     WAIT_OPEN    free; waits for the model to open a tool call (a lazy call)
     FORCE        only the opening marker may follow (a call the request forces)
@@ -68,6 +71,9 @@ class ConstraintMatcher:
         vocab_size: Bits of a mask.
         eos_token_ids: The tokens ``END`` allows.
         start_after: A token that switches the constraint on, or ``None`` to start at once.
+        reasoning_open: With ``start_after``, the token that opens a reasoning block the model
+            may write as its first token; any other first token starts the constraint at once.
+            The output parser follows the same rule (``ayaka.entrypoints.parsers.formats``).
         opening: The tokens that open a tool call (one marker token, or the marker's spelling),
             or empty for a JSON constraint.
         forced: Whether the answer must start with a call.
@@ -81,6 +87,7 @@ class ConstraintMatcher:
         vocab_size: int,
         eos_token_ids: Collection[int],
         start_after: int | None = None,
+        reasoning_open: int | None = None,
         opening: tuple[int, ...] = (),
         forced: bool = False,
         parallel: bool = True,
@@ -95,12 +102,16 @@ class ConstraintMatcher:
         self._parallel = parallel
         self._grammar: GrammarState | None = None
         self._state = _State.WAIT_START
-        if start_after is None:
+        # The first draw may open a reasoning block: the state after it is already set up.
+        self._reasoning_open = reasoning_open if start_after is not None else None
+        if start_after is None or self._reasoning_open is not None:
             self._begin()
 
     @property
     def active(self) -> bool:
         """Whether the next draw is constrained."""
+        if self._reasoning_open is not None and self._state is _State.WAIT_OPEN:
+            return False  # free either way
         if self._state is _State.END:
             return bool(self._eos)
         return self._state in (_State.FORCE, _State.ON)
@@ -108,7 +119,7 @@ class ConstraintMatcher:
     @property
     def state(self) -> str:
         """The state's name, for tests and logs."""
-        return self._state.name
+        return "MAYBE" if self._reasoning_open is not None else self._state.name
 
     def _begin(self) -> None:
         if not self._opening:
@@ -123,6 +134,14 @@ class ConstraintMatcher:
 
     def mask(self) -> NDArray[np.uint32] | None:
         """The allowed tokens of the next draw as ``uint32`` words, or ``None`` if free."""
+        words = self._mask()
+        opening = self._reasoning_open
+        if words is not None and opening is not None and opening // 32 < self._words:
+            words = words.copy()
+            words[opening // 32] |= np.uint32(1 << (opening % 32))  # the block may open here
+        return words
+
+    def _mask(self) -> NDArray[np.uint32] | None:
         if self._state is _State.ON:
             assert self._grammar is not None  # noqa: S101  # ON always has a grammar
             words = np.frombuffer(self._grammar.compute_bitmask(), dtype="<u4")
@@ -146,6 +165,14 @@ class ConstraintMatcher:
             self._accept(token)
 
     def _accept(self, token: int) -> None:
+        if self._reasoning_open is not None:
+            opened = token == self._reasoning_open
+            self._reasoning_open = None
+            if opened:
+                self._grammar = None
+                self._seen.clear()
+                self._state = _State.WAIT_START  # until the block closes
+                return
         state = self._state
         if state is _State.WAIT_START:
             if token == self._start_after:

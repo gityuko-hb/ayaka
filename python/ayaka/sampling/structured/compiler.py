@@ -202,6 +202,7 @@ class GrammarCompiler:
             vocab_size=self._vocab,
             eos_token_ids=self._eos,
             start_after=params.start_after,
+            reasoning_open=params.reasoning_open,
             opening=syntax.opening if is_call and syntax is not None else (),
             forced=is_call and params.tool_choice != "auto",
             parallel=params.parallel,

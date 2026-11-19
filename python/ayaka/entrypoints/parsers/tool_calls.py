@@ -47,88 +47,25 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, cast
 
-from ayaka.core.errors import ConfigError
 from ayaka.entrypoints.conversation import (
     TextDelta,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallStart,
 )
-from ayaka.entrypoints.parsers.markers import Marker, MarkerScanner, resolve_marker
+from ayaka.entrypoints.parsers.markers import MarkerScanner
 from ayaka.utils.parsing import parse_json_strict
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from ayaka.entrypoints.conversation import OutputEvent
-    from ayaka.tokenizers.ports import TokenizerLike
+    from ayaka.entrypoints.parsers.formats import ToolCallFormat
+    from ayaka.entrypoints.parsers.markers import Marker
 
-__all__ = ["TOOL_CALL_FORMATS", "ToolCallFormat", "ToolCallParser", "tool_call_format"]
-
-
-@dataclass(frozen=True, slots=True)
-class ToolCallFormat:
-    """How a model family writes a function call.
-
-    Attributes:
-        name: The name the server option uses.
-        open: The marker before the JSON body, or ``None`` for a call written without markers.
-        close: The marker after it, or ``None`` with ``open``.
-        arguments: The key of the arguments in the call's JSON object.
-        typed_name: A second key that holds the function name when the object also says
-            ``"type": "function"``; ``None`` if only ``name`` does.
-    """
-
-    name: str
-    open: str | None
-    close: str | None
-    arguments: str = "arguments"
-    typed_name: str | None = None
-
-    def __post_init__(self) -> None:
-        if (self.open is None) != (self.close is None):
-            raise ValueError("a call format has both markers or none")
-
-    def markers(self, tokenizer: TokenizerLike | None = None) -> tuple[Marker, Marker] | None:
-        """The markers as ``tokenizer`` spells them (by text without one); ``None`` without any.
-
-        Raises:
-            ConfigError: If a marker is a special token the detokenizer drops.
-        """
-        if self.open is None or self.close is None:
-            return None
-        return resolve_marker(self.open, tokenizer), resolve_marker(self.close, tokenizer)
-
-
-TOOL_CALL_FORMATS: Final[dict[str, ToolCallFormat]] = {
-    # Hermes 2/3, Qwen2.5, Qwen3, SmolLM3 and others.
-    "hermes": ToolCallFormat("hermes", "<tool_call>", "</tool_call>"),
-    # Llama 3.x: a bare JSON object, its arguments under "parameters". The chat templates of
-    # Llama-3.1 and Llama-3.2 both teach this layout; Llama-3.2-1B also writes the function name
-    # under "function" next to "type": "function" when the tools are shown wrapped that way.
-    "llama3_json": ToolCallFormat(
-        "llama3_json", None, None, arguments="parameters", typed_name="function"
-    ),
-}
-
-
-def tool_call_format(name: str) -> ToolCallFormat:
-    """The format called ``name``.
-
-    Raises:
-        ConfigError: If there is no such format.
-    """
-    try:
-        return TOOL_CALL_FORMATS[name]
-    except KeyError:
-        raise ConfigError(
-            "server.tool_call_parser",
-            "INVALID_CHOICE",
-            f"unknown tool call parser {name!r}; known: {sorted(TOOL_CALL_FORMATS)}",
-        ) from None
+__all__ = ["ToolCallParser"]
 
 
 type _Phase = Literal[
@@ -380,12 +317,14 @@ class ToolCallParser:
         self._markers = markers if markers is not None else fmt.markers()
         self._arguments = fmt.arguments
         self._typed_name = fmt.typed_name
+        self._separator = fmt.separator
         # The member values the parser reads as text; the arguments are only ever sliced.
         self._keep = frozenset({"name", "type"} | ({fmt.typed_name} if fmt.typed_name else set()))
         self._prefix = call_id_prefix
         self._scanner = MarkerScanner(self._markers or ())
         self._call: _Call | None = None
         self._calls = 0  # calls reported to the client; the next call's index
+        self._opened = 0  # call bodies entered, named or not
         self._space = _Run()  # whitespace held back in the text state
         # Without markers: "start" (nothing but whitespace yet), "call" (inside the object that
         # may be a call), "between" (a call ended: whitespace and one ``;`` may lead to the next)
@@ -398,6 +337,16 @@ class ToolCallParser:
     def num_calls(self) -> int:
         """Calls reported so far."""
         return self._calls
+
+    @property
+    def opened_calls(self) -> int:
+        """Call bodies entered so far, with or without a name."""
+        return self._opened
+
+    @property
+    def in_call(self) -> bool:
+        """Whether the text being read is the body of a call (after its opening marker)."""
+        return self._call is not None
 
     def note_tokens(self, token_ids: Iterable[int]) -> None:
         """Record the token ids of the next piece of text, before feeding the text."""
@@ -420,6 +369,7 @@ class ToolCallParser:
                     return events
                 self._space.take()  # whitespace before a call is layout
                 self._call = _Call(self._keep)
+                self._opened += 1
             else:
                 self._body(before, events)
                 if marker is None:
@@ -484,7 +434,7 @@ class ToolCallParser:
             rest = text.lstrip(_WHITESPACE)
             self._pending.add(text[: len(text) - len(rest)])
             return rest
-        if char == ";" and not self._semicolon:
+        if char == self._separator and not self._semicolon:
             self._pending.add(char)
             self._semicolon = True
             return text[1:]

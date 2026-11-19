@@ -63,6 +63,10 @@ class ToolSchema:
 class ToolCallSyntax:
     """How the loaded model writes a call: the markers around a JSON ``{name, arguments}`` body.
 
+    The server builds it from the model's output format, the same record its parser reads
+    (``ayaka.entrypoints.parsers.formats``), so the grammar and the parser agree on the markers
+    and on the keys of the body.
+
     Attributes:
         open: The text of the opening marker.
         close: The text of the closing marker.
@@ -74,6 +78,8 @@ class ToolCallSyntax:
         open_ids: The tokens of the opening marker as the tokenizer spells it, when it is not one
             token: a forced call is made to write exactly these, and a lazy call starts when the
             model wrote them (another spelling of the same text is not recognised).
+        name_key: The key of the function name in the body.
+        arguments_key: The key of the arguments in the body.
     """
 
     open: str
@@ -81,6 +87,8 @@ class ToolCallSyntax:
     open_token: int | None = None
     close_token: int | None = None
     open_ids: tuple[int, ...] = ()
+    name_key: str = "name"
+    arguments_key: str = "arguments"
 
     @property
     def opening(self) -> tuple[int, ...]:
@@ -105,6 +113,10 @@ class StructuredParams:
         start_after: A token id that switches the constraint on, such as the end of a reasoning
             block; ``None`` to start at the first generated token (a lazy tool call starts at
             ``syntax.open_token`` instead).
+        reasoning_open: With ``start_after``, the token that opens a reasoning block the model
+            may write first. The constraint then starts at once unless the first token is this
+            one, and only then waits for ``start_after``. ``None``: wait for ``start_after``
+            from the start (a block the prompt opened).
 
     Raises:
         InvalidRequestError: If the fields do not fit the kind, or the schema is too large.
@@ -118,6 +130,7 @@ class StructuredParams:
     strict: bool = False
     parallel: bool = True
     start_after: int | None = None
+    reasoning_open: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind is ConstraintKind.JSON_SCHEMA and self.schema is None:
@@ -152,7 +165,13 @@ class StructuredParams:
             "schema": self.schema,
             "tools": [{"name": tool.name, "parameters": tool.parameters} for tool in self.tools],
             "syntax": (
-                [self.syntax.open, self.syntax.close, self.syntax.close_token]
+                [
+                    self.syntax.open,
+                    self.syntax.close,
+                    self.syntax.close_token,
+                    self.syntax.name_key,
+                    self.syntax.arguments_key,
+                ]
                 if self.syntax is not None
                 else None
             ),

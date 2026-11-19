@@ -215,7 +215,23 @@ class TestMessages:
 
         _run(checkpoint, body)
 
-    def test_a_forced_tool_gives_a_tool_use_block(self, checkpoint: Path) -> None:
+    def test_a_forced_tool_gives_a_tool_use_block(
+        self, checkpoint: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A forced call at temperature 1 on the random tiny model, with a fixed request id.
+
+        Messages has no ``seed``: the seed comes from the request id, which is random. For about
+        one id in twenty the random model, free inside a non-strict ``arguments`` object, writes
+        past ``max_tokens`` and the call ends cut (a text block). The id is fixed so the test
+        checks the forced call, not the luck of the draw.
+        """
+        import types
+
+        from ayaka.entrypoints import http as http_module
+
+        fixed = types.SimpleNamespace(hex="0" * 32)
+        monkeypatch.setattr(http_module, "uuid", types.SimpleNamespace(uuid4=lambda: fixed))
+
         async def body(client: TestClient[Any, Any]) -> None:
             request = {
                 "max_tokens": 90,

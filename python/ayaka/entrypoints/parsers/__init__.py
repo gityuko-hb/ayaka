@@ -12,20 +12,18 @@ from typing import TYPE_CHECKING
 from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
-    from ayaka.entrypoints.parsers.markers import Marker, MarkerScanner, resolve_marker
-    from ayaka.entrypoints.parsers.output import OutputFormat, OutputParser
-    from ayaka.entrypoints.parsers.reasoning import (
+    from ayaka.entrypoints.parsers.formats import (
         REASONING_FORMATS,
-        ReasoningFormat,
-        ReasoningParser,
-        reasoning_format,
-    )
-    from ayaka.entrypoints.parsers.tool_calls import (
         TOOL_CALL_FORMATS,
+        ReasoningFormat,
         ToolCallFormat,
-        ToolCallParser,
+        reasoning_format,
         tool_call_format,
     )
+    from ayaka.entrypoints.parsers.markers import Marker, MarkerScanner, resolve_marker
+    from ayaka.entrypoints.parsers.output import OutputFormat, OutputParser
+    from ayaka.entrypoints.parsers.reasoning import ReasoningParser
+    from ayaka.entrypoints.parsers.tool_calls import ToolCallParser
 
 __all__ = [
     "REASONING_FORMATS",
@@ -46,8 +44,16 @@ __all__ = [
 _EXPORTS = {
     "markers": ("Marker", "MarkerScanner", "resolve_marker"),
     "output": ("OutputFormat", "OutputParser"),
-    "reasoning": ("REASONING_FORMATS", "ReasoningFormat", "ReasoningParser", "reasoning_format"),
-    "tool_calls": ("TOOL_CALL_FORMATS", "ToolCallFormat", "ToolCallParser", "tool_call_format"),
+    "formats": (
+        "REASONING_FORMATS",
+        "TOOL_CALL_FORMATS",
+        "ReasoningFormat",
+        "ToolCallFormat",
+        "reasoning_format",
+        "tool_call_format",
+    ),
+    "reasoning": ("ReasoningParser",),
+    "tool_calls": ("ToolCallParser",),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())

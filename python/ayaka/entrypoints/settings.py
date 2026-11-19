@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 from ayaka.configs.server import ServerConfig, user_config_path
 from ayaka.core.errors import ConfigError, InvalidRequestError
-from ayaka.entrypoints.parsers.reasoning import reasoning_format
-from ayaka.entrypoints.parsers.tool_calls import tool_call_format
+from ayaka.entrypoints.parsers.formats import reasoning_format, tool_call_format
 
 if TYPE_CHECKING:
     import argparse

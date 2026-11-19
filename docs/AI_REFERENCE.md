@@ -50,7 +50,9 @@ them); a known field that would change the answer and is not available is refuse
 ## Tool calls and structured output
 
 - Tool calls need `--tool-call-parser` (`hermes`, `llama3_json`). Reasoning blocks need
-  `--reasoning-parser` (`think`, `deepseek_r1`).
+  `--reasoning-parser` (`think`, `deepseek_r1`). With `think` the block counts only when it is the first thing
+  the model writes; a `<think>` after answer text is text. With `deepseek_r1` the prompt opened the block.
+  A grammar starts where the parser starts reading: after the block, or at once when the model does not open one.
 - `llama3_json` reads the Llama 3.x layout: a bare JSON object `{"name": ..., "parameters": {...}}` at the start of
   the answer, and more calls separated by `;`. A string `function` next to `"type": "function"` counts as the name,
   because Llama-3.2-1B writes that when the tools are shown wrapped that way. It has no grammar yet: a request that
