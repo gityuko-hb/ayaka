@@ -1,7 +1,7 @@
 """OpenAI Responses: requests to conversations, events to response objects and stream events.
 
 The server keeps no conversation state at v1.0, so the request must carry the whole conversation
-in ``input`` (``OUT-10``): ``previous_response_id``, ``conversation`` and ``store: true`` are
+in ``input``; ``previous_response_id``, ``conversation`` and ``store: true`` are
 refused with 400 saying so, and a request that omits ``store`` is answered as if it were false.
 
 How the request maps:
@@ -14,7 +14,7 @@ How the request maps:
   them. ``strict: true`` is refused: it needs structured output.
 * ``reasoning.effort`` is a hint: the model reasons as it was trained to.
 
-A streamed answer, per ``OUT-B1``::
+A streamed answer::
 
     response.created, response.in_progress
     output_item.added (reasoning)     reasoning_text.delta* reasoning_text.done   output_item.done

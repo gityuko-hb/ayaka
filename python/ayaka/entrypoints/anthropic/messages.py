@@ -1,6 +1,6 @@
 """Anthropic Messages and ``count_tokens``: requests to conversations, events to answers.
 
-A streamed answer, per ``OUT-B1``::
+A streamed answer::
 
     message_start                                   with the prompt's input_tokens
     ping
@@ -15,8 +15,8 @@ ends the stream.
 
 Anthropic's ``tool_use.input`` is a JSON object, so a call is held until it is complete and then
 sent whole: a valid call becomes a ``tool_use`` block; a call whose arguments are not one JSON
-object cannot be represented and is sent as a text block with what the model wrote (``OUT-11``),
-and counted in the ``ayaka_tool_calls{valid="false"}`` metric.
+object cannot be represented and is sent as a text block with what the model wrote, never
+repaired, and counted in the ``ayaka_tool_calls{valid="false"}`` metric.
 """
 
 from __future__ import annotations

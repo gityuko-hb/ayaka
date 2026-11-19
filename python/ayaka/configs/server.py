@@ -57,7 +57,8 @@ class ServerConfig(ConfigMixin):
         shutdown_timeout: Seconds requests in flight get to finish after SIGINT or SIGTERM
             before they are cancelled at the next step boundary.
         sse_coalesce_ms: Milliseconds a stream waits after a token for more tokens to put in the
-            same frame. ``0`` writes what is ready at once (provisional default; see ``OUT-5``).
+            same frame. ``0`` writes what is ready at once (a provisional default: no measurement
+            yet shows that waiting pays).
         keepalive_seconds: Idle seconds after which a stream sends a keepalive frame, so proxies do
             not cut a connection while a long prompt is being read.
         slow_client_seconds: Seconds a write to a client may block before the request is

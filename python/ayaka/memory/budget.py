@@ -143,7 +143,7 @@ class BudgetInputs:
         drafts: Draft sources in priority order. A draft that would leave less
             than the KV floor is skipped, never loaded.
         kv: One cost per KV group. Every group must use the same ``block_size``;
-            groups with different sizes arrive with hybrid models (M6).
+            groups with different sizes are for hybrid models, which are not supported yet.
         kv_reserve_tokens: Context one request must always be able to hold.
         kv_blocks_override: A block count fixed by the user (``CacheConfig.num_blocks``),
             counting the padding block. ``None`` lets the plan fill the pool.

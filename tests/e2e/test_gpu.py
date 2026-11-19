@@ -1,6 +1,6 @@
 """Generation end to end on a CUDA GPU: the tiny GPT-2 and a tiny Llama through the public ``LLM``.
 
-The same requests run in every configuration M1 adds: the ``torch`` backend and ``flashinfer``
+The same requests run in every GPU configuration: the ``torch`` backend and ``flashinfer``
 (attention) over ``torch`` (everything else), eager and with decode steps in CUDA graphs, fp32,
 fp16 and bf16. The oracles:
 

@@ -1,7 +1,7 @@
 """The OpenAI wire formats: reading Chat Completions and Completions requests, and the shapes
 of their answers and errors.
 
-Reading follows one policy for every field (``OUT-9``):
+Reading follows one policy for every field:
 
 * An optional field this server does not know is ignored and named in a debug log line; clients
   add fields faster than servers learn them.

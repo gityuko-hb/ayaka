@@ -1,6 +1,6 @@
 """OpenAI Chat Completions and Completions: requests to conversations, events to answers.
 
-A streamed chat answer, per ``OUT-B1``::
+A streamed chat answer::
 
     {"choices": [{"delta": {"role": "assistant", "content": ""}}]}         first chunk
     {"choices": [{"delta": {"reasoning_content": "..."}}]}                  reasoning

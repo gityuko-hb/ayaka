@@ -1,6 +1,6 @@
 """A package imports only packages from a lower layer.
 
-``LAYERS`` is the layer table of ``docs/TREE.md`` section 3. A package may import a
+``LAYERS`` is the table of layers. A package may import a
 package in a strictly lower layer and its own submodules, nothing else. ``core`` and
 ``utils`` share the foundation layer and may import each other. An import counts
 wherever it appears: at module level, inside a function or under ``TYPE_CHECKING``,
@@ -161,7 +161,7 @@ def test_every_package_on_disk_is_in_the_layer_table() -> None:
 
     assert unknown == [], (
         f"ayaka packages missing from the layer table in tests/test_layers.py: {unknown}. "
-        "Add them to the table in docs/TREE.md section 3 and to this test in the same change."
+        "Add them to the layer table in this test in the same change."
     )
 
 

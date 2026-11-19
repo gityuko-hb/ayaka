@@ -13,7 +13,7 @@ without loading a tensor.
 
 Fields that only some architectures have are optional and added with the
 milestone that implements them: rotary embeddings (``rope_theta``,
-``rope_scaling``) and the projection biases of the Llama family arrived in M1;
+``rope_scaling``) and the projection biases of the Llama family arrived with the Llama models;
 mixture-of-experts, sliding windows and vision come later.
 """
 
