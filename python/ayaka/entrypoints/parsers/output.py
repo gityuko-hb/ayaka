@@ -53,6 +53,11 @@ class EventParser(Protocol):
         """The events of the next fragment; the final fragment also ends the stream."""
         ...
 
+    @property
+    def generated_tokens(self) -> int:
+        """Tokens of every sequence fed so far: the count when no usage event came."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class OutputFormat:
@@ -149,6 +154,11 @@ class OutputParser:
     def done(self) -> bool:
         """Whether the parser has emitted its terminal event."""
         return self._done
+
+    @property
+    def generated_tokens(self) -> int:
+        """Tokens fed so far."""
+        return self._tokens
 
     def feed(self, output: RequestOutput) -> list[OutputEvent]:
         """The events of the next fragment; the final fragment also ends the stream."""
@@ -264,6 +274,11 @@ class ChoicesParser:
     def count(self) -> int:
         """Choices of the request."""
         return len(self._parsers)
+
+    @property
+    def generated_tokens(self) -> int:
+        """Tokens fed so far, over every choice."""
+        return sum(parser.generated_tokens for parser in self._parsers)
 
     def feed(self, output: RequestOutput) -> list[OutputEvent]:
         """The events of the next fragment, per choice, then the request's end."""

@@ -812,7 +812,9 @@ class Serving:
             generation.public_id,
             generation.outcome,
             usage.prompt_tokens if usage is not None else generation.prompt_tokens,
-            usage.completion_tokens if usage is not None else 0,
+            # A request that ended early (a client gone or too slow) has no usage event: count
+            # what reached the parser. Tokens the engine made after that are not in it.
+            usage.completion_tokens if usage is not None else generation.parser.generated_tokens,
             seconds,
         )
 
