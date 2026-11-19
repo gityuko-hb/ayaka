@@ -42,7 +42,7 @@ pytestmark = pytest.mark.unit
 SEEDS = range(40)
 
 #: The legal status moves, written out independently of ``LEGAL_TRANSITIONS``.
-SCH_B3 = {
+EXPECTED_TRANSITIONS = {
     ("waiting", "running"),
     ("waiting", "finished"),
     ("running", "preempted"),
@@ -516,23 +516,21 @@ def test_a_step_holds_only_immutable_values(seed: int) -> None:
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_every_status_move_is_in_the_sch_b3_table(
-    seed: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_every_status_move_is_allowed(seed: int, monkeypatch: pytest.MonkeyPatch) -> None:
     world = make_world(seed)
     _record_transitions(monkeypatch, world)
 
     drive(world, random_aborts=seed % 2 == 0)
 
     assert world.transitions
-    assert {(old, new) for _, old, new in world.transitions} <= SCH_B3
+    assert {(old, new) for _, old, new in world.transitions} <= EXPECTED_TRANSITIONS
     for request in world.requests:
         path = [t for t in world.transitions if t[0] == request.request_id]
         assert path[0][1] == "waiting"
         assert path[-1][2] == "finished"
         assert sum(1 for t in path if t[2] == "finished") == 1
         assert all(a[2] == b[1] for a, b in itertools.pairwise(path))
-        assert "preempted" not in {t[2] for t in path}  # nothing preempts before M3
+        assert "preempted" not in {t[2] for t in path}  # the scheduler does not preempt yet
 
 
 # -- refusal is harmless ------------------------------------------------------------------------

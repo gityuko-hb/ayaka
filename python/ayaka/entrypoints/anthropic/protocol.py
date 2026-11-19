@@ -1,10 +1,10 @@
 """The Anthropic Messages wire format: reading requests, and the shapes of answers and errors.
 
-Reading follows the same policy as the OpenAI protocols (``OUT-9``): an unknown optional field is
+Reading follows the same policy as the OpenAI protocols: an unknown optional field is
 ignored with a debug log line; a known field that would change the answer and is not available is
 refused with 400, naming it.
 
-How the request maps (``OUT-9``):
+How the request maps:
 
 * ``system``, a string or text blocks, becomes the system prompt; blocks are joined like every
   multi-part text.

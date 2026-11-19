@@ -1,4 +1,4 @@
-"""What every benchmark result records about where it ran (QA-5): machine, versions, commit."""
+"""What every benchmark result records about where it ran: machine, versions, commit."""
 
 from __future__ import annotations
 

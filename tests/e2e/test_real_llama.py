@@ -1,7 +1,7 @@
 """A real Llama checkpoint on the GPU against ``transformers``: the same greedy tokens.
 
 The checkpoint is ``HuggingFaceTB/SmolLM2-135M`` (``LlamaForCausalLM``, 135M parameters, grouped
-heads, tied embeddings), run through the public ``LLM`` with its real tokenizer, in every M1
+heads, tied embeddings), run through the public ``LLM`` with its real tokenizer, in every GPU
 configuration: the ``torch`` backend and ``flashinfer`` attention, eager and with decode graphs,
 fp32, fp16 and bf16.
 
