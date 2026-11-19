@@ -33,6 +33,29 @@ plans with it, so a ratio that worked once can be refused on the next start.
 **Fix.** Lower `--memory-ratio` (0.86 worked for Llama-3.2-1B on the 4 GB GPU after the measurement; 0.95 did not).
 `ayaka plan` prints the usable memory and the headroom for a ratio.
 
+## Prompts read at about half speed under WSL2
+
+**Symptom.** Under WSL2, a long prompt takes about twice as long to read as it did on an earlier start with the
+same flags, with no error. The start-up log reads, for example,
+
+```text
+device free cross-check: NVML 4154458112 bytes before the backend, CUDA 3459986228 bytes after it
+startup run: ... runtime outside the allocator 272629760 bytes ...
+```
+
+where the runtime is well below the gap between the two free figures (here 266 MB against a gap of about 690 MB).
+
+**Cause.** Under WSL2, NVML reports more free memory than CUDA does. Ayaka plans from the NVML figure and from the
+runtime memory it measured on the previous start. When a start measured too little runtime, the plan gives the
+allocator more than CUDA's free memory; the driver accepts it, prompt reading slows down, and that start measures
+too little again. Seen on the development machine with Llama-3.2-1B-Instruct, `--memory-ratio 0.86
+--kv-reserve-tokens 8192`: 1,900 tok/s instead of 3,400 tok/s on a 3,549-token prompt. This is a bug in the
+planning, not in your setup.
+
+**Fix.** Start once with a lower `--memory-ratio` (0.80 on the development machine), stop the server, and start
+again with your usual ratio: the lower start measures the real runtime, and the next starts plan with it. If the
+usual ratio then stops with "KV floor ... short", raise it a little or lower `--kv-reserve-tokens`.
+
 ## No GPU is used
 
 **Symptom.** `ayaka info` shows `CUDA none, not usable`, or `--device cuda` fails with a capability error naming
