@@ -286,3 +286,52 @@ class TestFailures:
         assert out.error is not None
         assert out.error.code == "engine_dead"
         assert processor.num_active == 0
+
+    def test_family_usage_counts_multiple_sequences_incrementally(
+        self, service: TokenizerService
+    ) -> None:
+        processor = OutputProcessor(service, abort=_Aborts())
+        siblings = tuple(
+            TokenizedRequest(
+                request_id=RequestId(f"r-{i}"),
+                sequence_index=i,
+                prompt_token_ids=(104, 105, 106),
+                sampling=SamplingParams(temperature=0.0),
+            )
+            for i in range(3)
+        )
+        processor.register_family(RID, siblings, stream=True)
+
+        chunks_a = processor.process(
+            [
+                RequestEvent(request_id=RequestId("r-0"), token_ids=_bytes("ab"), cached_tokens=2),
+                RequestEvent(
+                    request_id=RequestId("r-1"),
+                    token_ids=_bytes("cdef"),
+                    cached_tokens=1,
+                    finish_reason=FinishReason.STOP,
+                ),
+            ]
+        )
+        assert not chunks_a[-1].finished
+        assert chunks_a[-1].usage.completion_tokens == 6
+        assert chunks_a[-1].usage.cached_tokens == 2
+
+        out_mid, out_last = processor.process(
+            [
+                RequestEvent(
+                    request_id=RequestId("r-0"), token_ids=(), finish_reason=FinishReason.LENGTH
+                ),
+                RequestEvent(
+                    request_id=RequestId("r-2"),
+                    token_ids=_bytes("ghi"),
+                    finish_reason=FinishReason.STOP,
+                ),
+            ]
+        )
+        assert not out_mid.finished
+        assert out_mid.usage.completion_tokens == 6
+        assert out_last.finished
+        assert out_last.usage.prompt_tokens == 3
+        assert out_last.usage.completion_tokens == 9
+        assert out_last.usage.cached_tokens == 2

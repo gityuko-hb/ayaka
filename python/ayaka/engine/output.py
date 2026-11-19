@@ -75,13 +75,15 @@ class _Family:
     live: dict[RequestId, _Sequence] = field(default_factory=dict["RequestId", "_Sequence"])
     done: dict[int, CompletionOutput] = field(default_factory=dict[int, CompletionOutput])
     first_token_at: float | None = None
+    completion_tokens: int = 0
+    cached_tokens: int = 0
 
     def usage(self) -> Usage:
         prompt = len(self.prompt)
         return Usage(
             prompt_tokens=prompt,
-            completion_tokens=sum(len(sequence.tokens) for sequence in self.sequences),
-            cached_tokens=min(max(s.cached_tokens for s in self.sequences), prompt),
+            completion_tokens=self.completion_tokens,
+            cached_tokens=min(self.cached_tokens, prompt),
         )
 
 
@@ -242,6 +244,7 @@ class OutputProcessor:
         stop_reason: TokenId | str | None = event.stop_reason
         error = event.error
         sequence.cached_tokens = max(sequence.cached_tokens, event.cached_tokens)
+        family.cached_tokens = max(family.cached_tokens, sequence.cached_tokens)
         if kept and family.first_token_at is None:
             family.first_token_at = now
         detokenizer = sequence.detokenizer
@@ -269,6 +272,7 @@ class OutputProcessor:
             if event.finish_reason is None:
                 self._abort(sequence.request_id, FinishReason.STOP)
         sequence.tokens.extend(kept)
+        family.completion_tokens += len(kept)
         sequence.text.append(text)
         fresh = self._named(event.logprobs[: len(kept)]) if event.logprobs else ()
         sequence.logprobs.extend(fresh)

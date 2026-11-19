@@ -36,6 +36,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from ayaka.core.errors import EngineError, InvalidRequestError
 from ayaka.core.params import SamplingParams
+from ayaka.engine.seam import EngineState
 from ayaka.entrypoints.failures import AnswerFailedError, ErrorRenderer, failure_for
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING, Readiness
 from ayaka.utils.parsing import parse_json_strict
@@ -304,7 +305,7 @@ def _preflight_headers(request: web.Request) -> dict[str, str]:
 
 async def _health(request: web.Request) -> web.Response:
     serving = request.app[SERVING]
-    if serving.llm is not None and serving.llm.is_dead:
+    if serving.llm is not None and serving.llm.health().state is EngineState.DEAD:
         serving.status = Readiness.DEAD
     status = serving.status
     return web.json_response(

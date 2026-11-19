@@ -1,7 +1,7 @@
 """Anthropic Messages: reading requests, the exact event sequence, tool use and count_tokens.
 
 Over HTTP, plain text comes from the tiny GPT-2 and is checked against ``greedy_reference``; tool
-calls and reasoning come from ``ScriptedLLM``, since the tiny model does not write them.
+calls and reasoning come from ``FakeEngine``, since the tiny model does not write them.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from tiny_model import TinyCheckpoint, greedy_reference, write_tiny_gpt2
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from serving_support import ScriptedLLM
+    from fake_engine import FakeEngine
 
 pytestmark = pytest.mark.unit
 
@@ -414,7 +414,7 @@ def test_one_conversation_in_two_protocols_gives_one_prompt(tmp_path: Path) -> N
             count = await (
                 await client.post("/v1/messages/count_tokens", json=_HISTORY_MESSAGES)
             ).json()
-            scripted: ScriptedLLM = llm  # type: ignore[assignment]
+            scripted: FakeEngine = llm
             chat, messages = (request.prompt for request in scripted.requests)
             assert isinstance(chat, tuple)
             assert chat == messages

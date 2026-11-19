@@ -221,7 +221,7 @@ def _run(
         config,
         options,
         say=lambda line: None,
-        load=lambda c: LLM.from_config(c, tokenizer=tiny_tokenizer()),
+        load=lambda c, r: LLM.from_config(c, tokenizer=tiny_tokenizer(), recorder=r),
     )
 
 

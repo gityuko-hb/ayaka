@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ayaka.engine.core import EngineCore
+    from ayaka.engine.recorder import SessionRecorder
     from ayaka.scheduler.step import StepOutput
 
 pytestmark = pytest.mark.unit
@@ -142,8 +143,10 @@ class TestSettings:
 
 
 def _factory(checkpoint: TinyCheckpoint, *, slow: float = 0.0) -> Any:
-    def build() -> EngineCore:
-        core = build_engine(tiny_engine_config(checkpoint.directory), tokenizer=tiny_tokenizer())
+    def build(recorder: SessionRecorder | None) -> EngineCore:
+        core = build_engine(
+            tiny_engine_config(checkpoint.directory), tokenizer=tiny_tokenizer(), recorder=recorder
+        )
         if slow:
             real = core.runner.execute
 

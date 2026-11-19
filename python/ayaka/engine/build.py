@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from ayaka.configs.model import ModelConfig
     from ayaka.device.capabilities import DeviceCapabilities
     from ayaka.device.info import DeviceInfo
+    from ayaka.engine.recorder import SessionRecorder
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.storage.pool import KVPool
     from ayaka.kvcache.storage.spec import KVGroup
@@ -320,6 +321,7 @@ def build_engine(
     *,
     tokenizer: LoadedTokenizer | None = None,
     stat_loggers: Sequence[StatLogger] = (),
+    recorder: SessionRecorder | None = None,
 ) -> EngineCore:
     """Build an engine: plan the memory, load the model, allocate the cache, and wire the loop.
 
@@ -330,6 +332,8 @@ def build_engine(
         stat_loggers: Loggers that get every step besides the logging one (which writes a line
             every :data:`STATS_LOG_INTERVAL` seconds at INFO); the server passes its Prometheus
             logger.
+        recorder: Writes every request the engine serves as token ids (``--record``); the engine
+            owns it from now on and closes it when it shuts down.
 
     Returns:
         An engine ready to take requests. Call :meth:`~ayaka.engine.core.EngineCore.shutdown`
@@ -439,6 +443,7 @@ def build_engine(
         stats=StatLoggerManager(
             loggers=(LoggingStatLogger(), *stat_loggers), log_interval=STATS_LOG_INTERVAL
         ),
+        recorder=recorder,
     )
 
 

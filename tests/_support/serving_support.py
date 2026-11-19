@@ -1,12 +1,13 @@
-"""A server on the tiny GPT-2, a scripted engine, and an SSE reader, for the serving tests.
+"""A server on the tiny GPT-2, a fake engine, and an SSE reader, for the serving tests.
 
-* ``serve(...)``: an async context manager that builds the tiny engine, starts an ``AsyncLLM``,
-  attaches it to a ``Serving`` and yields an aiohttp test client for ``create_app``. Requests go
-  through real HTTP on localhost.
-* ``ScriptedLLM``: an ``AsyncLLM`` whose requests are answered with outputs a test wrote, while
-  tokenizing goes through the real tokenizer service. It records every admitted request, so a
-  test can compare prompt ids, and every abort. Use it where the tiny model cannot produce what
-  the test needs (a tool call, a reasoning block).
+* ``serve(...)``: an async context manager that builds the tiny engine, attaches it to a ``Serving``
+  and yields an aiohttp test client for ``create_app``, the ``Serving`` and the engine client.
+  Requests go through real HTTP on localhost. With ``scripts`` the engine client is a
+  ``FakeEngine`` (``fake_engine.py``) that answers with outputs a test wrote, while tokenizing
+  goes through the real tokenizer service; without, it is a real ``AsyncLLM`` on the tiny model.
+  Use scripts where the tiny model cannot produce what the test needs (a tool call, a reasoning
+  block) or where the test needs the engine to fail on cue.
+* ``script(...)``: the outputs of one scripted request, from ``fake_engine``.
 * ``read_sse(body)``: the frames of an SSE body as ``(event, data)`` pairs.
 * ``write_long_gpt2(directory)``: the tiny GPT-2 with 1024 positions, for prompts with a tool
   history that the 128-position fixture cannot hold (only tokenized, never run, in these tests).
@@ -16,7 +17,6 @@ Import this module only after ``pytest.importorskip("torch")`` and ``("aiohttp")
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 from typing import TYPE_CHECKING, Any
@@ -24,12 +24,11 @@ from typing import TYPE_CHECKING, Any
 from aiohttp.test_utils import TestClient, TestServer
 
 from ayaka.configs.server import ServerConfig
-from ayaka.core.outputs import CompletionOutput, RequestOutput, Usage
-from ayaka.core.types import FinishReason
-from ayaka.engine.async_llm import AsyncLLM, RequestStream
+from ayaka.engine.async_llm import AsyncLLM
 from ayaka.engine.build import build_engine
 from ayaka.entrypoints.http import create_app
 from ayaka.entrypoints.serving import Serving
+from fake_engine import FakeEngine, script
 from gpt2_support import hf_state, tiny_config, write_checkpoint
 from tiny_model import tiny_engine_config, tiny_tokenizer
 from tokenizer_fakes import MODEL_VOCAB
@@ -38,13 +37,11 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
     from pathlib import Path
 
-    from ayaka.core.request import GenerateRequest
-    from ayaka.core.types import RequestId
-    from ayaka.engine.core import EngineCore
     from ayaka.entrypoints.parsers.output import OutputFormat
     from ayaka.tokenizers.contracts import LoadedTokenizer
+    from fake_engine import Script
 
-__all__ = ["ScriptedLLM", "parse_sse", "read_sse", "script", "serve", "write_long_gpt2"]
+__all__ = ["parse_sse", "read_sse", "script", "serve", "write_long_gpt2"]
 
 
 def write_long_gpt2(directory: Path, *, positions: int = 1024) -> Path:
@@ -54,87 +51,6 @@ def write_long_gpt2(directory: Path, *, positions: int = 1024) -> Path:
     return directory
 
 
-def script(
-    *pieces: str | tuple[int, str],
-    reason: FinishReason = FinishReason.STOP,
-    stop: str | int | None = None,
-) -> list[RequestOutput]:
-    """Outputs for a scripted request: one fragment per piece, then the final one.
-
-    A piece is text (its token ids are its bytes) or ``(token id, text)``.
-    """
-    fragments: list[tuple[tuple[int, ...], str]] = []
-    for piece in pieces:
-        if isinstance(piece, tuple):
-            fragments.append(((piece[0],), piece[1]))
-        else:
-            fragments.append((tuple(piece.encode()), piece))
-    count = sum(len(ids) for ids, _ in fragments)
-    outputs: list[RequestOutput] = []
-    for i, (ids, text) in enumerate(fragments):
-        last = i == len(fragments) - 1
-        outputs.append(
-            RequestOutput(
-                request_id="scripted",  # type: ignore[arg-type]  # replaced per request
-                outputs=(
-                    CompletionOutput(
-                        index=0,
-                        token_ids=ids,
-                        text=text,
-                        finish_reason=reason if last else None,
-                        stop_reason=stop if last else None,
-                    ),
-                ),
-                finished=last,
-                usage=Usage(prompt_tokens=0, completion_tokens=count if last else 0),
-            )
-        )
-    return outputs
-
-
-class ScriptedLLM(AsyncLLM):
-    """Answers each request with the next script; tokenizing uses the real engine's tokenizer.
-
-    Args:
-        engine: A built engine (only its tokenizer and configuration are used).
-        scripts: One list of outputs per expected request, in order.
-    """
-
-    def __init__(self, engine: EngineCore, scripts: Sequence[list[RequestOutput]] = ()) -> None:
-        super().__init__(engine)
-        self.scripts = list(scripts)
-        self.requests: list[GenerateRequest] = []
-        self.aborted: list[RequestId] = []
-
-    async def add_request(self, request: GenerateRequest) -> RequestStream:
-        self.requests.append(request)
-        outputs = self.scripts.pop(0) if self.scripts else script("ok")
-        stream = RequestStream(request.request_id)
-        prompt = len(request.prompt) if isinstance(request.prompt, tuple) else 0
-
-        async def feed() -> None:
-            for output in outputs:
-                await asyncio.sleep(0.005)
-                stream.put(
-                    RequestOutput(
-                        request_id=request.request_id,
-                        outputs=output.outputs,
-                        finished=output.finished,
-                        usage=Usage(
-                            prompt_tokens=prompt, completion_tokens=output.usage.completion_tokens
-                        ),
-                        error=output.error,
-                    )
-                )
-
-        task = asyncio.get_running_loop().create_task(feed())
-        stream.feeder = task  # type: ignore[attr-defined]  # keep a reference to the task
-        return stream
-
-    def abort(self, request_id: RequestId) -> None:
-        self.aborted.append(request_id)
-
-
 @contextlib.asynccontextmanager
 async def serve(
     directory: Path,
@@ -142,25 +58,33 @@ async def serve(
     config: ServerConfig | None = None,
     output_format: OutputFormat | None = None,
     tokenizer: LoadedTokenizer | None = None,
-    scripts: Sequence[list[RequestOutput]] | None = None,
+    scripts: Sequence[Script] | None = None,
     attach: bool = True,
     **engine: Any,
-) -> AsyncGenerator[tuple[TestClient[Any, Any], Serving, AsyncLLM]]:
-    """A test client for a server on the tiny model (or on scripts, when given)."""
+) -> AsyncGenerator[tuple[TestClient[Any, Any], Serving, Any]]:
+    """A test client for a server on the tiny model (or on a fake engine, when scripts are given).
+
+    The third value is the engine client: an ``AsyncLLM``, or a ``FakeEngine`` with ``scripts``.
+    """
     core = build_engine(
         tiny_engine_config(directory, **engine), tokenizer=tokenizer or tiny_tokenizer()
     )
-    llm: AsyncLLM = ScriptedLLM(core, scripts) if scripts is not None else AsyncLLM(core)
-    llm.start()
+    llm: AsyncLLM | FakeEngine
+    if scripts is None:
+        llm = AsyncLLM(core)
+        llm.start()
+    else:
+        llm = FakeEngine(core.info, scripts)  # only the tokenizer and the limits are the core's
     serving = Serving(config or ServerConfig(), model_name="tiny")
     if attach:
-        serving.attach(llm, output_format=output_format)
+        serving.attach(llm, core.tokenizer, output_format=output_format)
     server = TestServer(create_app(serving), handler_cancellation=True)
     try:
         async with TestClient(server) as client:
             yield client, serving, llm
     finally:
         await llm.shutdown()
+        core.shutdown()  # idempotent; a fake engine does not own the core
 
 
 def parse_sse(body: str) -> list[tuple[str | None, str]]:

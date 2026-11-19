@@ -26,6 +26,7 @@ from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import FinishReason, RequestId
 from ayaka.engine.async_llm import AsyncLLM
+from ayaka.engine.recorder import SessionRecorder
 from ayaka.entrypoints.http import create_app
 from ayaka.entrypoints.parsers.output import OutputFormat
 from ayaka.entrypoints.serving import Serving
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
     from ayaka.configs.engine import EngineConfig
     from ayaka.configs.server import ServerConfig
     from ayaka.engine.core import EngineCore
+    from ayaka.tokenizers.service import TokenizerService
 
 __all__ = ["EXIT_SECOND_SIGNAL", "serve"]
 
@@ -71,9 +73,8 @@ class _Signals:
             signal.signal(number, previous)  # type: ignore[arg-type]  # what signal.signal returned
 
 
-async def _warm_up(llm: AsyncLLM) -> None:
+async def _warm_up(llm: AsyncLLM, service: TokenizerService) -> None:
     """Generate one token, so the first client does not pay for the first step."""
-    service = llm.engine.tokenizer
     encoded = await asyncio.to_thread(
         service.encode, TextInput("Hello"), EncodeOptions(max_output_tokens=1)
     )
@@ -93,7 +94,7 @@ async def _warm_up(llm: AsyncLLM) -> None:
 
 async def serve(
     config: ServerConfig,
-    engine: EngineConfig | Callable[[], EngineCore],
+    engine: EngineConfig | Callable[[SessionRecorder | None], EngineCore],
     *,
     model_name: str,
     say: Callable[[str], None] = print,
@@ -106,7 +107,8 @@ async def serve(
 
     Args:
         config: The server settings.
-        engine: What to load, or a function that builds the engine (tests pass one).
+        engine: What to load, or a function that builds the engine from the recorder it must
+            record to (tests pass one).
         model_name: The name the model was given on the command line.
         say: Where the status lines go.
         stop: Set it to stop the server; a fresh event when ``None``.
@@ -126,14 +128,17 @@ async def serve(
     await runner.setup()
     signals = _Signals(loop, stop) if handle_signals else None
     llm: AsyncLLM | None = None
+    recorder: SessionRecorder | None = None
     try:
         site = web.TCPSite(runner, config.host, config.port)
         await site.start()
         host, port = runner.addresses[0][:2]
         say(f"listening on http://{_format_host(host)}:{port}; loading {model_name}")
-        core = await asyncio.to_thread(
-            engine if callable(engine) else _builder(engine, serving.metrics.registry)
-        )
+        if record is not None:
+            recorder = SessionRecorder(record)
+            recorder.recording = False  # the warm-up is not a request of the session
+        build = engine if callable(engine) else _builder(engine, serving.metrics.registry)
+        core = await asyncio.to_thread(build, recorder)
         llm = AsyncLLM(core)
         llm.start()
         output_format = OutputFormat.resolve(
@@ -141,18 +146,16 @@ async def serve(
             tool_calls=config.tool_call_parser,
             tokenizer=core.tokenizer.tokenizer,
         )
-        await _warm_up(llm)
+        await _warm_up(llm, core.tokenizer)
         if stop.is_set():
             return
-        if record is not None:
-            from ayaka.engine.recorder import SessionRecorder
-
-            core.recorder = SessionRecorder(record)
+        if recorder is not None:
+            recorder.recording = True
             say(
-                f"recording every request to {core.recorder.path}: prompts and answers as token "
+                f"recording every request to {recorder.path}: prompts and answers as token "
                 "ids, readable by anyone who has the model's tokenizer"
             )
-        serving.attach(llm, output_format=output_format)
+        serving.attach(llm, core.tokenizer, output_format=output_format)
         say(f"ready: {', '.join(serving.model_names)} on http://{_format_host(host)}:{port}")
         if on_ready is not None:
             on_ready(host, port)
@@ -167,18 +170,24 @@ async def serve(
         if llm is not None:
             with contextlib.suppress(Exception):
                 await llm.shutdown(0.0)
+        if recorder is not None:
+            recorder.close()  # the engine closed it already, unless it was never built
         await runner.cleanup()
         if signals is not None:
             signals.restore()
     say("stopped")
 
 
-def _builder(config: EngineConfig, registry: CollectorRegistry) -> Callable[[], EngineCore]:
-    def build() -> EngineCore:
+def _builder(
+    config: EngineConfig, registry: CollectorRegistry
+) -> Callable[[SessionRecorder | None], EngineCore]:
+    def build(recorder: SessionRecorder | None) -> EngineCore:
         from ayaka.engine.build import build_engine
         from ayaka.metrics.loggers import PrometheusStatLogger
 
-        return build_engine(config, stat_loggers=(PrometheusStatLogger(registry=registry),))
+        return build_engine(
+            config, stat_loggers=(PrometheusStatLogger(registry=registry),), recorder=recorder
+        )
 
     return build
 

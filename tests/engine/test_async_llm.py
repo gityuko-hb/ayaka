@@ -22,6 +22,7 @@ torch: Any = pytest.importorskip("torch")
 
 from ayaka.engine.async_llm import AsyncLLM, RequestStream, merge_outputs  # noqa: E402
 from ayaka.engine.build import build_engine  # noqa: E402
+from ayaka.engine.seam import EngineState  # noqa: E402
 from tiny_model import (  # noqa: E402  # needs the importorskip above
     TinyCheckpoint,
     assert_cache_released,
@@ -93,7 +94,7 @@ class TestGenerate:
         seen: list[RequestOutput] = []
 
         async def body(llm: AsyncLLM) -> None:
-            seen.extend(await _collect(await llm.add_request(_request("a", "hello", 8))))
+            seen.extend(await _collect(await llm.add(_request("a", "hello", 8))))
 
         llm = _run(checkpoint, body)
 
@@ -126,18 +127,18 @@ class TestGenerate:
     ) -> None:
         async def body(llm: AsyncLLM) -> None:
             with pytest.raises(UnsupportedFeatureError, match="prompt_logprobs"):
-                await llm.add_request(_request("lp", "x", 2, prompt_logprobs=1))
+                await llm.add(_request("lp", "x", 2, prompt_logprobs=1))
             assert llm.num_streams == 0
             # The engine is still fine.
-            assert len(await _collect(await llm.add_request(_request("ok", "x", 2)))) >= 1
+            assert len(await _collect(await llm.add(_request("ok", "x", 2)))) >= 1
 
         _run(checkpoint, body)
 
     def test_a_running_id_cannot_be_used_twice(self, checkpoint: TinyCheckpoint) -> None:
         async def body(llm: AsyncLLM) -> None:
-            stream = await llm.add_request(_request("same", "x", 20))
+            stream = await llm.add(_request("same", "x", 20))
             with pytest.raises(EngineError, match="already running"):
-                await llm.add_request(_request("same", "y", 2))
+                await llm.add(_request("same", "y", 2))
             await _collect(stream)
 
         _run(checkpoint, body)
@@ -148,7 +149,7 @@ class TestGenerate:
 
         async def main() -> None:
             with pytest.raises(EngineError, match="not started"):
-                await llm.add_request(_request("early", "x", 2))
+                await llm.add(_request("early", "x", 2))
             await llm.shutdown()
 
         asyncio.run(main())
@@ -159,7 +160,7 @@ class TestCancellation:
         self, checkpoint: TinyCheckpoint
     ) -> None:
         async def body(llm: AsyncLLM) -> None:
-            stream = await llm.add_request(_request("long", "go on", 100))
+            stream = await llm.add(_request("long", "go on", 100))
             await stream.wait()
             llm.abort(RequestId("long"))
             assert llm.num_streams == 0
@@ -196,7 +197,7 @@ class TestCancellation:
         self, checkpoint: TinyCheckpoint
     ) -> None:
         async def body(llm: AsyncLLM) -> None:
-            task = asyncio.create_task(llm.add_request(_request("gone", "bye", 100)))
+            task = asyncio.create_task(llm.add(_request("gone", "bye", 100)))
             await asyncio.sleep(0)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -216,7 +217,7 @@ class TestSlowReader:
         merged: list[int] = []
 
         async def body(llm: AsyncLLM) -> None:
-            stream = await llm.add_request(_request("slow", "slow reader", 20))
+            stream = await llm.add(_request("slow", "slow reader", 20))
             # Let the engine run the whole request before reading anything.
             assert await llm.drain(10.0)
             merged.append(stream.merged)
@@ -237,24 +238,24 @@ class TestFailureAndShutdown:
         last: list[RequestOutput] = []
 
         async def body(llm: AsyncLLM) -> None:
-            stream = await llm.add_request(_request("cut", "cut short", 100))
+            stream = await llm.add(_request("cut", "cut short", 100))
             await stream.wait()
             await llm.shutdown(0.0)
             last.extend(await _collect(stream))
             with pytest.raises(EngineError, match="shutting down"):
-                await llm.add_request(_request("late", "x", 2))
+                await llm.add(_request("late", "x", 2))
 
         llm = _run(checkpoint, body)
 
         assert last[-1].finished
         assert last[-1].outputs[0].finish_reason is FinishReason.CANCELLED
-        assert not llm.is_running
+        assert llm.health().state is EngineState.STOPPED
 
     def test_shutdown_with_grace_lets_a_request_finish(self, checkpoint: TinyCheckpoint) -> None:
         last: list[RequestOutput] = []
 
         async def body(llm: AsyncLLM) -> None:
-            stream = await llm.add_request(_request("short", "short", 5))
+            stream = await llm.add(_request("short", "short", 5))
             await llm.shutdown(30.0)
             last.extend(await _collect(stream))
 
@@ -274,11 +275,11 @@ class TestFailureAndShutdown:
                 raise RuntimeError("kernel on fire")
 
             llm.engine.runner.execute = explode  # type: ignore[method-assign]  # inject a failure
-            stream = await llm.add_request(_request("doomed", "x", 5))
+            stream = await llm.add(_request("doomed", "x", 5))
             last.extend(await _collect(stream))
-            assert llm.is_dead
+            assert llm.health().state is EngineState.DEAD
             with pytest.raises(EngineDeadError):
-                await llm.add_request(_request("after", "x", 2))
+                await llm.add(_request("after", "x", 2))
 
         llm = _run(checkpoint, body)
 
@@ -287,7 +288,7 @@ class TestFailureAndShutdown:
         assert final.outputs[0].finish_reason is FinishReason.ERROR
         assert final.error is not None
         assert final.error.code == "engine_dead"
-        assert llm.is_dead
+        assert llm.health().state is EngineState.DEAD
 
 
 class TestMerge:

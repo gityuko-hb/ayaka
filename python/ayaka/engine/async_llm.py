@@ -4,7 +4,7 @@
 
     llm = AsyncLLM(build_engine(config))
     llm.start()                                    # inside a running event loop
-    stream = await llm.add_request(request)        # admission errors are raised here
+    stream = await llm.add(request)                # admission errors are raised here
     async for output in stream:                    # one fragment per step, the last has finished
         ...
 
@@ -12,6 +12,8 @@
 owns that thread. Callers on the event loop never touch the engine: they send commands (add,
 abort, stop) through a queue, and the engine thread hands the outputs of each step back to the
 loop in one batch. Each request reads its outputs from its own :class:`RequestStream`.
+:class:`AsyncLLM` implements :class:`~ayaka.engine.seam.EngineClient`, the only face of the engine
+the server uses; the guarantees of that contract are kept here.
 
 The engine never waits for a caller. A stream holds at most ``max_pending`` undelivered outputs;
 when a caller falls behind, a new output is merged into the newest one instead of queued, so a
@@ -21,12 +23,16 @@ reader is too slow, and cancelling it, belongs to whoever writes to the client.
 Failure and life cycle:
 
 * An admission error (``InvalidRequestError``, ``UnsupportedFeatureError``, ``OverloadedError``)
-  is raised from :meth:`AsyncLLM.add_request`; the request never existed.
+  is raised from :meth:`AsyncLLM.add`; the request never existed.
 * A request that ends in error ends its stream with an output that carries the error.
 * If the engine dies, every open stream ends with an ``engine_dead`` error output, and every later
   call raises :class:`~ayaka.core.errors.EngineDeadError`.
-* :meth:`AsyncLLM.abort` cancels at the next step boundary; the stream ends with
-  ``FinishReason.CANCELLED`` unless its reader has already gone.
+* Every admitted request ends with exactly one output whose ``finished`` is true:
+  :meth:`RequestStream.put` refuses what comes after it.
+* :meth:`AsyncLLM.abort` cancels at the next step boundary and closes the stream at once: the
+  caller gets nothing more for that request, not even the cancelled output.
+  :meth:`AsyncLLM.abort_all` cancels every request and the streams end with
+  ``FinishReason.CANCELLED``.
 * :meth:`AsyncLLM.shutdown` stops admission, lets running requests finish within a timeout,
   cancels the rest at a step boundary, then stops the thread and the engine.
 """
@@ -37,6 +43,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
@@ -46,6 +53,7 @@ from typing import TYPE_CHECKING, Final, Self
 from ayaka.core.errors import EngineDeadError, EngineError, ErrorInfo
 from ayaka.core.outputs import CompletionOutput, RequestOutput
 from ayaka.core.types import FinishReason
+from ayaka.engine.seam import EngineHealth, EngineState
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
@@ -54,6 +62,7 @@ if TYPE_CHECKING:
     from ayaka.core.request import GenerateRequest
     from ayaka.core.types import RequestId
     from ayaka.engine.core import EngineCore
+    from ayaka.engine.seam import EngineInfo
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
 __all__ = ["AsyncLLM", "RequestStream", "merge_outputs"]
@@ -97,8 +106,8 @@ def merge_outputs(first: RequestOutput, second: RequestOutput) -> RequestOutput:
 class RequestStream:
     """The outputs of one request, in order, as an asynchronous iterator.
 
-    Made by :meth:`AsyncLLM.add_request`. Iteration ends after the output whose ``finished`` is
-    true. Only the event loop thread touches a stream.
+    Made by :meth:`AsyncLLM.add`. Iteration ends after the output whose ``finished`` is true.
+    Only the event loop thread touches a stream.
 
     Args:
         request_id: The request this stream belongs to.
@@ -113,6 +122,7 @@ class RequestStream:
         self._pending: deque[RequestOutput] = deque()
         self._ready = asyncio.Event()
         self._finished = False
+        self._closed = False
         self._delivered_final = False
         self.merged = 0
         """How many outputs were merged into another because the reader fell behind."""
@@ -128,8 +138,11 @@ class RequestStream:
         return len(self._pending)
 
     def put(self, output: RequestOutput) -> None:
-        """Queue an output; merge it into the newest one when the stream is full."""
-        if self._finished:
+        """Queue an output; merge it into the newest one when the stream is full.
+
+        Nothing is queued after the final output or after :meth:`close`.
+        """
+        if self._finished or self._closed:
             return
         if len(self._pending) >= self._max_pending:
             self._pending[-1] = merge_outputs(self._pending[-1], output)
@@ -138,6 +151,12 @@ class RequestStream:
             self._pending.append(output)
         self._finished = output.finished
         self._ready.set()
+
+    def close(self) -> None:
+        """End the stream with no final output: what is waiting is dropped, nothing more arrives."""
+        self._closed = True
+        self._pending.clear()
+        self._ready.clear()
 
     def get_nowait(self) -> RequestOutput | None:
         """The next output if one is waiting; ``None`` otherwise."""
@@ -168,7 +187,7 @@ class RequestStream:
         return self
 
     async def __anext__(self) -> RequestOutput:
-        if self._delivered_final:
+        if self._delivered_final or self._closed:
             raise StopAsyncIteration
         while not self._pending:
             await self._ready.wait()
@@ -212,6 +231,7 @@ class AsyncLLM:
 
     def __init__(self, engine: EngineCore, *, max_pending: int = DEFAULT_MAX_PENDING) -> None:
         self._engine = engine
+        self._info = engine.info
         self._max_pending = max_pending
         self._commands: SimpleQueue[_Command] = SimpleQueue()
         self._wake = threading.Event()
@@ -225,6 +245,7 @@ class AsyncLLM:
         self._accepting = True
         self._dead: EngineDeadError | None = None
         self._stopped = threading.Event()
+        self._progress_at = time.monotonic()  # written by the engine thread only
 
     @classmethod
     def from_config(
@@ -247,19 +268,19 @@ class AsyncLLM:
         return self._engine
 
     @property
-    def is_running(self) -> bool:
-        """Whether the engine thread runs and accepts requests."""
-        return (
-            self._thread is not None
-            and self._thread.is_alive()
-            and self._accepting
-            and self._dead is None
-        )
+    def info(self) -> EngineInfo:
+        """What the loaded engine allows, fixed when this object was made."""
+        return self._info
 
-    @property
-    def is_dead(self) -> bool:
-        """Whether the engine failed; nothing will run again."""
-        return self._dead is not None
+    def health(self) -> EngineHealth:
+        """Where the engine is in its life, and when its thread last made progress."""
+        if self._dead is not None:
+            state = EngineState.DEAD
+        elif self._thread is not None and self._thread.is_alive() and self._accepting:
+            state = EngineState.RUNNING
+        else:
+            state = EngineState.STOPPED
+        return EngineHealth(state, self._progress_at)
 
     @property
     def num_streams(self) -> int:
@@ -309,14 +330,14 @@ class AsyncLLM:
             return
         if grace > 0:
             await self.drain(grace)
-        self._send(_AbortAll())
+        self.abort_all()
         await self.drain()
         self._send(_Stop())
         await asyncio.to_thread(thread.join)
 
     # -- requests --------------------------------------------------------------------------
 
-    async def add_request(self, request: GenerateRequest) -> RequestStream:
+    async def add(self, request: GenerateRequest) -> RequestStream:
         """Admit a request and return the stream of its outputs.
 
         Raises:
@@ -350,9 +371,9 @@ class AsyncLLM:
         """Admit a request and yield its outputs; leaving early cancels it.
 
         Raises:
-            As :meth:`add_request`.
+            As :meth:`add`.
         """
-        stream = await self.add_request(request)
+        stream = await self.add(request)
         try:
             async for output in stream:
                 yield output
@@ -361,13 +382,22 @@ class AsyncLLM:
                 self.abort(request.request_id)
 
     def abort(self, request_id: RequestId) -> None:
-        """Cancel a request at the next step boundary and stop delivering its outputs.
+        """Cancel a request at the next step boundary and close its stream now.
 
-        Unknown or finished requests are ignored. Call from the event loop thread.
+        The caller gets nothing more for the request: what was waiting in the stream is dropped
+        and the cancelled output the engine makes later is discarded. Unknown or finished
+        requests are ignored. Call from the event loop thread, by whoever reads the stream.
         """
-        self._streams.pop(request_id, None)
+        stream = self._streams.pop(request_id, None)
+        if stream is not None:
+            stream.close()
         if self._dead is None and self._thread is not None:
             self._send(_Abort(request_id))
+
+    def abort_all(self) -> None:
+        """Cancel every admitted request at the next step boundary; their streams end CANCELLED."""
+        if self._dead is None and self._thread is not None:
+            self._send(_AbortAll())
 
     # -- the event loop side ---------------------------------------------------------------
 
@@ -426,6 +456,7 @@ class AsyncLLM:
                     break
                 if engine.has_unfinished:
                     outputs = engine.step()
+                    self._progress_at = time.monotonic()
                     if outputs:
                         for output in outputs:
                             if output.finished:
@@ -435,6 +466,7 @@ class AsyncLLM:
                 with self._idle_lock:
                     if self._commands.empty():
                         self._idle.set()
+                self._progress_at = time.monotonic()
                 self._wake.wait()
                 self._wake.clear()
         except BaseException as exc:

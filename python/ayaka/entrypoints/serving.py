@@ -1,7 +1,8 @@
 """The state every HTTP handler shares and the generation path they all take.
 
-:class:`Serving` holds the engine (an :class:`~ayaka.engine.async_llm.AsyncLLM`), the model's
-output formats, its names and the metrics. A handler reads its protocol's request into a
+:class:`Serving` holds the engine (an :class:`~ayaka.engine.seam.EngineClient`: the server reads
+the engine through that contract and nothing else), the tokenizer, the model's output formats, its
+names and the metrics. A handler reads its protocol's request into a
 :class:`~ayaka.entrypoints.conversation.Conversation`, and then goes through the same steps::
 
     normalized -> tokenize_chat -> output_tokens -> constraint -> start
@@ -30,6 +31,7 @@ from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolSchema
 from ayaka.core.errors import EngineError, InvalidRequestError, UnsupportedFeatureError
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import RequestId
+from ayaka.engine.seam import EngineState
 from ayaka.entrypoints.conversation import (
     Conversation,
     ErrorEvent,
@@ -52,11 +54,13 @@ if TYPE_CHECKING:
 
     from ayaka.configs.server import ServerConfig
     from ayaka.core.params import SamplingParams
-    from ayaka.engine.async_llm import AsyncLLM, RequestStream
+    from ayaka.engine.async_llm import RequestStream
+    from ayaka.engine.seam import EngineClient
     from ayaka.entrypoints.conversation import Collected, OutputEvent, OutputRequest
     from ayaka.entrypoints.parsers.output import EventParser
     from ayaka.entrypoints.stream import StreamEncoder
     from ayaka.tokenizers.contracts import EncodeInput
+    from ayaka.tokenizers.service import TokenizerService
 
 
 __all__ = ["REQUEST_ID", "SERVING", "Generation", "Readiness", "Serving"]
@@ -130,7 +134,8 @@ class Serving:
         )
         self.created = int(time.time())
         self.status = Readiness.STARTING
-        self.llm: AsyncLLM | None = None
+        self.llm: EngineClient | None = None
+        self.tokenizer: TokenizerService | None = None
         self.output_format = OutputFormat()
         self.max_model_len = 0
         self.max_context_tokens = 0
@@ -158,15 +163,21 @@ class Serving:
 
     # -- life cycle ------------------------------------------------------------------------
 
-    def attach(self, llm: AsyncLLM, *, output_format: OutputFormat | None = None) -> None:
-        """Start serving with a started engine."""
+    def attach(
+        self,
+        llm: EngineClient,
+        tokenizer: TokenizerService,
+        *,
+        output_format: OutputFormat | None = None,
+    ) -> None:
+        """Start serving with a started engine and the tokenizer that makes its prompts."""
         self.llm = llm
-        self.max_model_len = llm.engine.tokenizer.max_model_len
-        self.max_context_tokens = min(self.max_model_len, llm.engine.kv.max_context_tokens)
-        self.prefix_cache = llm.engine.kv.prefix_caching
-        self.suggested_tool_call_parser = suggest_tool_call_parser(
-            llm.engine.tokenizer.chat_template
-        )
+        self.tokenizer = tokenizer
+        info = llm.info
+        self.max_model_len = info.max_model_len
+        self.max_context_tokens = info.max_context_tokens
+        self.prefix_cache = info.prefix_caching
+        self.suggested_tool_call_parser = suggest_tool_call_parser(tokenizer.chat_template)
         if output_format is not None:
             self.output_format = output_format
         self.status = Readiness.READY
@@ -178,14 +189,14 @@ class Serving:
             self.status = Readiness.DRAINING
         self.metrics.ready.set(0)
 
-    def require_ready(self) -> AsyncLLM:
+    def require_ready(self) -> EngineClient:
         """The engine, if the server accepts requests now.
 
         Raises:
             NotReadyError: Otherwise, with the reason.
         """
         llm = self.llm
-        if llm is not None and llm.is_dead:
+        if llm is not None and llm.health().state is EngineState.DEAD:
             self.status = Readiness.DEAD
             self.metrics.ready.set(0)
         if self.status is not Readiness.READY or llm is None:
@@ -223,8 +234,9 @@ class Serving:
         return await self._encode(value)
 
     async def _encode(self, value: EncodeInput) -> tuple[int, ...]:
-        llm = self.require_ready()
-        service = llm.engine.tokenizer
+        self.require_ready()
+        service = self.tokenizer
+        assert service is not None  # noqa: S101  # attach() sets it with the engine
         try:
             result = await asyncio.to_thread(
                 service.encode, value, EncodeOptions(max_output_tokens=1)
@@ -318,7 +330,7 @@ class Serving:
                 # Lazy constraints only for a one-token marker: a spelled one may come in other
                 # pieces.
                 return None  # free text, as without the structured extra
-            tokenizer = self.llm.engine.tokenizer.tokenizer if self.llm is not None else None
+            tokenizer = self.tokenizer.tokenizer if self.tokenizer is not None else None
             if opening.token_id is None and tokenizer is not None:
                 spelled = tuple(tokenizer.encode(opening.text, add_special_tokens=False))
         return StructuredParams(
@@ -361,9 +373,9 @@ class Serving:
             request_id=request_id, prompt=prompt, sampling=sampling, structured=structured
         )
         try:
-            stream = await llm.add_request(request)
+            stream = await llm.add(request)
         except EngineError as exc:
-            if self.status is not Readiness.READY or not llm.is_running:
+            if self.status is not Readiness.READY or llm.health().state is not EngineState.RUNNING:
                 raise NotReadyError(f"the server is {self.status.value}; retry later") from exc
             raise
         parsers = [

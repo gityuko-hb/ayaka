@@ -367,7 +367,8 @@ class TestHandlers:
         self, long_checkpoint: Path
     ) -> None:
         pytest.importorskip("aiohttp")
-        from serving_support import ScriptedLLM, script, serve
+        from fake_engine import FakeEngine
+        from serving_support import script, serve
         from tokenizer_fakes import ToolTokenizer, loaded_for
 
         tokenizer = ToolTokenizer()
@@ -380,7 +381,7 @@ class TestHandlers:
                 num_blocks=1100,  # one request may hold the whole prompt (4096 positions)
                 scripts=[script("Hello!"), script("Hello!")],
             ) as (client, _, llm):
-                assert isinstance(llm, ScriptedLLM)
+                assert isinstance(llm, FakeEngine)
                 for billing in (_BILLING_V1, _BILLING_V2):
                     response = await client.post(
                         "/v1/messages", json=_messages_body(billing), headers=_CLAUDE_HEADERS
@@ -405,7 +406,8 @@ class TestHandlers:
         pytest.importorskip("aiohttp")
         pytest.importorskip("llguidance")
         from ayaka.entrypoints.parsers.output import OutputFormat
-        from serving_support import ScriptedLLM, script, serve
+        from fake_engine import FakeEngine
+        from serving_support import script, serve
         from tokenizer_fakes import ToolTokenizer, loaded_for
 
         tokenizer = ToolTokenizer()
@@ -419,7 +421,7 @@ class TestHandlers:
                 num_blocks=1100,
                 scripts=[script("Hello!"), script("Hello!")],
             ) as (client, _, llm):
-                assert isinstance(llm, ScriptedLLM)
+                assert isinstance(llm, FakeEngine)
                 for billing in (_BILLING_V1, _BILLING_V2):
                     response = await client.post(
                         "/v1/messages", json=_messages_body(billing), headers=_CLAUDE_HEADERS

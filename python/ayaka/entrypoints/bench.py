@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from ayaka.configs.engine import EngineConfig
     from ayaka.core.outputs import RequestOutput
     from ayaka.engine.llm import LLM
+    from ayaka.engine.recorder import SessionRecorder
 
 __all__ = [
     "GENERATION_TOKENS",
@@ -160,7 +161,7 @@ class _Runner:
         self.llm = llm
         self.options = options
         self._counter = 0
-        tokenizer = llm.engine.tokenizer.tokenizer
+        tokenizer = llm.tokenizer.tokenizer
         if tokenizer is None:
             raise ValueError("ayaka bench needs a model with a tokenizer")
         self.tokenizer = tokenizer
@@ -304,8 +305,6 @@ class _Runner:
         from ayaka.core.types import RequestId
 
         self._counter += 1
-        rendered = self.llm.engine.tokenizer.tokenizer
-        assert rendered is not None  # noqa: S101  # checked in __init__
         output = self.llm.generate(
             GenerateRequest(
                 request_id=RequestId(f"bench-{self._counter}"),
@@ -439,7 +438,7 @@ def run_bench(
     options: BenchOptions,
     *,
     say: Callable[[str], None] = print,
-    load: Callable[[EngineConfig], LLM] | None = None,
+    load: Callable[[EngineConfig, SessionRecorder | None], LLM] | None = None,
 ) -> dict[str, object]:
     """Measure the model and return ``results.json`` as data.
 
@@ -448,6 +447,7 @@ def run_bench(
     """
     from ayaka.engine.build import plan_engine
     from ayaka.engine.llm import LLM
+    from ayaka.engine.recorder import SessionRecorder
 
     started = datetime.now(UTC)
     gpu_start = gpu_state()
@@ -458,22 +458,24 @@ def run_bench(
         say("warning: running on battery; the result is marked")
     plan = plan_engine(replace(config, source=replace(config.source, offline=True)))
     say(f"plan: {plan.max_context_tokens} tokens per request, {plan.max_running} at once")
-    loader = load or LLM.from_config
-    with MemorySampler() as memory:
-        llm = loader(config)
-        try:
-            if options.record is not None:
-                from ayaka.engine.recorder import SessionRecorder
 
-                llm.engine.recorder = SessionRecorder(options.record)
+    def from_config(config: EngineConfig, recorder: SessionRecorder | None) -> LLM:
+        return LLM.from_config(config, recorder=recorder)
+
+    loader = load or from_config
+    recorder = SessionRecorder(options.record) if options.record is not None else None
+    with MemorySampler() as memory:
+        llm = loader(config, recorder)
+        try:
+            if recorder is not None:
                 say(
-                    f"recording every request to {llm.engine.recorder.path} (token ids of the "
+                    f"recording every request to {recorder.path} (token ids of the "
                     "benchmark prompts)"
                 )
             runner = _Runner(llm, options)
             # The loaded engine's cache, not the plan: the start-up run may have measured more
             # runtime memory than the plan assumed and given the cache fewer blocks.
-            longest = min(plan.max_context_tokens, llm.engine.kv.max_context_tokens)
+            longest = min(plan.max_context_tokens, llm.info.max_context_tokens)
             try:
                 results = _measure(runner, longest, options, say)
             except AyakaError as exc:  # a measurement the engine refused is the run failing
