@@ -1,0 +1,86 @@
+{
+  "schema": "ayaka.cold-ttft/1",
+  "model": "unsloth/Llama-3.2-1B-Instruct",
+  "rows": [
+    {
+      "round": 0,
+      "bucket": "1k",
+      "prompt_tokens": 958,
+      "cached_tokens": 16,
+      "ttft_ms": 337.70983099384466
+    },
+    {
+      "round": 0,
+      "bucket": "3k",
+      "prompt_tokens": 2778,
+      "cached_tokens": 32,
+      "ttft_ms": 761.6446510000969
+    },
+    {
+      "round": 1,
+      "bucket": "1k",
+      "prompt_tokens": 958,
+      "cached_tokens": 32,
+      "ttft_ms": 262.16721100354334
+    },
+    {
+      "round": 1,
+      "bucket": "3k",
+      "prompt_tokens": 2778,
+      "cached_tokens": 32,
+      "ttft_ms": 750.8288829994854
+    },
+    {
+      "round": 2,
+      "bucket": "1k",
+      "prompt_tokens": 958,
+      "cached_tokens": 32,
+      "ttft_ms": 255.43093899614178
+    },
+    {
+      "round": 2,
+      "bucket": "3k",
+      "prompt_tokens": 2778,
+      "cached_tokens": 32,
+      "ttft_ms": 753.7052419938846
+    },
+    {
+      "round": 3,
+      "bucket": "1k",
+      "prompt_tokens": 958,
+      "cached_tokens": 32,
+      "ttft_ms": 254.07803199777845
+    },
+    {
+      "round": 3,
+      "bucket": "3k",
+      "prompt_tokens": 2778,
+      "cached_tokens": 32,
+      "ttft_ms": 757.9331660017488
+    },
+    {
+      "round": 4,
+      "bucket": "1k",
+      "prompt_tokens": 958,
+      "cached_tokens": 32,
+      "ttft_ms": 254.5664499994018
+    },
+    {
+      "round": 4,
+      "bucket": "3k",
+      "prompt_tokens": 2778,
+      "cached_tokens": 32,
+      "ttft_ms": 759.0350359969307
+    }
+  ],
+  "median_1k": {
+    "prompt_tokens": 958,
+    "ttft_ms": 255.43093899614178
+  },
+  "median_3k": {
+    "prompt_tokens": 2778,
+    "ttft_ms": 757.9331660017488
+  },
+  "slope_ms_per_token": 0.2761001247283555,
+  "direct_3k_ms_per_token": 0.272834113031587
+}

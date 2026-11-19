@@ -139,7 +139,7 @@ async def serve(
             recorder.recording = False  # the warm-up is not a request of the session
         build = engine if callable(engine) else _builder(engine, serving.metrics.registry)
         core = await asyncio.to_thread(build, recorder)
-        llm = AsyncLLM(core)
+        llm = AsyncLLM(core, registry=serving.metrics.registry)
         llm.start()
         output_format = OutputFormat.resolve(
             reasoning=config.reasoning_parser,

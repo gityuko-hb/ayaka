@@ -128,6 +128,21 @@ def phase(
     cancels = slow_client_cancels(url, key) if stuck else 0
     opened = time.monotonic()
     blocker = StuckClient(url, model, key) if stuck else None
+    cancelled_at: float | None = None
+    watch_stop = threading.Event()
+    deadline = opened + settle + server_timeout + 60
+
+    def _watch_cancel() -> None:
+        nonlocal cancelled_at
+        while not watch_stop.is_set() and time.monotonic() < deadline:
+            if slow_client_cancels(url, key) > cancels:
+                cancelled_at = time.monotonic() - opened
+                return
+            watch_stop.wait(0.2)
+
+    watcher = threading.Thread(target=_watch_cancel, daemon=True) if blocker is not None else None
+    if watcher is not None:
+        watcher.start()
     if blocker is not None:
         time.sleep(settle)  # let the kernel's and the server's buffers fill
     gaps: list[list[float]] = [[] for _ in range(fast)]
@@ -143,15 +158,72 @@ def phase(
         thread.join()
     ended = time.monotonic()
     result = Phase([gap for each in gaps for gap in each], started - opened, ended - opened)
-    if blocker is not None:
-        # Keep it open until the server gives up on it: that moment dates the blocking.
-        deadline = time.monotonic() + settle + server_timeout + 60
-        while time.monotonic() < deadline:
-            if slow_client_cancels(url, key) > cancels:
-                result.cancelled_at = time.monotonic() - opened
-                break
-            time.sleep(0.2)
+    if blocker is not None and watcher is not None:
+        watcher.join(timeout=max(0.0, deadline - time.monotonic()))
+        watch_stop.set()
+        result.cancelled_at = cancelled_at
         blocker.close()
+    return result
+
+
+def compute_pair_ratios(
+    rows: list[dict[str, Any]], pairs: int, *, kind: str = "stuck"
+) -> list[float]:
+    """Per-pair median gap ratio ``target / alone`` for ``kind`` (``'stuck'`` or ``'control'``)."""
+    ratios: list[float] = []
+    for pair in range(pairs):
+        alone = [
+            r["median_s"]
+            for r in rows
+            if r["pair"] == pair and r.get("kind", "stuck" if r["stuck"] else "alone") == "alone"
+        ]
+        other = [
+            r["median_s"]
+            for r in rows
+            if r["pair"] == pair and r.get("kind", "stuck" if r["stuck"] else "alone") == kind
+        ]
+        ratios.append(statistics.median(other) / statistics.median(alone))
+    return ratios
+
+
+def build_result(
+    *,
+    rows: list[dict[str, Any]],
+    pairs: int,
+    threshold: float,
+    settings: dict[str, Any],
+    machine_info: dict[str, Any],
+    power: tuple[object, object],
+    control_reader: bool = False,
+) -> dict[str, Any]:
+    """Assemble the schema payload, pair ratios and validity verdict."""
+    ratios = compute_pair_ratios(rows, pairs, kind="stuck")
+    ratio = statistics.median(ratios)
+    cancel_delays = [
+        r["cancel_delay_seconds"]
+        for r in rows
+        if r.get("stuck") and r.get("cancel_delay_seconds") is not None
+    ]
+    valid = all(row["blocked_during_readers"] for row in rows if row["stuck"])
+    result: dict[str, Any] = {
+        "schema": SCHEMA,
+        "machine": machine_info,
+        "power": list(power),
+        "settings": settings,
+        "threshold": threshold,
+        "rows": rows,
+        "ratios": ratios,
+        "median_ratio": ratio,
+        "cancel_delays_s": cancel_delays,
+        "median_cancel_delay_seconds": statistics.median(cancel_delays) if cancel_delays else None,
+        # Without a blocked server the B phases measured nothing; the ratio then means nothing.
+        "valid": valid,
+        "passed": valid and ratio <= threshold,
+    }
+    if control_reader:
+        control_ratios = compute_pair_ratios(rows, pairs, kind="control")
+        result["control_ratios"] = control_ratios
+        result["median_control_ratio"] = statistics.median(control_ratios)
     return result
 
 
@@ -173,6 +245,11 @@ def main(argv: list[str] | None = None) -> int:
         "--server-timeout", type=float, required=True, help="the server's --slow-client-timeout"
     )
     parser.add_argument("--threshold", type=float, required=True, help="written before the run")
+    parser.add_argument(
+        "--control-reader",
+        action="store_true",
+        help="add a control phase with an extra concurrent reader that keeps up",
+    )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -180,82 +257,81 @@ def main(argv: list[str] | None = None) -> int:
 
     from ayaka.entrypoints.bench_machine import power_source
 
-    power = power_source()
+    power_start = power_source()
     rows: list[dict[str, Any]] = []
+
+    def _record_row(pair: int, kind: str, reader_count: int, *, stuck: bool) -> None:
+        measured = phase(
+            args.url,
+            args.model,
+            reader_count,
+            args.tokens,
+            args.api_key,
+            stuck=stuck,
+            settle=args.settle if stuck else 0.0,
+            server_timeout=args.server_timeout,
+        )
+        row: dict[str, Any] = {
+            "pair": pair,
+            "kind": kind,
+            "stuck": stuck,
+            "gaps_s": measured.gaps,
+            "median_s": statistics.median(measured.gaps),
+            "readers_s": [measured.readers_started, measured.readers_ended],
+        }
+        if stuck:
+            cancelled = measured.cancelled_at
+            blocked_from = None if cancelled is None else cancelled - args.server_timeout
+            row["cancelled_s"] = cancelled
+            row["cancel_delay_seconds"] = cancelled
+            row["blocked_from_s"] = blocked_from
+            # The server must be blocked on the stuck client from before the readers start
+            # until after they end: cancelled too early, the phase ends without it.
+            row["blocked_during_readers"] = (
+                cancelled is not None
+                and blocked_from is not None
+                and blocked_from <= measured.readers_started
+                and cancelled >= measured.readers_ended
+            )
+        rows.append(row)
+        note = (
+            f", cancel delay {row['cancel_delay_seconds']}s, server blocked from "
+            f"{row['blocked_from_s']}s, readers at {measured.readers_started:.1f}s"
+            if stuck
+            else ""
+        )
+        print(f"pair {pair} {kind}: median gap {row['median_s'] * 1e3:.1f} ms{note}")
+
     for pair in range(args.pairs):
         for stuck in (False, True, True, False):
-            measured = phase(
-                args.url,
-                args.model,
-                args.fast,
-                args.tokens,
-                args.api_key,
-                stuck=stuck,
-                settle=args.settle,
-                server_timeout=args.server_timeout,
-            )
-            row: dict[str, Any] = {
-                "pair": pair,
-                "stuck": stuck,
-                "gaps_s": measured.gaps,
-                "median_s": statistics.median(measured.gaps),
-                "readers_s": [measured.readers_started, measured.readers_ended],
-            }
-            if stuck:
-                cancelled = measured.cancelled_at
-                blocked_from = None if cancelled is None else cancelled - args.server_timeout
-                row["cancelled_s"] = cancelled
-                row["blocked_from_s"] = blocked_from
-                # The server must already be blocked on the stuck client when the readers start.
-                # The server must be blocked on the stuck client from before the readers start
-                # until after they end: cancelled too early, the phase ends without it.
-                row["blocked_during_readers"] = (
-                    cancelled is not None
-                    and blocked_from is not None
-                    and blocked_from <= measured.readers_started
-                    and cancelled >= measured.readers_ended
-                )
-            rows.append(row)
-            note = (
-                f", server blocked from {row['blocked_from_s']}s, readers at "
-                f"{measured.readers_started:.1f}s"
-                if stuck
-                else ""
-            )
-            print(f"pair {pair} stuck={stuck}: median gap {row['median_s'] * 1e3:.1f} ms{note}")
-    ratios = []
-    for pair in range(args.pairs):
-        alone = [r["median_s"] for r in rows if r["pair"] == pair and not r["stuck"]]
-        beside = [r["median_s"] for r in rows if r["pair"] == pair and r["stuck"]]
-        ratios.append(statistics.median(beside) / statistics.median(alone))
-    ratio = statistics.median(ratios)
-    valid = all(row["blocked_during_readers"] for row in rows if row["stuck"])
-    result = {
-        "schema": SCHEMA,
-        "machine": machine(),
-        "power": [power, power_source()],
-        "settings": {
+            _record_row(pair, "stuck" if stuck else "alone", args.fast, stuck=stuck)
+        if args.control_reader:
+            _record_row(pair, "control", args.fast + 1, stuck=False)
+
+    result = build_result(
+        rows=rows,
+        pairs=args.pairs,
+        threshold=args.threshold,
+        settings={
             "url": args.url,
             "fast": args.fast,
             "tokens": args.tokens,
             "pairs": args.pairs,
             "settle_s": args.settle,
             "server_timeout_s": args.server_timeout,
+            "control_reader": args.control_reader,
         },
-        "threshold": args.threshold,
-        "rows": rows,
-        "ratios": ratios,
-        "median_ratio": ratio,
-        # Without a blocked server the B phases measured nothing; the ratio then means nothing.
-        "valid": valid,
-        "passed": valid and ratio <= args.threshold,
-    }
+        machine_info=machine(),
+        power=(power_start, power_source()),
+        control_reader=args.control_reader,
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    if not valid:
+    if not result["valid"]:
         print("INVALID: in at least one B phase the server was not blocked when the readers ran")
         return 2
     verdict = "within" if result["passed"] else "ABOVE"
+    ratio = result["median_ratio"]
     print(f"median ratio stuck/alone {ratio:.3f}, {verdict} the threshold {args.threshold}")
     return 0 if result["passed"] else 1
 

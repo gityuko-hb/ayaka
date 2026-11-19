@@ -406,3 +406,100 @@ median of 100 calls:
 
 It does not change the memory of the graphs (see above): the captured sampling step peaks at the
 sampler's sort, which reuses the mask's scratch.
+
+## Serving overhead baseline and the two open gates (#77)
+
+Pre-registered setups and thresholds were written to #77 before any benchmark ran:
+
+- **SSE frame coalescing (`sse_coalesce_ms`):** keep `sse_coalesce_ms = 0` when
+  `server_cpu_per_frame * frames_per_second` stays below 5% of GPU step time; otherwise record
+  engine-side k-step batching instead of adding a sleep on the event loop.
+- **Segmented tokenize cache:** build the conditional segmented prompt encoder cache only if
+  `render + encode` is at least 5% of cold time to first token on long coding-agent prompts
+  (13.6K and 50K tokens); otherwise defer it.
+
+### 1. SSE frame encoding and concurrent serving overhead
+
+- **CPU micro-benchmark (`benchmarks/results/2026-11-20-windows-cpu/sse-encode.json`):**
+  Windows 11, Python 3.13.5, Torch `2.14.1+cpu`; 5 rounds x 20,000 iterations of short 1-8 char
+  `TextDelta` encoding (`"a"`, `"hi"`, `"token "`, `'quote"'`, `"a\\b"`, `"xin chao"` with UTF-8
+  diacritic, `'{"k":1}'`, `"12345678"`).
+- **Fake-engine overhead harness
+  (`benchmarks/results/2026-11-20-windows-cpu/serving-overhead-fake.json`):** same Windows host,
+  `benchmarks/e2e/serving_overhead.py --mode fake --streams 4 --tokens 64 --rounds 5 --step-ms 0.5 --burst --burst-requests 20 --burst-prompt-chars 8000`
+  with raw-socket clients in a separate OS process. Note Windows `time.process_time()` updates in
+  `15.625 ms` ticks.
+- **Live GPU overhead harness
+  (`benchmarks/results/2026-11-20-rtx-3050-laptop-gpu/serving-overhead-smollm2.json`):** WSL2
+  Ubuntu 24.04 on `NVIDIA GeForce RTX 3050 Laptop GPU` (`sm_86`, 4.0 GiB, driver `591.59`, CUDA
+  `13.0`, Torch `2.14.1+cu130`, `flashinfer-python 0.7.4`), `ayaka serve HuggingFaceTB/SmolLM2-135M`
+  with `--device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio 0.75`.
+  Memory plan fit cleanly with 5,764 KV blocks (`5,633` allocated, max 11 concurrent requests up to
+  8,192 tokens); burst sent 20 x ~509-token prompts concurrently during the 4-stream decode.
+
+Raw and median SSE encoder cost (µs/frame):
+
+| Protocol | Round 1 | Round 2 | Round 3 | Round 4 | Round 5 | Median |
+| --- | --- | --- | --- | --- | --- | --- |
+| Chat Completions | 4.64 | 5.00 | 4.71 | 4.67 | 4.58 | **4.67 µs/frame** |
+| Responses | 4.14 | 4.27 | 4.13 | 4.15 | 4.12 | **4.14 µs/frame** |
+| Messages | 3.41 | 3.33 | 3.48 | 3.33 | 3.34 | **3.34 µs/frame** |
+
+Fake-engine vs real RTX 3050 (`SmolLM2-135M`) medians over 5 rounds (256 frames/round steady):
+
+| Run / Phase | FPS | Server CPU/frame | Engine step mean | Step gap mean | Step gap p50 | Step gap p99 | Client ITL p50 | Client ITL p99 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Windows fake (steady) | 3051.3 | 244.1 µs | — | 0.083 ms | 0.067 ms | 0.419 ms | 1.13 ms | 1.53 ms |
+| Windows fake (+20 bursts) | 1213.1 | 831.1 µs | — | 0.805 ms | 0.100 ms | **6.750 ms** | 1.21 ms | **11.65 ms** |
+| RTX 3050 `SmolLM2-135M` (steady) | 454.1 | 2304.7 µs* | 8.161 ms | 0.077 ms | 0.067 ms | 0.680 ms | 7.28 ms | 9.15 ms |
+| RTX 3050 `SmolLM2-135M` (+20 bursts) | 315.0 | 3320.3 µs* | 11.225 ms | 0.371 ms | 0.071 ms | **15.100 ms** | 7.25 ms | **126.82 ms** |
+
+\*On the live GPU process, `/proc/<pid>/stat` counts *all* host CPU threads of `ayaka serve`
+(`0.590 s` CPU over `0.564 s` wall time in steady round 1), which is dominated by PyTorch and CUDA
+graph launch overhead during the `65` engine steps (`65 * 8.161 ms = 0.530 s`), not SSE frame
+formatting. Raw GPU per-round steady `step_gap_p99` values were `[0.68, 0.68, 0.68, 1.54, 1.54] ms`
+and burst `step_gap_p99` values were `[14.80, 33.50, 15.10, 15.10, 15.10] ms`.
+
+**SSE coalescing verdict:** **Keep `sse_coalesce_ms = 0`.** At `SmolLM2-135M`'s steady `454.1`
+frames/s and `8.161 ms` step time, pure Chat SSE encoding (`4.67 µs/frame * 454.1 fps`) consumes
+**`0.21%`** of step time (`0.017 ms` per step), and the engine thread's entire gap between
+consecutive active steps (`0.077 ms` mean, `0.067 ms` p50) is **`0.95%`** of step time — well under
+the 5% threshold. Even the entire Windows HTTP/asyncio loop (`244 µs/frame` in fake mode, bounded
+below by coarse `15.625 ms` ticks) adds under 2.5% per stream at typical GPU decode rates, and
+will shrink further with prebuilt SSE byte templates without adding frame coalescing delay. By
+contrast, the 20-prompt burst pushed `step_gap_p99` from `0.680 ms` to **`15.100 ms`** (`22.2x`) and
+client `itl_p99` from `9.15 ms` to **`126.82 ms`** (`13.9x`), pinpointing prompt admission, lock
+contention, and stream overhead as the real burst bottlenecks.
+
+### 2. Long coding-agent prompt render and encode vs cold TTFT
+
+- **Cold prefill baseline (`benchmarks/results/2026-11-20-rtx-3050-laptop-gpu/cold-ttft-llama3.json`):**
+  same WSL2 RTX 3050 4.0 GiB card, `ayaka serve unsloth/Llama-3.2-1B-Instruct --device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio 0.80 --kv-reserve-tokens 2048`
+  (248 KV blocks allocated, `3,952` max context tokens). Unique nonce prefixes forced cold prefill on
+  alternating 958-token and 2,778-token prompts across 5 rounds (only the fixed 32-token Llama
+  system header hit the prefix cache):
+  - `958` tokens: `[337.71, 262.17, 255.43, 254.08, 254.57] ms`, median **`255.43 ms`**
+  - `2,778` tokens: `[761.64, 750.83, 753.71, 757.93, 759.04] ms`, median **`757.93 ms`**
+  - Marginal cold prefill slope: `(757.93 - 255.43) / (2778 - 958) =` **`0.27610 ms/token`**
+    (`3,622 tok/s`; direct `2,778`-token ratio `0.27283 ms/token`).
+- **Prompt render & encode (`benchmarks/results/2026-11-20-rtx-3050-laptop-gpu/encode-long-llama3.json`):**
+  `benchmarks/tokenizers/encode_long.py` using the `unsloth/Llama-3.2-1B-Instruct` HF tokenizer over
+  the 23-tool Claude Code fixture (`tests/entrypoints/fixtures/claude-code-2.1.327/004-anthropic.json`)
+  padded to 13,779 and 50,069 tokens (5 rounds). Note that 13.6K and 50K prefill times on this
+  4 GiB fp16 GPU are linear extrapolations at `0.27610 ms/token` because KV capacity caps at
+  `3,952` tokens.
+
+| Prompt size | Serialize median | Render median | Encode median | `render + encode` median | Full uncached service median | Extrapolated cold TTFT | `render + encode` / TTFT | Uncached service / TTFT |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 13,779 tokens | 0.68 ms | 1.53 ms | 28.85 ms | 30.53 ms | 37.29 ms | 3,804.4 ms | **0.80%** | **0.98%** |
+| 50,069 tokens | 3.70 ms | 5.63 ms | 104.48 ms | 112.79 ms | 135.04 ms | 13,824.1 ms | **0.82%** | **0.98%** |
+
+Raw 5-round `encode_ms`: `[28.35, 29.21, 27.79, 29.10, 28.85] ms` at `13,779` tokens and
+`[104.47, 104.48, 107.16, 104.47, 115.92] ms` at `50,069` tokens. Raw `service_uncached_ms`:
+`[36.80, 36.53, 38.84, 41.70, 37.29] ms` and `[135.04, 130.74, 132.96, 138.02, 147.75] ms`.
+
+**Segmented tokenize cache verdict:** **DEFERRED.** Even including JSON serialization and the
+special-token guard, uncached tokenization takes **`0.98%`** of cold TTFT (`0.80–0.82%` for
+`render + encode` alone), roughly five times below the pre-registered 5% threshold. The existing
+session encode cache stays as-is, and segmented caching between special tokens is deferred until
+much faster prefill hardware or warm-cache multi-turn regimes push encoding above 5% of TTFT.
