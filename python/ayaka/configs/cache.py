@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from ayaka.configs.base import ConfigMixin
 from ayaka.core.errors import ConfigError
 from ayaka.utils.math_utils import div_ceil
-from ayaka.utils.validation import require_int, require_number
+from ayaka.utils.validation import require_bool, require_int, require_number
 
 __all__ = ["CacheConfig"]
 
@@ -39,6 +39,8 @@ class CacheConfig(ConfigMixin):
         kv_reserve_tokens: Tokens of KV the engine must be able to hold for one
             request, or ``None`` for the model's own minimum (its context
             length). Startup is refused when the plan cannot reach it.
+        prefix_cache: Share the KV of full prompt blocks between requests with the same
+            prefix (a request can still opt out with ``prefix_cache=False``).
 
     Raises:
         TypeError: If a field has the wrong type.
@@ -52,9 +54,11 @@ class CacheConfig(ConfigMixin):
     num_blocks: int | None = None
     memory_ratio: float = 0.90
     kv_reserve_tokens: int | None = None
+    prefix_cache: bool = True
 
     def __post_init__(self) -> None:
         require_int(self.block_size, "cache.block_size", minimum=1)
+        require_bool(self.prefix_cache, "cache.prefix_cache")
         ratio = require_number(self.memory_ratio, "cache.memory_ratio")
         if not 0.0 < ratio <= 1.0:
             raise ConfigError(

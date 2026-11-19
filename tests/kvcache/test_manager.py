@@ -390,14 +390,25 @@ def test_check_integrity_finds_a_leaked_block() -> None:
         manager.check_integrity()
 
 
-def test_check_integrity_finds_a_block_held_by_two_requests() -> None:
+def test_check_integrity_finds_a_block_shared_without_a_reference() -> None:
     manager = _manager()
     manager.allocate(_rid("a"), 4)
     manager.allocate(_rid("b"), 4)
     shared = manager.blocks(_rid("a"))[0][0]
     manager.table.rows[0, manager.table.row_of(_rid("b")), 0] = shared
 
-    with pytest.raises(EngineError, match="two requests"):
+    with pytest.raises(EngineError, match="1 references, 2 in the table"):
+        manager.check_integrity()
+
+
+def test_check_integrity_finds_a_block_held_twice_by_one_request() -> None:
+    manager = _manager()
+    manager.allocate(_rid("a"), 8)
+    first = manager.blocks(_rid("a"))[0][0]
+    manager._pools[0].touch(first)
+    manager.table.rows[0, manager.table.row_of(_rid("a")), 1] = first
+
+    with pytest.raises(EngineError, match="holds a block twice"):
         manager.check_integrity()
 
 

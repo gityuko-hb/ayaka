@@ -367,6 +367,11 @@ class ServingMetrics:
         self.prompt_tokens = Counter(
             "ayaka_prompt_tokens", "Prompt tokens of finished requests", registry=self.registry
         )
+        self.cached_tokens = Counter(
+            "ayaka_prompt_cached_tokens",
+            "Prompt tokens of finished requests whose KV came from the prefix cache",
+            registry=self.registry,
+        )
         self.generation_tokens = Counter(
             "ayaka_generation_tokens",
             "Tokens sent to clients by finished requests",
@@ -399,6 +404,7 @@ class ServingMetrics:
                     self.tool_calls.labels("true" if valid else "false").inc()
                 case UsageEvent():
                     self.prompt_tokens.inc(event.prompt_tokens)
+                    self.cached_tokens.inc(event.cached_tokens)
                     self.generation_tokens.inc(event.completion_tokens)
                 case FinishEvent(reason):
                     self.finished.labels(str(reason)).inc()

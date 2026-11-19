@@ -212,6 +212,12 @@ def _engine_flags(command: argparse.ArgumentParser) -> None:
         metavar="R",
         help="share of the free memory the engine may use, in (0, 1] (0.9)",
     )
+    where.add_argument(
+        "--no-prefix-cache",
+        dest="prefix_cache",
+        action="store_false",
+        help="do not share the KV of a prompt prefix between requests",
+    )
     where.add_argument("--revision", default="", help="repo branch, tag or commit; default: latest")
     where.add_argument("--tokenizer", default="", help="tokenizer directory or repo id")
     where.add_argument(
@@ -315,9 +321,9 @@ def _run(args: argparse.Namespace) -> int:
 
 def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> EngineConfig:
     """The engine configuration the flags describe; ``run`` runs one request at a time."""
-    cache = (
-        CacheConfig() if args.memory_ratio is None else CacheConfig(memory_ratio=args.memory_ratio)
-    )
+    cache = CacheConfig(prefix_cache=args.prefix_cache)
+    if args.memory_ratio is not None:
+        cache = CacheConfig(memory_ratio=args.memory_ratio, prefix_cache=args.prefix_cache)
     return EngineConfig(
         source=ModelSourceConfig(
             args.model, revision=args.revision, tokenizer=args.tokenizer, offline=args.offline

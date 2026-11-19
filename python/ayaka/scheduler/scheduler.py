@@ -11,10 +11,14 @@ it never touches a tensor and never calls a runner. The engine loop is one threa
 
 A step is a prefill of one chunk per request or a decode of every ready request, never a
 mix. Memory never makes the scheduler evict or raise: ``allocate`` returns ``False`` and the
-scheduler schedules less. Preemption and prefix reuse do not exist yet, so a request that cannot
-get a row for a step simply skips it; if no running request can move, the one that ranks lowest
-ends with ``LENGTH`` and a note that memory was the limit (a last resort), which is also
-what keeps every request finishing.
+scheduler schedules less. Preemption does not exist yet, so a request that cannot get a row for a
+step simply skips it; if no running request can move, the one that ranks lowest ends with
+``LENGTH`` and a note that memory was the limit (a last resort), which is also what keeps every
+request finishing.
+
+With a prefix cache, a request is matched when it leaves the queue, not when it arrives, so the
+blocks it attaches cannot be evicted in between: its prefill starts after the matched tokens. After
+every commit the request's newly full blocks are registered so later requests can attach them.
 
 Every end of a request goes through one method of the private roster: it sets the reason, frees
 the KV, releases the batch row and queues the last event.
@@ -48,6 +52,7 @@ if TYPE_CHECKING:
     from ayaka.core.request import TokenizedRequest
     from ayaka.core.types import RequestId, TokenId
     from ayaka.kvcache.manager import KVCacheManager
+    from ayaka.kvcache.prefix.base import PrefixMatch
     from ayaka.scheduler.step import StepOutput
 
 __all__ = ["Scheduler"]
@@ -132,6 +137,7 @@ class _Roster:
                 stop_reason=stop_reason,
                 error=error,
                 logprobs=logprobs,
+                cached_tokens=request.cached_tokens,
             )
         )
 
@@ -371,12 +377,12 @@ class Scheduler:
         chunks: list[tuple[Request, int]] = []
         partial = [r for r in self._running.values() if r.is_prefilling]
         if partial:
+            block_size = self._kv.block_size
             for request in partial:
                 if budget <= 0:
                     break
-                size = _grant_chunk(
-                    self._kv, request, _next_chunk(request, budget, self._kv.block_size)
-                )
+                chunk = _next_chunk(request.prompt_length, request.computed, budget, block_size)
+                size = _grant_chunk(self._kv, request, chunk)
                 if size:
                     chunks.append((request, size))
                     budget -= size
@@ -385,9 +391,21 @@ class Scheduler:
                 head = self._queue.peek()
                 if head is None:
                     break
-                size = _grant_chunk(self._kv, head, _next_chunk(head, budget, self._kv.block_size))
+                match = (
+                    self._kv.match_prefix(head.prompt, head.cache_salt)
+                    if head.prefix_cache
+                    else None
+                )
+                start = match.num_tokens if match is not None else 0
+                size = _grant_chunk(
+                    self._kv,
+                    head,
+                    _next_chunk(head.prompt_length, start, budget, self._kv.block_size),
+                    match,
+                )
                 if not size:
                     break
+                head.computed = head.cached_tokens = start
                 self._queue.pop()
                 head.row = self._kv.table.row_of(head.request_id)
                 head.move_to(RequestStatus.RUNNING)
@@ -518,6 +536,7 @@ class Scheduler:
         if flight.mode is ForwardMode.PREFILL:
             self._kv.commit(request.request_id, rows)
             request.computed += rows
+            self._cache_full_blocks(request)
             if request.is_prefilling and produced:
                 raise EngineError(f"request {request.request_id!r}: a prefill chunk emitted tokens")
             if not request.is_prefilling:
@@ -536,6 +555,7 @@ class Scheduler:
             emitted, reason, stop = request.accept(produced, self._eos, self._max_model_len)
             self._kv.commit(request.request_id, len(emitted))
             request.computed += len(emitted)
+            self._cache_full_blocks(request)
         error: ErrorInfo | None = None
         if reason is None:
             if request.computed >= self._kv.max_tokens_per_request:
@@ -564,7 +584,21 @@ class Scheduler:
             )
         elif emitted:
             self._roster.events.append(
-                RequestEvent(request_id=request.request_id, token_ids=emitted, logprobs=logprobs)
+                RequestEvent(
+                    request_id=request.request_id,
+                    token_ids=emitted,
+                    logprobs=logprobs,
+                    cached_tokens=request.cached_tokens,
+                )
+            )
+
+    def _cache_full_blocks(self, request: Request) -> None:
+        """Register the blocks the last commit filled, so later requests can attach them."""
+        registered, full = self._kv.cacheable_blocks(request.request_id)
+        if full > registered:
+            size = self._kv.block_size
+            self._kv.cache_blocks(
+                request.request_id, request.tokens_between(registered * size, full * size)
             )
 
 
@@ -598,23 +632,31 @@ def _check_kv_capacity(request: TokenizedRequest, kv: KVCacheManager) -> None:
         )
 
 
-def _next_chunk(request: Request, budget: int, block_size: int) -> int:
-    """The next chunk of a prompt: ends on a block boundary unless the last."""
-    remaining = request.prompt_length - request.computed
+def _next_chunk(prompt_length: int, computed: int, budget: int, block_size: int) -> int:
+    """The next chunk of a prompt from ``computed``: ends on a block boundary unless the last."""
+    remaining = prompt_length - computed
     if remaining <= budget:
         return remaining
-    size = budget - ((request.computed + budget) % block_size)
+    size = budget - ((computed + budget) % block_size)
     return size if size > 0 else budget
 
 
-def _grant_chunk(kv: KVCacheManager, request: Request, size: int) -> int:
+def _grant_chunk(
+    kv: KVCacheManager, request: Request, size: int, prefix: PrefixMatch | None = None
+) -> int:
     """Allocate room for a chunk, or for as much of it as the free blocks allow.
+
+    Args:
+        kv: The cache manager.
+        request: The request.
+        size: Tokens of the chunk.
+        prefix: For a request leaving the queue, the prefix match to attach first.
 
     Returns:
         The tokens the request now has room for, 0 if none.
     """
     request_id = request.request_id
-    if kv.allocate(request_id, size):
+    if kv.allocate(request_id, size, prefix):
         return size
     held = (
         kv.table.num_blocks(request_id, 0) * kv.block_size - request.computed
@@ -622,7 +664,7 @@ def _grant_chunk(kv: KVCacheManager, request: Request, size: int) -> int:
         else 0
     )
     shrunk = min(size, held + kv.free_blocks * kv.block_size)
-    if 1 <= shrunk < size and kv.allocate(request_id, shrunk):
+    if 1 <= shrunk < size and kv.allocate(request_id, shrunk, prefix):
         return shrunk
     return 0
 

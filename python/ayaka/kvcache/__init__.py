@@ -13,6 +13,8 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 if TYPE_CHECKING:
     from ayaka.kvcache.blocks import Block, BlockPool
     from ayaka.kvcache.manager import KVCacheManager, KVCacheStats
+    from ayaka.kvcache.prefix.base import PrefixCache, PrefixMatch
+    from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
     from ayaka.kvcache.storage.pool import KVPool
     from ayaka.kvcache.storage.spec import PADDING_BLOCK_ID, KVGroup, KVSpec
     from ayaka.kvcache.table import BlockTable
@@ -22,16 +24,21 @@ __all__ = [
     "Block",
     "BlockPool",
     "BlockTable",
+    "HashPrefixCache",
     "KVCacheManager",
     "KVCacheStats",
     "KVGroup",
     "KVPool",
     "KVSpec",
+    "PrefixCache",
+    "PrefixMatch",
 ]
 
 _EXPORTS = {
     "blocks": ("Block", "BlockPool"),
     "manager": ("KVCacheManager", "KVCacheStats"),
+    "prefix.base": ("PrefixCache", "PrefixMatch"),
+    "prefix.hash_cache": ("HashPrefixCache",),
     "storage.pool": ("KVPool",),
     "storage.spec": ("PADDING_BLOCK_ID", "KVGroup", "KVSpec"),
     "table": ("BlockTable",),

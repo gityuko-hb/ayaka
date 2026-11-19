@@ -20,6 +20,8 @@ from ayaka.core.params import SamplingParams
 from ayaka.core.request import TokenizedRequest
 from ayaka.core.types import FinishReason, ForwardMode, KVLayoutKind, RequestId
 from ayaka.kvcache.manager import KVCacheManager
+from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
+from ayaka.kvcache.prefix.hashing import ChainRoot
 from ayaka.kvcache.storage.spec import KVGroup, KVSpec
 from ayaka.scheduler.step import StepInput, StepOutput
 from ayaka.utils.dtypes import DType
@@ -54,9 +56,17 @@ def rid(name: str | int) -> RequestId:
 
 
 def make_kv(
-    num_blocks: int = 33, *, max_requests: int = 4, max_blocks: int = 16, groups: int = 1
+    num_blocks: int = 33,
+    *,
+    max_requests: int = 4,
+    max_blocks: int = 16,
+    groups: int = 1,
+    prefix: bool = False,
 ) -> KVCacheManager:
-    """A real :class:`KVCacheManager` over ``groups`` tiny groups of ``BLOCK_SIZE``-token blocks."""
+    """A real :class:`KVCacheManager` over ``groups`` tiny groups of ``BLOCK_SIZE``-token blocks.
+
+    ``prefix`` gives it a hash prefix cache, so full blocks are shared between requests.
+    """
     kv_groups = [
         KVGroup(
             layer_ids=(2 * i, 2 * i + 1),
@@ -76,6 +86,13 @@ def make_kv(
         [num_blocks] * groups,
         max_requests=max_requests,
         max_blocks_per_request=max_blocks,
+        prefix=(
+            HashPrefixCache(
+                ChainRoot(model_id="fake", dtype="fp32", codec="raw", block_size=BLOCK_SIZE)
+            )
+            if prefix
+            else None
+        ),
     )
 
 

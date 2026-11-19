@@ -75,6 +75,13 @@ PROMPTS: Final = (
     "def fibonacci(n):\n    ",
     "Once upon a time, in a land far away,",
 )
+#: Long enough for several full 16-token blocks, so a second run reuses them from the prefix cache.
+LONG_PROMPT: Final = (
+    "The following is a short history of the printing press. "
+    "Johannes Gutenberg introduced movable type in Europe around 1440, and within a few decades "
+    "printing shops had opened in most of the large cities of the continent. Books became "
+    "cheaper, literacy spread, and the"
+)
 
 
 def _unavailable(reason: str) -> NoReturn:
@@ -329,3 +336,55 @@ def test_greedy_tokens_match_transformers_on_the_gpu(
         assert out.error is None
         _assert_greedy_match(prompt, list(out.outputs[0].token_ids), expected[prompt], dtype)
         assert out.outputs[0].text.strip()
+
+
+@pytest.fixture(scope="module")
+def long_expected(llama_dir: Path) -> Reference:
+    """``transformers``' float32 greedy reference for :data:`LONG_PROMPT`."""
+    tokenizer = transformers.AutoTokenizer.from_pretrained(str(llama_dir), local_files_only=True)
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        str(llama_dir),
+        dtype=torch.float32,
+        attn_implementation="eager",
+        local_files_only=True,
+    )
+    model = model.cuda().eval()
+    found = _make_reference(tokenizer, model, LONG_PROMPT)
+    del model
+    torch.cuda.empty_cache()
+    return found
+
+
+@pytest.mark.parametrize(("backends", "dtype", "graphs"), CONFIGS)
+def test_a_warm_prefix_cache_gives_the_reference_tokens_on_the_gpu(
+    llama_dir: Path,
+    long_expected: Reference,
+    backends: tuple[str, ...],
+    dtype: DType,
+    graphs: bool,
+) -> None:
+    """The second run of a long prompt attaches its cached blocks and still matches float32."""
+    if "flashinfer" in backends:
+        pytest.importorskip("flashinfer", reason="the flashinfer extra is not installed")
+    config = EngineConfig(
+        source=ModelSourceConfig(str(llama_dir), offline=True),
+        device=DeviceConfig(device="cuda", dtype=dtype, backends=backends, cuda_graph=graphs),
+        cache=CacheConfig(block_size=16, kv_reserve_tokens=2048),
+        scheduler=SchedulerConfig(max_running=4, max_tokens_per_step=256),
+    )
+    sampling = SamplingParams(temperature=0.0, max_tokens=NEW_TOKENS, min_tokens=NEW_TOKENS)
+    chosen = bool(os.environ.get(LOCAL_PATH_VARIABLE))
+
+    with _open_llm(config, chosen=chosen) as llm:
+        cold = llm.generate(LONG_PROMPT, sampling)
+        warm = llm.generate(LONG_PROMPT, sampling)
+
+    assert not isinstance(cold, list)
+    assert not isinstance(warm, list)
+    assert cold.usage is not None
+    assert warm.usage is not None
+    assert cold.usage.cached_tokens == 0
+    assert warm.usage.cached_tokens >= 16
+    for out in (cold, warm):
+        assert out.error is None
+        _assert_greedy_match(LONG_PROMPT, list(out.outputs[0].token_ids), long_expected, dtype)
