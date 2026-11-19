@@ -148,8 +148,8 @@ class TestStopAndLifecycle:
 
         first = detok.update(ids("abE"))
 
-        assert first.delta == "a"
-        assert detok.finish().delta == "bE"
+        assert first.delta == "ab"  # only "E" can start the stop string
+        assert detok.finish().delta == "E"
 
     def test_finish_is_idempotent(self, fake: FakeTokenizer) -> None:
         detok = IncrementalDetokenizer.create(fake, PARAMS)
