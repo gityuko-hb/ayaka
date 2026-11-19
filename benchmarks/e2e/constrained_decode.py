@@ -25,7 +25,11 @@ Measured in isolation, per batch size, to split the constrained step into its pa
     host_mask_us_per_row   the grammar matcher's ``mask()`` for one row (llguidance), per token
     host_controls_ms       ``build_controls`` for the whole batch: on the CPU, and with the copy
                            to the GPU
-    gpu_mask_ms            the float32 copy of the logits and ``apply_token_bitmask`` on the GPU
+    gpu_mask_ms            the float32 copy of the logits and ``apply_token_bitmask`` on the GPU,
+                           launched eagerly: it includes the gaps between the launches, so at a
+                           small batch it is launch-bound and overstates what a graph pays
+    gpu_mask_graph_ms      the same two calls captured in a CUDA graph and replayed: what the
+                           masked graph adds to a free one
 
 ``graphs`` records what the captured graphs took (the memory plan's ``graph_bytes``). ``summary``
 only subtracts the measured numbers; it estimates nothing.
@@ -318,17 +322,37 @@ def _isolated(
         bitmask = controls("cuda").bitmask
         logits = torch.randn(batch, vocab, dtype=dtype, device="cuda")
         float_ms = _events(lambda logits=logits: logits.float(), args.repeat * 10)
-        both_ms = _events(
-            lambda logits=logits, bitmask=bitmask: apply_token_bitmask(logits.float(), bitmask),
-            args.repeat * 10,
-        )
+
+        def mask(logits: Any = logits, bitmask: Any = bitmask) -> None:
+            apply_token_bitmask(logits.float(), bitmask)
+
+        both_ms = _events(mask, args.repeat * 10)
+        in_graph_ms = _events(_captured(mask), args.repeat * 10)
         out["per_batch"][batch] = {
             "host_controls_cpu_ms": round(cpu_ms, 3),
             "host_controls_cuda_ms": round(cuda_ms, 3),
             "gpu_float_copy_ms": round(float_ms, 4),
             "gpu_mask_ms": round(both_ms, 4),
+            "gpu_mask_graph_ms": round(in_graph_ms, 4),
         }
     return out
+
+
+def _captured(call: Any) -> Any:
+    """``call`` captured in a CUDA graph, as the function that replays it (no launch gaps)."""
+    import torch
+
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        for _ in range(3):
+            call()
+    torch.cuda.current_stream().wait_stream(side)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+        call()
+    return graph.replay
 
 
 def _events(call: Any, repeat: int) -> float:
@@ -361,12 +385,15 @@ def _summary(rows: Sequence[dict[str, Any]], isolated: dict[str, Any]) -> dict[s
         # What the parts measured alone say of the constrained step's cost over a free one, and
         # what they leave unexplained: a large remainder is a cost this script does not see.
         # The masked graph also copies the logits to float32, which the free graph does not.
-        explained = parts["host_controls_cuda_ms"] + accept_ms * batch + parts["gpu_mask_ms"]
+        explained = parts["host_controls_cuda_ms"] + accept_ms * batch + parts["gpu_mask_graph_ms"]
         out[batch] = {
             "constrained_over_free_graph_pct": round((constrained / free - 1) * 100, 1),
             "constrained_over_free_graph_ms": round(constrained - free, 3),
             "eager_control_over_free_graph_ms": round(control - free, 3),
             "gpu_mask_over_free_graph_pct": round(parts["gpu_mask_ms"] / free * 100, 1),
+            "gpu_mask_in_graph_over_free_graph_pct": round(
+                parts["gpu_mask_graph_ms"] / free * 100, 1
+            ),
             "explained_by_parts_ms": round(explained, 3),
             "unexplained_ms": round(constrained - free - explained, 3),
         }
