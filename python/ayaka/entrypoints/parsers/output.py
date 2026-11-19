@@ -178,7 +178,8 @@ class OutputParser:
         else:
             pieces = [(False, text)] if text else []
         if self._calls is not None:
-            self._calls.note_tokens(token_ids)
+            # Only the ids of answer text: a marker token inside the reasoning is not a call.
+            self._calls.note_tokens(reasoning.answer_tokens if reasoning is not None else token_ids)
         self._route(pieces, events)
         if completion is not None and completion.logprobs:
             events.append(TokenLogprobs(completion.logprobs))

@@ -11,6 +11,11 @@ decided character by character, so where the stream is cut never changes the res
 
 Formats are chosen by name when the server starts (``--reasoning-parser``), never guessed from the
 output.
+
+When both markers are one token each, the parser also says which token ids of a fragment belong to
+the answer (:attr:`ReasoningParser.answer_tokens`), by following the same states over the ids. The
+tool-call parser gets only those, so a marker token the model wrote inside its reasoning is never
+credited to the answer.
 """
 
 from __future__ import annotations
@@ -90,19 +95,45 @@ class ReasoningParser:
 
     def __init__(self, fmt: ReasoningFormat, markers: tuple[Marker, Marker] | None = None) -> None:
         self._open, self._close = markers if markers is not None else fmt.markers()
-        self._scanner = MarkerScanner()
+        self._scanner = MarkerScanner((self._open, self._close))
         self._inside = fmt.starts_inside
         self._strip_leading = fmt.starts_inside
         self._trailing = ""  # whitespace at the end of the reasoning seen so far
+        self._answer_tokens: tuple[int, ...] = ()
 
     @property
     def inside(self) -> bool:
         """Whether the output is inside the reasoning block now."""
         return self._inside
 
+    @property
+    def answer_tokens(self) -> tuple[int, ...]:
+        """The ids of the last noted fragment that are answer tokens, markers excluded.
+
+        With markers matched by text the ids cannot be told apart, and all of them are returned.
+        """
+        return self._answer_tokens
+
     def note_tokens(self, token_ids: Iterable[int]) -> None:
         """Record the token ids of the next piece of text, before feeding the text."""
-        self._scanner.note_tokens(token_ids)
+        ids = tuple(token_ids)
+        self._scanner.note_tokens(ids)
+        self._answer_tokens = self._split_answer(ids)
+
+    def _split_answer(self, ids: tuple[int, ...]) -> tuple[int, ...]:
+        opening, closing = self._open.token_id, self._close.token_id
+        if opening is None or closing is None:
+            return ids
+        inside = self._inside
+        answer: list[int] = []
+        for token in ids:
+            if inside and token == closing:
+                inside = False
+            elif not inside and token == opening:
+                inside = True
+            elif not inside:
+                answer.append(token)
+        return tuple(answer)
 
     def feed(self, text: str) -> list[tuple[bool, str]]:
         """Take the next piece of text; return ``(is_reasoning, text)`` pieces."""

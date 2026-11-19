@@ -301,7 +301,7 @@ class ToolCallParser:
         self._arguments = fmt.arguments
         self._typed_name = fmt.typed_name
         self._prefix = call_id_prefix
-        self._scanner = MarkerScanner()
+        self._scanner = MarkerScanner(self._markers or ())
         self._call: _Call | None = None
         self._calls = 0  # calls reported to the client; the next call's index
         self._space = ""  # whitespace held back in the text state

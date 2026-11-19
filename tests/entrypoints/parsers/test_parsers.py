@@ -141,6 +141,24 @@ class TestMarkerScanner:
         scanner.note_tokens([7])
         assert scanner.scan("<think>", [marker]) == ("", marker)
 
+    def test_a_credit_is_dropped_once_its_fragment_is_scanned(self) -> None:
+        """The real token came with text that had no active marker: its credit does not wait."""
+        scanner = MarkerScanner()
+        marker = Marker("<think>", 7)
+
+        scanner.note_tokens([7])
+        assert scanner.scan("<think>", [Marker("</think>", 8)]) == ("<think>", None)
+        assert scanner.scan("later <think>", [marker]) == ("later <think>", None)
+
+    def test_a_credit_lasts_while_its_fragment_is_scanned_in_several_states(self) -> None:
+        scanner = MarkerScanner()
+        opening, closing = Marker("<a>", 1), Marker("</a>", 2)
+
+        scanner.note_tokens([1, 2])
+        assert scanner.scan("x<a>y</a>z", [opening]) == ("x", opening)
+        assert scanner.scan("", [closing]) == ("y", closing)
+        assert scanner.scan("", [opening]) == ("z", None)
+
     def test_flush_releases_the_held_text(self) -> None:
         scanner = MarkerScanner()
         scanner.scan("end <", [Marker("<x>")])
@@ -342,6 +360,55 @@ class TestToolCalls:
         assert events[:2] == [
             ReasoningDelta("need weather"),
             ToolCallStart(0, "call_x_0", "get_weather"),
+        ]
+
+    def test_a_marker_token_inside_reasoning_leaves_no_credit_for_the_answer(self) -> None:
+        """A real ``<tool_call>`` token in the reasoning, then the same string spelled out.
+
+        The answer's spelled markers are text however the output is cut: the reasoning's token
+        was never the tool-call parser's to spend.
+        """
+        fmt = _format(reasoning="think", tools="hermes")
+        output = tokens("<think>", "maybe ", "<tool_call>", " no", "</think>", "use <tool_call>")
+        output += tokens(_CALL, "</tool_call>")
+
+        events = assert_cut_invariant(fmt, output)
+
+        assert events[0] == ReasoningDelta("maybe <tool_call> no")
+        assert all(not isinstance(event, ToolCallStart) for event in events)
+        assert events[1] == TextDelta(f"use <tool_call>{_CALL}</tool_call>")
+
+    def test_a_marker_token_inside_the_block_does_not_open_a_later_one(self) -> None:
+        fmt = _format(reasoning="think", tools=None)
+        output = tokens("<think>", "a ", "<think>", " b", "</think>", "ans <think> c")
+
+        events = assert_cut_invariant(fmt, output, tools=False)
+
+        assert events[:2] == [ReasoningDelta("a <think> b"), TextDelta("ans <think> c")]
+
+    def test_a_stray_closing_token_does_not_close_a_later_spelled_call(self) -> None:
+        """A real ``</tool_call>`` in the text, then a call whose end is spelled: it stays open."""
+        fmt = _format(reasoning=None, tools="hermes")
+        output = tokens("a ", "</tool_call>", " b ", "<tool_call>", _CALL)
+        output += [(ord(char), char) for char in "</tool_call>"]  # spelled, not the token
+
+        events = assert_cut_invariant(fmt, output)
+
+        assert events[0] == TextDelta("a </tool_call> b")
+        assert events[1] == ToolCallStart(0, "call_x_0", "get_weather")
+        assert ToolCallEnd(0, valid=False) in events  # cut by the end, not closed
+
+    def test_an_opening_marker_inside_a_call_is_part_of_its_body(self) -> None:
+        fmt = _format(reasoning=None, tools="hermes")
+        output = tokens("<tool_call>", '{"name": "f", "arguments": {"s": "', "<tool_call>")
+        output += tokens('"}}', "</tool_call>")
+
+        events = assert_cut_invariant(fmt, output)
+
+        assert events[:3] == [
+            ToolCallStart(0, "call_x_0", "f"),
+            ToolCallDelta(0, '{"s": "<tool_call>"}'),
+            ToolCallEnd(0, valid=True),
         ]
 
     def test_long_arguments_are_parsed_in_linear_time(self) -> None:
