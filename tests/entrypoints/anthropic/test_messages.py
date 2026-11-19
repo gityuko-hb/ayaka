@@ -150,7 +150,7 @@ class TestReading:
                 InvalidRequestError,
                 "budget_tokens",
             ),
-            ({"messages": [{"role": "system", "content": "x"}]}, InvalidRequestError, "role"),
+            ({"messages": [{"role": "tool", "content": "x"}]}, InvalidRequestError, "role"),
         ],
     )
     def test_bad_or_unavailable_fields_name_themselves(

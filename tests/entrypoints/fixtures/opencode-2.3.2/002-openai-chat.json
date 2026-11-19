@@ -1,0 +1,25 @@
+{
+  "path": "/v1/chat/completions",
+  "headers": {
+    "Content-Type": "application/json",
+    "User-Agent": "opencode/latest/2.3.2/cli",
+    "Accept": "*/*"
+  },
+  "body": {
+    "model": "smollm2",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<redacted: private prompt content>"
+      },
+      {
+        "role": "user",
+        "content": "<redacted: private prompt content>"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

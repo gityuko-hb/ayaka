@@ -486,6 +486,8 @@ class Serving:
         self.llm: AsyncLLM | None = None
         self.output_format = OutputFormat()
         self.max_model_len = 0
+        self.max_context_tokens = 0
+        self.prefix_cache: bool | None = None
 
     @property
     def model_name(self) -> str:
@@ -498,6 +500,8 @@ class Serving:
         """Start serving with a started engine."""
         self.llm = llm
         self.max_model_len = llm.engine.tokenizer.max_model_len
+        self.max_context_tokens = min(self.max_model_len, llm.engine.kv.max_context_tokens)
+        self.prefix_cache = llm.engine.kv.prefix_caching
         if output_format is not None:
             self.output_format = output_format
         self.status = Readiness.READY
@@ -623,11 +627,18 @@ class Serving:
         opening, closing = markers
         wanted = output.wants_constraint
         if not wanted and (opening.token_id is None or not has_module("llguidance")):
+            # Lazy constraints only for a one-token marker: a spelled one may come in other pieces.
             return None  # free text, as without the structured extra
+        spelled: tuple[int, ...] = ()
+        tokenizer = self.llm.engine.tokenizer.tokenizer if self.llm is not None else None
+        if opening.token_id is None and tokenizer is not None:
+            spelled = tuple(tokenizer.encode(opening.text, add_special_tokens=False))
         return StructuredParams(
             kind=ConstraintKind.TOOL_CALL,
             tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),
-            syntax=ToolCallSyntax(opening.text, closing.text, opening.token_id, closing.token_id),
+            syntax=ToolCallSyntax(
+                opening.text, closing.text, opening.token_id, closing.token_id, spelled
+            ),
             tool_choice=output.tool_choice,
             strict=output.strict,
             parallel=parallel_tool_calls,
@@ -937,6 +948,10 @@ async def _models(request: web.Request) -> web.Response:
             "created": serving.created,
             "owned_by": "ayaka",
             "max_model_len": serving.max_model_len or None,
+            # The longest context one request gets on this machine (the KV cache's limit).
+            "max_context_tokens": serving.max_context_tokens or None,
+            # Whether identical prompt prefixes are read from the cache (``ayaka connect`` step 6).
+            "prefix_cache": serving.prefix_cache,
         }
         for name in serving.model_names
     ]

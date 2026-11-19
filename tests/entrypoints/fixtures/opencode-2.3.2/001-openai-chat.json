@@ -1,0 +1,478 @@
+{
+  "path": "/v1/chat/completions",
+  "headers": {
+    "Content-Type": "application/json",
+    "User-Agent": "opencode/latest/2.3.2/cli",
+    "Accept": "*/*"
+  },
+  "body": {
+    "model": "smollm2",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<redacted: private prompt content>"
+      },
+      {
+        "role": "user",
+        "content": "<redacted: private prompt content>"
+      },
+      {
+        "role": "user",
+        "content": "<redacted: private prompt content>"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "edit",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "oldString": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "newString": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "replaceAll": {
+                "type": "boolean",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "path",
+              "oldString",
+              "newString"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "experimental_image_generate",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "description": "<redacted: tool description>"
+              },
+              "images": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "maxItems": 8,
+                "description": "<redacted: tool description>"
+              },
+              "model": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "glob",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "hidden": {
+                "type": "boolean",
+                "description": "<redacted: tool description>"
+              },
+              "limit": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "grep",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "description": "<redacted: tool description>"
+              },
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "include": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "literal": {
+                "type": "boolean",
+                "description": "<redacted: tool description>"
+              },
+              "caseSensitive": {
+                "type": "boolean",
+                "description": "<redacted: tool description>"
+              },
+              "limit": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "pattern"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "question",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "questions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "question": {
+                      "type": "string",
+                      "description": "<redacted: tool description>"
+                    },
+                    "header": {
+                      "type": "string",
+                      "description": "<redacted: tool description>"
+                    },
+                    "options": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "description": "<redacted: tool description>"
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "<redacted: tool description>"
+                          }
+                        },
+                        "required": [
+                          "label",
+                          "description"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "<redacted: tool description>"
+                    },
+                    "multiple": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "question",
+                    "header",
+                    "options"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "questions"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "read",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "offset": {
+                "type": "integer",
+                "description": "<redacted: tool description>"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "shell",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "workdir": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "<redacted: tool description>"
+              },
+              "background": {
+                "type": "boolean",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "skill",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "subagent",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "agent": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "description": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "model": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "agent",
+              "description",
+              "prompt"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "webfetch",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "format": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "markdown",
+                  "html"
+                ],
+                "description": "<redacted: tool description>"
+              },
+              "timeout": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 120,
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "url"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "websearch",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "write",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "content": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "execute",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code"
+            ],
+            "additionalProperties": false
+          },
+          "strict": false
+        }
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "max_completion_tokens": 1024
+  }
+}

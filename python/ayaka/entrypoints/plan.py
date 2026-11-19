@@ -22,8 +22,18 @@ if TYPE_CHECKING:
 
     from ayaka.core.errors import CapacityError
     from ayaka.engine.build import EnginePlan
+    from ayaka.entrypoints.connect import ToolRecord
 
-__all__ = ["PlanShortfall", "plan_lines", "plan_report", "shortfall_lines", "shortfall_of"]
+__all__ = [
+    "PlanShortfall",
+    "ToolFit",
+    "plan_lines",
+    "plan_report",
+    "shortfall_lines",
+    "shortfall_of",
+    "tool_fit",
+    "tool_fit_lines",
+]
 
 _MIB: Final = 2**20
 
@@ -171,3 +181,67 @@ def shortfall_lines(shortfall: PlanShortfall) -> list[str]:
         "8-bit weights are not supported by this version yet"
     )
     return lines
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFit:
+    """Whether one request on this plan holds a coding tool's fixed prompt and room to work.
+
+    Attributes:
+        tool: The tool.
+        context_tokens: The tokens one request gets on this plan.
+        floor_tokens: The tool's measured fixed prompt, or ``None`` when it was never measured.
+        margin_tokens: What the tool needs beyond it (``ayaka connect`` step 7).
+        measured: Where the floor comes from.
+    """
+
+    tool: str
+    context_tokens: int
+    floor_tokens: int | None
+    margin_tokens: int
+    measured: str | None
+
+    @property
+    def needed_tokens(self) -> int | None:
+        """The tokens one request must hold, or ``None`` without a measured floor."""
+        return None if self.floor_tokens is None else self.floor_tokens + self.margin_tokens
+
+    @property
+    def fits(self) -> bool | None:
+        """Whether it fits; ``None`` when the floor was never measured."""
+        needed = self.needed_tokens
+        return None if needed is None else self.context_tokens >= needed
+
+
+def tool_fit(plan: EnginePlan, record: ToolRecord) -> ToolFit:
+    """The plan's context against the tool's measured floor, as ``ayaka connect --check`` does."""
+    from ayaka.entrypoints.connect import CONTEXT_MARGIN_TOKENS
+
+    return ToolFit(
+        tool=record.name,
+        context_tokens=plan.max_context_tokens,
+        floor_tokens=record.min_context_tokens,
+        margin_tokens=CONTEXT_MARGIN_TOKENS,
+        measured=record.measured,
+    )
+
+
+def tool_fit_lines(fit: ToolFit) -> list[str]:
+    """What ``ayaka plan --for TOOL`` adds to the plan."""
+    needed = fit.needed_tokens
+    if needed is None:
+        return [f"for        {fit.tool}: not measured (ayaka connect {fit.tool} --observe)"]
+    if fit.fits:
+        return [
+            f"for        {fit.tool}: FITS. {fit.context_tokens:,} tokens per request hold its "
+            f"{fit.floor_tokens:,}-token fixed prompt and {fit.margin_tokens:,} to work "
+            f"({fit.measured})"
+        ]
+    short = needed - fit.context_tokens
+    return [
+        f"for        {fit.tool}: DOES NOT FIT. It needs {needed:,} tokens per request "
+        f"({fit.floor_tokens:,} fixed prompt + {fit.margin_tokens:,} to work; {fit.measured}); "
+        f"this plan gives {fit.context_tokens:,}, {short:,} short",
+        "           ways out: a model with a longer context; more memory for the KV cache "
+        "(--memory-ratio, a smaller --max-running, a smaller dtype)",
+    ]

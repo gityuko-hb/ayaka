@@ -26,6 +26,17 @@ JSON answers (`response_format`, `text.format`, `output_format`), forced tool ca
 tool arguments need the `structured` extra (llguidance): `uv sync --extra cpu --extra serve --extra structured`.
 With it, a request that offers tools also gets its calls checked by a grammar while the rest of the answer stays free.
 
+### Coding tools
+
+`ayaka connect TOOL` (`claude-code`, `codex` or `opencode`) prints what the tool needs to use a running server;
+`--write` puts it in the tool's configuration file after a diff, a timestamped backup and a confirmation (`--yes`
+without a terminal). `--check` runs seven steps against the server in the tool's own protocol (ready, model names,
+text, streaming, a forced tool call, the prefix cache, the context) and prints one fix per failure; `--output json`
+gives the same report, and the exit code is 0 (no step failed), 1 (a step failed) or 2 (the check could not run).
+`--observe --tokenizer MODEL` stands between the tool and the server and counts the tokens of the tool's prompt by
+part, keeping only the counts. `ayaka plan MODEL --for TOOL` says whether one request on this machine holds the tool's
+measured prompt.
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/).

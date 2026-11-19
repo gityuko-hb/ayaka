@@ -42,7 +42,7 @@ openai = pytest.importorskip("openai")
 anthropic = pytest.importorskip("anthropic")
 
 from ayaka.entrypoints.parsers.output import OutputFormat  # noqa: E402
-from serving_support import script, serve  # noqa: E402
+from serving_support import script, serve, write_long_gpt2  # noqa: E402
 from tiny_model import TinyCheckpoint, greedy_reference, write_tiny_gpt2  # noqa: E402
 
 if TYPE_CHECKING:
@@ -411,6 +411,80 @@ class TestAnthropicSdk:
             assert "tool-call parser" in str(caught.value)
 
         _run(checkpoint, body)
+
+
+# -- the recorded coding tools' requests ------------------------------------------------------
+
+_FIXTURES = Path(__file__).parent.parent / "entrypoints" / "fixtures"
+_RECORDED = (
+    ("anthropic", _FIXTURES / "claude-code-2.1.327" / "001-anthropic.json"),
+    ("openai-responses", _FIXTURES / "codex-0.163.0" / "001-openai-responses.json"),
+    ("openai-chat", _FIXTURES / "opencode-2.3.2" / "001-openai-chat.json"),
+)
+
+
+class TestRecordedRequests:
+    """The sanitized recordings (#50), replayed and parsed with the tool's own client library.
+
+    The replay sends the recording the way the tool did -- its path, headers and body, unknown
+    fields included -- and checks the answer with the SDK the tool is built on. Streaming is
+    covered by the unit replays (``tests/entrypoints/test_replay.py``); here the answer is one
+    JSON document, so the SDK's model can validate it whole.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def long_checkpoint(cls, tmp_path_factory: pytest.TempPathFactory) -> Any:
+        return write_long_gpt2(tmp_path_factory.mktemp("recorded-gpt2"), positions=65536)
+
+    @pytest.mark.parametrize(
+        ("protocol", "fixture_path"), _RECORDED, ids=[protocol for protocol, _ in _RECORDED]
+    )
+    def test_the_recorded_request_is_answered_and_the_sdk_parses_it(
+        self, long_checkpoint: Any, protocol: str, fixture_path: Path
+    ) -> None:
+        aiohttp = pytest.importorskip("aiohttp")
+        recording = json.loads(fixture_path.read_text(encoding="utf-8"))
+        recording["body"]["model"] = "tiny"
+        recording["body"]["stream"] = False
+
+        async def body(base: str) -> None:
+            headers = dict(recording["headers"])
+            headers["authorization"] = f"Bearer {_KEY}"
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(
+                    f"{base}{recording['path'].split('?')[0]}",
+                    data=json.dumps(recording["body"]).encode(),
+                    headers=headers,
+                ) as response,
+            ):
+                assert response.status == 200, await response.text()
+                answer = await response.json()
+            if protocol == "anthropic":
+                message = anthropic.types.Message.model_validate(answer)
+                assert message.role == "assistant"
+                assert message.stop_reason in ("end_turn", "stop_sequence", "max_tokens")
+            elif protocol == "openai-responses":
+                parsed = openai.types.responses.Response.model_validate(answer)
+                assert parsed.status == "completed"
+                assert parsed.model == "tiny"
+            else:
+                parsed = openai.types.chat.ChatCompletion.model_validate(answer)
+                assert parsed.choices[0].message.role == "assistant"
+
+        async def main() -> None:
+            config = ServerConfig(api_key=_KEY, served_model_names=("tiny",))
+            async with serve(
+                long_checkpoint,
+                config=config,
+                output_format=_TOOLS,
+                scripts=[script("Hello!")],
+                num_blocks=17000,
+            ) as (client, _, _):
+                await body(_base(client))
+
+        asyncio.run(main())
 
 
 # -- real signals, in a child process ---------------------------------------------------------

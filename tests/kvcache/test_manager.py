@@ -221,6 +221,15 @@ def test_a_full_block_table_refuses_a_new_request_but_not_a_known_one() -> None:
     assert manager.allocate(_rid("a"), 4)
 
 
+def test_the_context_limit_is_the_table_row_or_the_pool_whichever_is_shorter() -> None:
+    wide_row = _manager((5, 9), max_blocks=100)  # the scarcest pool gives 4 blocks
+    narrow_row = _manager((20,), max_blocks=3)
+
+    assert wide_row.max_tokens_per_request == 100 * wide_row.block_size
+    assert wide_row.max_context_tokens == 4 * wide_row.block_size
+    assert narrow_row.max_context_tokens == narrow_row.max_tokens_per_request
+
+
 def test_a_request_cannot_outgrow_its_table_row() -> None:
     manager = _manager((20,), max_blocks=3)
     assert manager.max_tokens_per_request == 12

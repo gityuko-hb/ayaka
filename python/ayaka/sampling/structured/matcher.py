@@ -68,7 +68,8 @@ class ConstraintMatcher:
         vocab_size: Bits of a mask.
         eos_token_ids: The tokens ``END`` allows.
         start_after: A token that switches the constraint on, or ``None`` to start at once.
-        open_token: The opening marker of a tool call, or ``None`` for a JSON constraint.
+        opening: The tokens that open a tool call (one marker token, or the marker's spelling),
+            or empty for a JSON constraint.
         forced: Whether the answer must start with a call.
         parallel: Whether the model may write on (more calls) after a call; otherwise ``END``.
     """
@@ -80,7 +81,7 @@ class ConstraintMatcher:
         vocab_size: int,
         eos_token_ids: Collection[int],
         start_after: int | None = None,
-        open_token: int | None = None,
+        opening: tuple[int, ...] = (),
         forced: bool = False,
         parallel: bool = True,
     ) -> None:
@@ -88,7 +89,8 @@ class ConstraintMatcher:
         self._words = (vocab_size + 31) // 32
         self._eos = tuple(token for token in eos_token_ids if token < vocab_size)
         self._start_after = start_after
-        self._open = open_token
+        self._opening = opening
+        self._seen: list[int] = []  # the last tokens, to find a lazy opening
         self._forced = forced
         self._parallel = parallel
         self._grammar: GrammarState | None = None
@@ -109,9 +111,10 @@ class ConstraintMatcher:
         return self._state.name
 
     def _begin(self) -> None:
-        if self._open is None:
+        if not self._opening:
             self._start_grammar()
         else:
+            self._seen.clear()
             self._state = _State.FORCE if self._forced else _State.WAIT_OPEN
 
     def _start_grammar(self) -> None:
@@ -125,8 +128,8 @@ class ConstraintMatcher:
             words = np.frombuffer(self._grammar.compute_bitmask(), dtype="<u4")
             return words[: self._words].astype(np.uint32)
         if self._state is _State.FORCE:
-            assert self._open is not None  # noqa: S101  # FORCE exists only for tool calls
-            return self._only((self._open,))
+            # The next token of the opening, in order.
+            return self._only((self._opening[len(self._seen)],))
         if self._state is _State.END and self._eos:
             return self._only(self._eos)
         return None  # free, or an end the model has no token for
@@ -147,8 +150,14 @@ class ConstraintMatcher:
         if state is _State.WAIT_START:
             if token == self._start_after:
                 self._begin()
-        elif state in (_State.WAIT_OPEN, _State.FORCE):
-            if token == self._open:
+        elif state is _State.FORCE:
+            self._seen.append(token)
+            if len(self._seen) == len(self._opening):
+                self._start_grammar()
+        elif state is _State.WAIT_OPEN:
+            self._seen.append(token)
+            del self._seen[: -len(self._opening)]
+            if tuple(self._seen) == self._opening:
                 self._start_grammar()
         elif state is _State.ON:
             grammar = self._grammar
@@ -158,7 +167,8 @@ class ConstraintMatcher:
                 self._state = _State.END
             elif grammar.is_stopped():
                 self._grammar = None
-                if self._open is not None and self._parallel:
+                if self._opening and self._parallel:
+                    self._seen.clear()
                     self._state = _State.WAIT_OPEN
                 else:
                     self._state = _State.END

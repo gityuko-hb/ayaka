@@ -7,6 +7,7 @@
     ayaka plan MODEL --device cuda --dtype fp16
     ayaka info
     ayaka config show
+    ayaka connect claude-code [--write | --check | --observe]
 
 ``MODEL`` is a local directory or a Hugging Face repo id. ``run`` writes the generated text to
 standard output as it is produced; everything else (the line that says what was started,
@@ -23,7 +24,13 @@ from.
 ``plan`` prints whether the model fits this machine and how the memory would be divided, from the
 same planner a start-up runs, without loading a weight or downloading anything; ``--output json``
 gives the same as data. ``info`` prints the version, devices, backends, installed extras and the
-directories Ayaka uses. It prints where it listens and when it is ready,
+directories Ayaka uses.
+
+``connect TOOL`` prints the configuration a coding tool needs for a running server; ``--write``
+puts it in the tool's file after a diff, a backup and a confirmation; ``--check`` runs seven steps
+against the server in the tool's protocol and exits 1 when one fails; ``--observe`` stands between
+the tool and the server and counts the tokens of the tool's fixed prompt (``--record DIR`` keeps
+the requests themselves, credentials removed). It prints where it listens and when it is ready,
 and stops on SIGINT or SIGTERM: new requests get 503, requests in flight get
 ``--shutdown-timeout`` seconds, and a second signal exits at once.
 
@@ -81,9 +88,10 @@ from ayaka.utils.dtypes import COMPUTE_DTYPES
 from ayaka.utils.logging import init_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
 
     from ayaka.core.outputs import RequestOutput
+    from ayaka.entrypoints.connect import ServerInfo, ToolRecord
 
 __all__ = ["main"]
 
@@ -131,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "plan": _plan,
             "info": _info,
             "config": _config_show,
+            "connect": _connect,
         }[args.command]
         return handler(args)
     except KeyboardInterrupt:
@@ -222,7 +231,58 @@ def _parser() -> argparse.ArgumentParser:
     )
     _server_flags(show)
     show.add_argument("-v", "--verbose", action="count", default=0, help="log more")
+    _connect_parser(commands)
     return parser
+
+
+def _connect_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
+    connect = commands.add_parser(
+        "connect",
+        help="configure a coding tool for a running server, and check it",
+        description="Print, write or check the configuration of a coding tool "
+        "(claude-code, codex, opencode) for a running `ayaka serve`. Exit codes of --check: "
+        "0 every step passed or could not be measured, 1 a step failed, 2 the check could not run.",
+    )
+    connect.add_argument("tool", nargs="?", help="claude-code, codex or opencode")
+    target = connect.add_argument_group("the server")
+    target.add_argument("--url", help="the server's root URL (from the server settings)")
+    target.add_argument("--model", help="the model name the tool sends (the server's first name)")
+    target.add_argument("--small-model", help="the name for the tool's background work")
+    target.add_argument("--api-key-file", type=Path, metavar="FILE", help="the server's key")
+    target.add_argument("--config", type=Path, metavar="FILE", help="a TOML file with [server]")
+    mode = connect.add_mutually_exclusive_group()
+    mode.add_argument("--write", action="store_true", help="write the tool's configuration file")
+    mode.add_argument("--check", action="store_true", help="run the seven steps")
+    mode.add_argument("--observe", action="store_true", help="count the tool's fixed prompt")
+    connect.add_argument("--yes", action="store_true", help="write without asking (--write)")
+    connect.add_argument(
+        "--create-dirs", action="store_true", help="create the file's folder if missing (--write)"
+    )
+    connect.add_argument(
+        "--timeout", type=float, default=60.0, metavar="S", help="seconds per step (--check)"
+    )
+    connect.add_argument(
+        "--tokenizer", metavar="MODEL", help="the model whose tokenizer counts (--observe)"
+    )
+    connect.add_argument("--port", type=int, default=8100, help="the proxy's port (--observe)")
+    connect.add_argument(
+        "--listen", default="127.0.0.1", metavar="HOST", help="the proxy's address (--observe)"
+    )
+    connect.add_argument(
+        "--out", type=Path, metavar="DIR", help="where the counts go (--observe; owner-only)"
+    )
+    connect.add_argument(
+        "--record", type=Path, metavar="DIR", help="also keep each request in DIR (--observe)"
+    )
+    connect.add_argument(
+        "--count",
+        type=int,
+        default=3,
+        metavar="N",
+        help="model requests to wait for; the largest is the tool's floor (--observe)",
+    )
+    connect.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
+    connect.add_argument("-v", "--verbose", action="count", default=0, help="log more")
 
 
 def _engine_flags(command: argparse.ArgumentParser) -> None:
@@ -307,6 +367,13 @@ def _plan_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
     )
     plan.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
+    plan.add_argument(
+        "--for",
+        dest="for_tool",
+        choices=("claude-code", "codex", "opencode"),
+        help="also say whether one request holds this coding tool's measured prompt "
+        "(exit 5 when not)",
+    )
     _engine_flags(plan)
     plan.add_argument("-v", "--verbose", action="count", default=0, help="log more")
 
@@ -555,7 +622,15 @@ def _plan(args: argparse.Namespace) -> int:
     from dataclasses import asdict, replace
 
     from ayaka.engine.build import plan_engine
-    from ayaka.entrypoints.plan import plan_lines, plan_report, shortfall_lines, shortfall_of
+    from ayaka.entrypoints.connect import tool_record
+    from ayaka.entrypoints.plan import (
+        plan_lines,
+        plan_report,
+        shortfall_lines,
+        shortfall_of,
+        tool_fit,
+        tool_fit_lines,
+    )
 
     config = _engine_config(args, max_running=args.max_running)
     # A plan never downloads: a repo id must already be in the Hub cache.
@@ -571,12 +646,17 @@ def _plan(args: argparse.Namespace) -> int:
             for line in shortfall_lines(shortfall):
                 print(line)
         return EXIT_MEMORY
+    record = tool_record(args.for_tool) if args.for_tool else None
+    fit = tool_fit(plan, record) if record is not None else None
     if args.output == "json":
-        print(json.dumps(plan_report(plan, args.model), indent=2))
+        report = plan_report(plan, args.model)
+        if fit is not None:
+            report["for"] = asdict(fit) | {"needed_tokens": fit.needed_tokens, "fits": fit.fits}
+        print(json.dumps(report, indent=2))
     else:
-        for line in plan_lines(plan, args.model):
+        for line in plan_lines(plan, args.model) + (tool_fit_lines(fit) if fit else []):
             print(line)
-    return EXIT_OK
+    return EXIT_MEMORY if fit is not None and fit.fits is False else EXIT_OK
 
 
 def _info(args: argparse.Namespace) -> int:
@@ -605,6 +685,234 @@ def _config_show(args: argparse.Namespace) -> int:
     print(f"configuration file: {file if file is not None else 'none'}")
     for name, value, source in rows:
         print(f"{name:<{width}}  {value}  [{source}]")
+    return EXIT_OK
+
+
+def _connect_server(args: argparse.Namespace) -> ServerInfo:
+    """The server a tool should reach: flags, then the server settings, then the server itself.
+
+    A running server is asked for ``/v1/models``: it names the served model and says how many
+    tokens one request may hold, which ``--write`` puts into the tool's configuration
+    (``model_context_window`` for Codex, ``limit.context`` for OpenCode).
+    """
+    from ayaka.entrypoints.connect import ServerInfo
+
+    file = args.config if args.config is not None else user_config_path()
+    values = _config_file(file) if file is not None and file.is_file() else {}
+    settings = ServerConfig.from_mapping(values)
+    host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host  # noqa: S104
+    url = args.url or f"http://{host}:{settings.port}"
+    key = _read_key(args.api_key_file) if args.api_key_file is not None else settings.api_key
+    model = args.model or (settings.served_model_names[0] if settings.served_model_names else None)
+    entries = _models(url, key)
+    if model is None and entries:
+        model = str(entries[0].get("id"))
+    return ServerInfo(
+        base_url=url,
+        api_key=key,
+        model=model or "<model>",
+        small_model=args.small_model,
+        context_tokens=_context_of(entries, model),
+    )
+
+
+def _models(url: str, key: str | None) -> list[dict[str, object]]:
+    """The entries a running server reports on ``/v1/models``, or ``[]`` when it does not answer."""
+    import json
+    import urllib.request
+
+    headers = {"authorization": f"Bearer {key}"} if key else {}
+    request = urllib.request.Request(url.rstrip("/") + "/v1/models", headers=headers)  # noqa: S310
+    try:
+        # A local server answers at once; a second keeps a stopped one from stalling the print.
+        with urllib.request.urlopen(request, timeout=1) as response:  # noqa: S310
+            listing: object = json.loads(response.read())
+    except (OSError, ValueError):
+        return []
+    data = cast("dict[str, object]", listing).get("data") if isinstance(listing, dict) else None
+    if not isinstance(data, list):
+        return []
+    entries = cast("list[object]", data)
+    if not all(isinstance(entry, dict) for entry in entries):
+        return []
+    return cast("list[dict[str, object]]", entries)
+
+
+def _context_of(entries: Sequence[Mapping[str, object]], model: str | None) -> int | None:
+    """The context one request may hold: the tool's model's entry, else the first entry."""
+    for entry in entries:
+        if str(entry.get("id")) == model:
+            entries = [entry]
+            break
+    for entry in entries:
+        value = entry.get("max_context_tokens") or entry.get("max_model_len")
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _connect(args: argparse.Namespace) -> int:
+    """Print, write, check or observe a tool's configuration."""
+    import json
+
+    from ayaka.entrypoints.connect import (
+        check_lines,
+        generic_setup,
+        redact,
+        render_config,
+        run_check,
+        tool_record,
+        tool_version,
+        write_config,
+    )
+
+    server = _connect_server(args)
+    record = tool_record(args.tool) if args.tool else None
+    if record is None:
+        if args.tool:
+            _say(f"no record for {args.tool!r}; known: claude-code, codex, opencode")
+        for line in generic_setup(server):
+            print(line)
+        return EXIT_USAGE if (args.write or args.check or args.observe) else EXIT_OK
+    if args.check:
+        report = run_check(record, server, timeout=args.timeout, version=tool_version(record))
+        if args.output == "json":
+            print(json.dumps(report.as_json(), indent=2))
+        else:
+            for line in check_lines(report):
+                print(line)
+        return EXIT_OK if report.ok else EXIT_BUG
+    if args.observe:
+        return _observe(args, record, server)
+    path = record.config_path()
+    if not args.write:
+        # Only what Ayaka adds: the rest of the user's file is theirs and is not printed.
+        print(f"# merge into {path} (ayaka connect {record.name} --write does it)")
+        print(redact(render_config(record, server, ""), server), end="")
+        print(f"# then: {record.usage}")
+        return EXIT_OK
+    for name in record.alternates:
+        if (path.parent / name).exists() and not path.exists():
+            raise InvalidRequestError(
+                f"{path.parent / name} holds this tool's settings and may carry comments a "
+                "rewrite would drop; merge the printed configuration into it by hand "
+                f"(ayaka connect {record.name})"
+            )
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    try:
+        content = render_config(record, server, current)
+    except ValueError as exc:
+        raise InvalidRequestError(
+            f"{path} is not a JSON object Ayaka can merge into ({exc}); fix it or move it away"
+        ) from exc
+    interactive = sys.stdin is not None and sys.stdin.isatty()
+    if not args.yes and not interactive:
+        raise InvalidRequestError("--write without a terminal needs --yes")
+
+    def confirm(question: str) -> bool:
+        if args.yes:
+            return True
+        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+    try:
+        write_config(
+            path,
+            content,
+            confirm=confirm,
+            create_dirs=args.create_dirs,
+            redactor=lambda text: redact(text, server),
+        )
+    except FileNotFoundError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+    print(f"then: {record.usage}")
+    return EXIT_OK
+
+
+def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -> int:
+    """Run the proxy until the tool's first requests arrived; print and keep only the counts."""
+    import threading
+    from dataclasses import replace
+
+    from ayaka.configs.tokenizer import tokenizer_config_from_source
+    from ayaka.entrypoints.connect import (
+        ObservedPrompt,
+        largest,
+        observer,
+        recorder,
+        redact,
+        render_config,
+        save_observation,
+        serve_proxy,
+        tool_version,
+    )
+    from ayaka.tokenizers.factory import DefaultTokenizerFactory
+
+    if not args.tokenizer:
+        raise InvalidRequestError("--observe needs --tokenizer MODEL to count tokens")
+    loaded = DefaultTokenizerFactory.from_config(
+        tokenizer_config_from_source(ModelSourceConfig(args.tokenizer, offline=True))
+    )
+    tokenizer = loaded.tokenizer
+    if tokenizer is None:
+        raise InvalidRequestError(f"{args.tokenizer} has no tokenizer to count with")
+
+    def count(text: str) -> int:
+        return len(tokenizer.encode(text, add_special_tokens=False))
+
+    found: list[ObservedPrompt] = []
+    stop = threading.Event()
+    keep = recorder(args.record) if args.record is not None else None
+    observe = observer(record, args.tokenizer, count, found, installed=tool_version(record))
+
+    def on_request(path: str, headers: dict[str, str], body: bytes) -> None:
+        before = len(found)
+        observe(path, headers, body)
+        if keep is not None:
+            keep(path, headers, body)
+        if len(found) > before:
+            latest = found[-1]
+            _say(
+                f"request {len(found)}: {latest.tool_count} tools, fixed prompt "
+                f"{latest.fixed_tokens} tokens"
+            )
+        if len(found) >= args.count:
+            stop.set()
+
+    closed = threading.Event()
+    port = serve_proxy(
+        args.port, server.base_url, on_request, stop=stop, host=args.listen, closed=closed
+    )
+    shown = "127.0.0.1" if args.listen in ("0.0.0.0", "::") else args.listen  # noqa: S104
+    proxied = replace(server, base_url=f"http://{shown}:{port}")
+    _say(f"listening on {args.listen}:{port}, forwarding to {server.base_url}")
+    _say(
+        f"point {record.name} at the proxy with this configuration, then send one prompt "
+        f"(the proxy stops after {args.count} model requests, or on Ctrl-C):"
+    )
+    print(redact(render_config(record, proxied, ""), server), end="")
+    if args.record is not None:
+        _say(
+            f"warning: the requests are kept in {args.record}, prompts included; "
+            "remove personal and project content before sharing them"
+        )
+    try:
+        stop.wait()
+        closed.wait()  # the last request reaches the tool before the proxy goes away
+    except KeyboardInterrupt:
+        stop.set()
+    observed = largest(found)
+    if observed is None:
+        _say("no model request arrived")
+        return EXIT_USAGE
+    out = args.out or Path.cwd() / "ayaka-observations"
+    saved = save_observation(observed, out)
+    print(
+        f"{record.name} {observed.version or '(version unknown)'}: the largest of "
+        f"{len(found)} requests has system {observed.system_tokens} tokens and "
+        f"{observed.tool_count} tools {observed.tools_tokens} tokens: fixed prompt "
+        f"{observed.fixed_tokens} tokens with the {args.tokenizer} tokenizer "
+        f"(counts only, in {saved})"
+    )
     return EXIT_OK
 
 

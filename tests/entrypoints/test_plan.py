@@ -120,6 +120,37 @@ class TestCommand:
         assert "DOES NOT FIT" in out
         assert out.count("  fix      ") >= 2
 
+    def test_for_a_tool_says_why_the_tiny_context_does_not_hold_it(
+        self, checkpoint: TinyCheckpoint, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        code = main(["plan", str(checkpoint.directory), "--for", "opencode"])
+        text = capsys.readouterr().out
+        json_code = main(
+            ["plan", str(checkpoint.directory), "--for", "opencode", "--output", "json"]
+        )
+        report = json.loads(capsys.readouterr().out)
+
+        assert code == json_code == EXIT_MEMORY
+        assert "for        opencode: DOES NOT FIT" in text
+        fit = report["for"]
+        assert fit["fits"] is False
+        assert fit["needed_tokens"] == fit["floor_tokens"] + fit["margin_tokens"]
+        assert fit["context_tokens"] == report["context"]["max_tokens_per_request"]
+
+    def test_a_tool_fit_reads_the_plans_context(self) -> None:
+        from ayaka.entrypoints.connect import TOOLS
+        from ayaka.entrypoints.plan import ToolFit, tool_fit_lines
+
+        record = TOOLS["codex"]
+        assert record.min_context_tokens is not None
+        roomy = ToolFit("codex", 10**6, record.min_context_tokens, 8192, record.measured)
+        unmeasured = ToolFit("codex", 10**6, None, 8192, None)
+
+        assert roomy.fits is True
+        assert "FITS" in tool_fit_lines(roomy)[0]
+        assert unmeasured.fits is None
+        assert "not measured" in tool_fit_lines(unmeasured)[0]
+
     def test_a_repo_that_is_not_cached_is_never_downloaded(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

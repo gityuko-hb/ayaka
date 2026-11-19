@@ -179,7 +179,7 @@ def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
         raise _unsupported(
             "messages", "continuing a final assistant message (prefill) is not available"
         )
-    tools, parallel, _ = _tools(body, builder)
+    tools, parallel, _, _ = _tools(body, builder)
     return builder.build(), tools, parallel
 
 
@@ -200,7 +200,7 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
     _thinking(body.child("thinking"), max_tokens)
     conversation, tools, parallel = _conversation(body)
     response, schema = _output_format(body)
-    _, _, choice = _tools(body, ConversationBuilder())
+    _, _, choice, strict = _tools(body, ConversationBuilder())
     stop = body.array("stop_sequences")
     if stop is not None and not all(isinstance(item, str) for item in stop):
         raise _invalid("stop_sequences", "must be an array of strings")
@@ -219,7 +219,7 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
         stream=body.flag("stream"),
         tools=tools,
         parallel_tool_calls=parallel,
-        output=OutputRequest(response=response, schema=schema, tool_choice=choice),
+        output=OutputRequest(response=response, schema=schema, tool_choice=choice, strict=strict),
     )
 
 
@@ -267,9 +267,16 @@ def _text_blocks(value: object, where: str) -> str:
 
 def _message(message: JsonObject, builder: ConversationBuilder) -> None:
     role = message.text("role")
-    if role not in ("user", "assistant"):
-        raise _invalid(message.where("role"), "must be user or assistant")
     content = message.raw("content")
+    if role == "system":
+        # A system message inside the conversation (Claude Code 2.1 sends one after the first
+        # user turn): text only, kept in place as a system turn.
+        builder.system(
+            content if isinstance(content, str) else _text_blocks(content, message.where("content"))
+        )
+        return
+    if role not in ("user", "assistant"):
+        raise _invalid(message.where("role"), "must be user, assistant or system")
     if isinstance(content, str):
         if role == "user":
             builder.user(content)
@@ -310,8 +317,8 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
         builder.user(PART_SEPARATOR.join(texts))
 
 
-def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, str]:
-    """Add the tools; return ``(offered, parallel, choice)``.
+def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, str, bool]:
+    """Add the tools; return ``(offered, parallel, choice, strict)``.
 
     The choice is ``"auto"``, ``"required"`` (``any``) or the one tool's name (``tool``).
     """
@@ -330,8 +337,9 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, 
     if kind == "none" or not tools:
         if constrained != "auto":
             raise _invalid("tool_choice", "forces a tool call but the request has no tools")
-        return False, parallel, "auto"
+        return False, parallel, "auto", False
     offered = False
+    strict = False
     for tool in tools:
         schema = tool.child("input_schema")
         if schema is None:
@@ -339,7 +347,8 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, 
             continue
         builder.tool(ToolSpec(tool.text("name"), tool.string("description"), schema.data))
         offered = True
-    return offered, parallel, constrained
+        strict = strict or tool.flag("strict")
+    return offered, parallel, constrained, strict
 
 
 # -- answers ----------------------------------------------------------------------------------
