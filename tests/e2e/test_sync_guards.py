@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pytest
 
 from ayaka.core.params import SamplingParams
@@ -94,6 +95,34 @@ def test_a_replayed_decode_step_waits_only_for_its_tokens(
     _add(eager, temperature)
     output = eager.runner.execute(_decode_step(eager))
     assert tokens == [drawn[0] for drawn in output.tokens]
+
+
+@pytest.mark.parametrize(("backends", "dtype"), CASES)
+@pytest.mark.parametrize("temperature", [0.0, 0.9], ids=["greedy", "sampled"])
+def test_a_masked_replay_waits_only_for_its_tokens(
+    backends: tuple[str, ...], dtype: DType, temperature: float
+) -> None:
+    """A step with a constrained row: the mask goes up in one copy, and nothing waits for it."""
+    stack = _stack(backends, dtype, graphs=True)
+    _add(stack, temperature)
+    step = _decode_step(stack)
+    graph = stack.runner.graph
+    assert graph is not None
+    allowed = {41, 42, 43}
+    words = np.zeros((stack.config.vocab_size + 31) // 32, dtype=np.uint32)
+    for token in allowed:
+        words[token // 32] |= 1 << (token % 32)
+    torch.cuda.synchronize()
+
+    with torch.inference_mode(), no_device_sync(strict=True):
+        staged = graph.launch(step, {0: words})
+    tokens = stack.runner.builder.read_sampled(staged.count)  # the declared wait
+
+    eager = _stack(backends, dtype, graphs=False)
+    _add(eager, temperature)
+    expected = [drawn[0] for drawn in eager.runner.execute(_decode_step(eager)).tokens]
+    assert tokens[0] in allowed  # the masked row draws from the mask
+    assert tokens[1:] == expected[1:]  # the others draw what they draw without one
 
 
 def test_the_guard_catches_a_hidden_synchronisation() -> None:

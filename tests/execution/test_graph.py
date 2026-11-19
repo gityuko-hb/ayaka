@@ -368,6 +368,37 @@ def test_launching_a_masked_step_waits_for_nothing(backends: tuple[str, ...], dt
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize(("backends", "dtype"), GPU_CASES)
+def test_a_step_without_a_constrained_row_copies_no_mask(
+    backends: tuple[str, ...], dtype: DType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mask is staged for a step that has a constrained row, once, and for no other."""
+    stack = _gpu_stack(backends, dtype, cuda_graph=True)
+    assert stack.runner.capture_graphs((1, 2, 4))
+    runner = stack.runner.graph
+    assert runner is not None
+    builder = stack.runner.builder
+    staged: list[int] = []
+    stage_mask = builder.stage_mask
+
+    def spy(masks: Any, bucket: int) -> None:
+        staged.append(len(masks))
+        stage_mask(masks, bucket)
+
+    monkeypatch.setattr(builder, "stage_mask", spy)
+    stack.scheduler.add_request(_request("a", _prompt(1, 7), max_tokens=6))
+    stack.scheduler.add_request(_request("b", _prompt(2, 9), max_tokens=6))
+    step = _first_decode_step(stack)
+
+    runner.run(step, stack.runner._structural_masks(step))
+    assert staged == []  # no row has a constraint: no copy
+
+    _constrain(stack, "a")
+    runner.run(step, stack.runner._structural_masks(step))
+    assert staged == [1]  # one constrained row: one staging of its mask, one copy
+
+
+@pytest.mark.gpu
 def test_graph_replay_matches_the_formulas_in_fp32() -> None:
     stack = _gpu_stack(("torch",), DType.FP32, cuda_graph=True)
     stack.runner.capture_graphs((1, 2))
