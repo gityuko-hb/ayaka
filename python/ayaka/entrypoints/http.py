@@ -633,7 +633,8 @@ class Serving:
         block when the model reasons. A request with tools gets a lazy tool-call constraint
         when the structured extra is installed and the model's opening marker is one token, so
         a call it writes is a valid call and free text stays free; a request that forces a
-        call or asks for strict arguments needs that constraint and is refused without it.
+        call or asks for strict arguments needs that constraint and is refused without it. A
+        format without markers has no tool-call constraint at all: the same requests are refused.
 
         Raises:
             UnsupportedFeatureError: If the request needs a constraint this server cannot make.
@@ -645,11 +646,21 @@ class Serving:
             return StructuredParams(kind=output.response, schema=schema, start_after=start_after)
         if not tools or conversation is None or not conversation.tools:
             return None
-        markers = fmt.tool_markers
-        if fmt.tool_calls is None or markers is None:
+        if fmt.tool_calls is None:
             return None  # start() refuses tools without a tool-call parser
-        opening, closing = markers
+        markers = fmt.tool_markers
         wanted = output.wants_constraint
+        if markers is None:
+            # A format without markers (llama3_json) has no token a lazy grammar could start on,
+            # and no grammar for a forced or strict call is written for it yet.
+            if wanted:
+                raise UnsupportedFeatureError(
+                    f"tool_choice and strict: the tool-call parser {fmt.tool_calls.name!r} has no "
+                    "grammar yet, so a call cannot be forced or its arguments constrained",
+                    context={"features": ("structured tool calls",), "param": "tool_choice"},
+                )
+            return None  # free text; the parser finds the call
+        opening, closing = markers
         if not wanted and (opening.token_id is None or not has_module("llguidance")):
             # Lazy constraints only for a one-token marker: a spelled one may come in other pieces.
             return None  # free text, as without the structured extra
