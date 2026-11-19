@@ -276,3 +276,56 @@ class TestLifeCycle:
 
         assert code == 2
         assert "unknown tool call parser" in capsys.readouterr().err
+
+
+class TestLogContent:
+    def test_no_prompt_or_answer_text_reaches_the_default_log_or_metrics(
+        self, checkpoint: TinyCheckpoint, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        marker = "PROMPT-MARKER-ZX81"
+        answers: list[str] = []
+        ids: list[str] = []
+        metrics: list[str] = []
+
+        async def main_() -> None:
+            config = ServerConfig(port=0)
+            task, stop, url, _ = await _run_server(checkpoint, config)
+            async with aiohttp.ClientSession() as session:
+                for stream in (False, True):
+                    body = {
+                        "messages": [{"role": "user", "content": f"{marker} please answer"}],
+                        "max_tokens": 24,
+                        "temperature": 0,
+                        "stream": stream,
+                    }
+                    response = await session.post(f"{url}/v1/chat/completions", json=body)
+                    ids.append(response.headers["x-request-id"])
+                    if stream:
+                        frames = parse_sse(await response.text())
+                        answers.append(
+                            "".join(
+                                json.loads(data)["choices"][0]["delta"].get("content") or ""
+                                for _, data in frames
+                                if data != "[DONE]" and json.loads(data)["choices"]
+                            )
+                        )
+                    else:
+                        answer = await response.json()
+                        answers.append(answer["choices"][0]["message"]["content"] or "")
+                metrics.append(await (await session.get(f"{url}/metrics")).text())
+            stop.set()
+            await asyncio.wait_for(task, 30)
+
+        with caplog.at_level(logging.INFO, logger="ayaka"):
+            asyncio.run(main_())
+
+        log = "\n".join(record.getMessage() for record in caplog.records)
+        texts = [answer for answer in answers if len(answer.strip()) >= 4]
+        assert texts, "the model answered nothing to look for"
+        for leaked in (marker, *texts):
+            assert leaked not in log
+            assert leaked not in metrics[0]
+        for request_id in ids:
+            assert request_id in log  # the line is there, with its id
+        assert "prompt and" in log
+        assert "generated tokens" in log

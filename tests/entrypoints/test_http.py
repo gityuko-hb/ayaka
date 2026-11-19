@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -417,6 +419,31 @@ class TestDisconnectsAndSlowClients:
             assert_cache_released(llm.engine)
 
         _run(checkpoint, body)
+
+    def test_a_request_that_ends_early_logs_the_tokens_it_generated(
+        self, checkpoint: TinyCheckpoint, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
+            response = await client.post(_CHAT, json=_chat("x", 100, stream=True))
+            frames = 0
+            while frames < 4:  # a few text frames: the engine has generated tokens by then
+                if b'"content"' in await response.content.readuntil(b"\n\n"):
+                    frames += 1
+            response.close()
+            deadline = time.monotonic() + 10
+            while llm.num_streams and time.monotonic() < deadline:  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+
+        with caplog.at_level(logging.INFO, logger="ayaka"):
+            _run(checkpoint, body)
+
+        lines = [r.getMessage() for r in caplog.records if "generated tokens" in r.getMessage()]
+        assert len(lines) == 1
+        match = re.search(r": client_gone, \d+ prompt and (\d+) generated tokens", lines[0])
+        assert match is not None, lines[0]
+        # Not 0: no usage event came, so the parser's count is logged. The first of the four
+        # frames carries only the role, so at least three tokens reached the client.
+        assert int(match.group(1)) >= 3
 
     def test_a_slow_reader_is_cancelled_and_others_keep_going(
         self, checkpoint: TinyCheckpoint

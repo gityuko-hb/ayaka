@@ -129,3 +129,57 @@ Same flags, the profile in its honest state (681 MB after the run):
 GPU temperature stayed between 57 and 74 °C. Ayaka is slower on every line except the 1K prompt
 read, where the two are level. The battery run had generation level (0.98); on mains llama.cpp
 gains more from the higher clocks than Ayaka does.
+
+## Slow-client isolation (#50)
+
+- Question: does a client that stops reading its stream slow the other streams down?
+- Setup, written before the run: `ayaka serve` on HuggingFaceTB/SmolLM2-135M, CUDA fp16, the
+  default `--slow-client-timeout` (30 s); `benchmarks/e2e/slow_client.py` streams 2 chat
+  completions of 128 tokens at once, alone (A) and next to a client that opened a stream with a
+  1 KiB receive buffer and never reads (B); A B B A, five pairs; the measured value is the median
+  time between text frames of the two readers, and the ratio B/A per pair.
+- Threshold, written before the run: isolation holds when the median ratio B/A is at most 1.25.
+
+### First run: invalid, the stuck client never blocked the server (2026-11-19)
+
+Run at `8d4ed71` (`slow-client` setup above, 2 s before the readers): median ratio B/A 1.068, within
+the threshold, but no request was cancelled for reading too slowly. Checked afterwards:
+
+- The stuck client's receive queue stops at 1,152 bytes after 0.5 s (its `SO_RCVBUF` reads 2,304),
+  so it does stop reading.
+- With `--slow-client-timeout 10`, the server cancelled it 40.8 s after it opened: the server
+  was blocked only from about 31 s on. Linux grows the send buffer to 4 MB (`tcp_wmem` 4096
+  16384 4194304) and the server's own write buffer takes more, which at SmolLM2's speed is half a
+  minute of output.
+
+Every B phase of that run ended about 3 s after its stuck client opened, so no reader ever ran
+next to a blocked write. The ratio is discarded; the run is not committed as a result.
+
+### Second run: setup and threshold, written before the run
+
+- Same server, model and flags, the default `--slow-client-timeout` (30 s).
+- A B phase opens the stuck client, waits 40 s, runs the 2 readers, then keeps the stuck client open
+  until `/metrics` counts its slow-client cancellation. The server was blocked from
+  `cancelled - 30 s`; a B phase counts only if that is before its readers started and the
+  cancellation is after they ended. Any phase that fails this makes the run invalid (exit 2).
+- A B B A, five pairs; the measured value is unchanged (median gap between the readers' text
+  frames, ratio B/A per pair).
+- Threshold, unchanged: isolation holds when the median ratio B/A is at most 1.25.
+
+### Second run: result
+
+`benchmarks/results/2026-11-19-rtx-3050-laptop-gpu/slow-client.json`, at `7cb60f9`, on mains.
+
+- Valid: in all 10 B phases the server was blocked from 29.5 to 32.4 s after the stuck client
+  opened, the readers ran from 40.0 to 41.2 s, and the cancellations came at 59.5 to 62.4 s; the
+  server logged 10 slow-client cancellations.
+- Median gap between text frames: A (alone) 6.4 to 7.4 ms, B (beside a blocked stuck client) 7.5 to
+  8.9 ms. Ratio B/A per pair: 1.245, 1.206, 1.232, 1.211, 1.173; **median 1.211**, within the
+  threshold of 1.25.
+- Decision: isolation holds by the threshold written before the run, with little margin.
+
+What the ratio contains, which the setup did not separate: while its writes are blocked, the
+stuck request keeps decoding, so a B phase decodes three sequences (CUDA graph bucket 4) where A
+decodes two (bucket 2). The 21% is therefore an upper bound on what a stuck client costs the
+others; a control with a third reader that keeps up would split it. Also, the unit tests ran on
+the same machine during part of this run (CPU only), which may have added noise to some phases.
