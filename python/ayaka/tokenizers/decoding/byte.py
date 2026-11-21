@@ -19,19 +19,18 @@ from __future__ import annotations
 
 import codecs
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from ayaka.tokenizers.decoding.incremental import IncrementalDetokenizer
 from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from threading import RLock
 
     from ayaka.configs.tokenizer import DetokenizeParams
     from ayaka.tokenizers.ports import ByteTokenizerLike
 
-__all__ = ["ByteIncrementalDetokenizer", "verify_byte_table"]
+__all__ = ["SEED_TOKENS", "ByteIncrementalDetokenizer", "verify_byte_table"]
 
 _MAX_PROBE_LENGTH = 24
 
@@ -82,11 +81,19 @@ def verify_byte_table(
     )
 
 
+#: Prompt tokens a byte detokenizer replays: a UTF-8 character still open at the end of the prompt
+#: has at most three bytes, so it started within the last three tokens that have bytes.
+SEED_TOKENS: Final = 4
+
+
 class ByteIncrementalDetokenizer(IncrementalDetokenizer):
     """Table-driven detokenizer; requires ``skip_special_tokens=True``.
 
     Special tokens contribute no text. A prompt that ends in the middle of a UTF-8
-    character is rejected, because the output could not continue it cleanly.
+    character is rejected, because the output could not continue it cleanly. Only the
+    last :data:`SEED_TOKENS` prompt tokens that have bytes are replayed, so creating one
+    costs the same for any prompt length; the prompt's ids were checked when it was
+    tokenized.
 
     Attributes:
         _tbl: Shared read-only bytes-per-id table; never copied per request.
@@ -101,9 +108,8 @@ class ByteIncrementalDetokenizer(IncrementalDetokenizer):
         params: DetokenizeParams,
         *,
         prompt_token_ids: Sequence[int] = (),
-        lock: RLock | None = None,
     ) -> None:
-        super().__init__(params, lock=lock)
+        super().__init__(params)
         if not params.skip_special_tokens:
             raise ValueError("byte backend requires skip_special_tokens=True")
         self._tbl = tokenizer.token_bytes_table()
@@ -112,12 +118,25 @@ class ByteIncrementalDetokenizer(IncrementalDetokenizer):
         self._valid_ids = tokenizer.valid_token_ids
         self._special = tokenizer.all_special_ids
         self._dec = codecs.getincrementaldecoder("utf-8")("replace")
-        for token in prompt_token_ids:
+        for token in self._seed(prompt_token_ids):
             require_int(token, "prompt token id")
             self._validate_token(token)
             self._decode_next(token)
         if self._dec.getstate()[0]:
             raise ValueError("prompt ends inside a UTF-8 character")
+
+    def _seed(self, prompt_token_ids: Sequence[int]) -> list[int]:
+        """The end of the prompt: back to the :data:`SEED_TOKENS`-th token that has bytes."""
+        seed: list[int] = []
+        with_bytes = 0
+        for token in reversed(prompt_token_ids):
+            seed.append(token)
+            if token not in self._special:
+                with_bytes += 1
+                if with_bytes == SEED_TOKENS:
+                    break
+        seed.reverse()
+        return seed
 
     def _validate_token(self, token_id: int) -> None:
         if token_id not in self._valid_ids or token_id >= len(self._tbl):

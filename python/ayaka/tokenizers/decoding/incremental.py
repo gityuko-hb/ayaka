@@ -15,14 +15,22 @@ corrupting output when a decoder would have to rewrite text it already emitted::
 
 Cost model: byte and stream paths do constant work per token. The slow path is
 quadratic in output length and exists for correctness, not speed. The stream path
-runs one reference decode over prompt plus output when the request finishes.
+runs one reference decode over the seed plus the output when the request finishes.
+
+No path replays the whole prompt: what a decoder needs from it is its last few tokens.
+The byte path replays the last four tokens that have bytes (``decoding.byte``); the
+others replay a window of the prompt's end (:func:`seed_window`), so creating a
+detokenizer costs the same for a 4K-token prompt as for a 50K-token one.
+
+Each detokenizer has its own lock: it shares no state with the encoder, so token
+delivery never waits for a long prompt being encoded on another thread.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from threading import RLock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from ayaka.configs.tokenizer import DetokBackend, DetokenizeParams, DetokUpdate
 from ayaka.tokenizers.decoding.stop import StopChecker
@@ -30,16 +38,41 @@ from ayaka.tokenizers.ports import ByteTokenizerLike, DecodeStreamLike, Tokenize
 from ayaka.utils.validation import require_bool, require_int
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 __all__ = [
+    "MAX_SEED_WINDOW",
+    "SEED_WINDOW",
     "FastIncrementalDetokenizer",
     "IncrementalDetokenizer",
     "SlowIncrementalDetokenizer",
+    "seed_window",
 ]
 
 _REPLACEMENT = "�"
 _BACKENDS: tuple[str, ...] = ("auto", "bytes", "stream", "window")
+
+#: The first window of prompt tokens a reference-checked decoder replays, and the most it grows
+#: to while the window's text still ends in an unfinished character.
+SEED_WINDOW: Final = 8
+MAX_SEED_WINDOW: Final = 256
+
+
+def seed_window(
+    prompt_token_ids: Sequence[int], decode: Callable[[Sequence[int]], str]
+) -> list[int]:
+    """The end of the prompt a decoder replays so its output continues the prompt.
+
+    Starts with the last :data:`SEED_WINDOW` tokens and doubles, up to
+    :data:`MAX_SEED_WINDOW`, while ``decode`` of the window ends in the replacement
+    character, the sign of a character split across tokens.
+    """
+    size = min(SEED_WINDOW, len(prompt_token_ids))
+    while size < min(MAX_SEED_WINDOW, len(prompt_token_ids)):
+        if not decode(prompt_token_ids[-size:]).endswith(_REPLACEMENT):
+            break
+        size = min(size * 2, MAX_SEED_WINDOW, len(prompt_token_ids))
+    return list(prompt_token_ids[len(prompt_token_ids) - size :])
 
 
 class IncrementalDetokenizer(ABC):
@@ -59,10 +92,10 @@ class IncrementalDetokenizer(ABC):
         _stopped: A stop string matched; no further tokens are accepted.
         _checking_stops: ``None`` before the first update, then whether stop matching
             is on. It may be switched on later but never off again.
-        _lock: Serializes calls; shared with the tokenizer service when given.
+        _lock: Serializes calls to this detokenizer; it is its own, shared with nothing.
     """
 
-    def __init__(self, params: DetokenizeParams, *, lock: RLock | None = None) -> None:
+    def __init__(self, params: DetokenizeParams) -> None:
         if not isinstance(params, DetokenizeParams):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError("params must be DetokenizeParams")
         self._params = params
@@ -72,7 +105,7 @@ class IncrementalDetokenizer(ABC):
         self._finished = False
         self._stopped = False
         self._checking_stops: bool | None = None
-        self._lock = lock if lock is not None else RLock()
+        self._lock = RLock()
 
     @staticmethod
     def create(
@@ -81,7 +114,6 @@ class IncrementalDetokenizer(ABC):
         *,
         prompt_token_ids: Sequence[int] = (),
         backend: DetokBackend = "auto",
-        lock: RLock | None = None,
     ) -> IncrementalDetokenizer:
         """Pick a supported decoding path; an explicit choice never falls back.
 
@@ -91,9 +123,9 @@ class IncrementalDetokenizer(ABC):
         Args:
             tokenizer: The adapter to decode with.
             params: Per-request decoding options.
-            prompt_token_ids: Prompt ids, so the output continues from them.
+            prompt_token_ids: Prompt ids, so the output continues from them; only their end
+                is replayed.
             backend: Requested strategy (see ``DetokBackend``).
-            lock: Lock to share with the encoder that uses the same adapter.
 
         Raises:
             ValueError: If ``backend`` is unknown or an explicit one is unsupported.
@@ -111,9 +143,7 @@ class IncrementalDetokenizer(ABC):
         ):
             from ayaka.tokenizers.decoding.byte import ByteIncrementalDetokenizer
 
-            return ByteIncrementalDetokenizer(
-                tokenizer, params, prompt_token_ids=prompt_token_ids, lock=lock
-            )
+            return ByteIncrementalDetokenizer(tokenizer, params, prompt_token_ids=prompt_token_ids)
         if backend == "bytes":
             raise ValueError("bytes backend requires a verified byte table and skip_special_tokens")
         if backend in ("auto", "stream"):
@@ -124,13 +154,10 @@ class IncrementalDetokenizer(ABC):
                     params,
                     tokenizer=tokenizer,
                     prompt_token_ids=prompt_token_ids,
-                    lock=lock,
                 )
             if backend == "stream":
                 raise ValueError("tokenizer does not provide a DecodeStream")
-        return SlowIncrementalDetokenizer(
-            tokenizer, params, prompt_token_ids=prompt_token_ids, lock=lock
-        )
+        return SlowIncrementalDetokenizer(tokenizer, params, prompt_token_ids=prompt_token_ids)
 
     def _record(self, text: str) -> str:
         self._n_chars += len(text)
@@ -245,8 +272,8 @@ class _ReferenceDecoder(IncrementalDetokenizer):
     Attributes:
         _tok: The adapter used for reference decoding.
         _valid_ids: Legal token ids, shared with the adapter (not copied).
-        _ids: Prompt ids followed by every generated id.
-        _prefix: Reference decode of the prompt; output must extend it.
+        _ids: The prompt's seed window (:func:`seed_window`) followed by every generated id.
+        _prefix: Reference decode of the seed window; output must extend it.
         _raw_text: Text already accounted for against the reference.
     """
 
@@ -256,15 +283,15 @@ class _ReferenceDecoder(IncrementalDetokenizer):
         params: DetokenizeParams,
         *,
         prompt_token_ids: Sequence[int] = (),
-        lock: RLock | None = None,
     ) -> None:
-        super().__init__(params, lock=lock)
+        super().__init__(params)
         self._tok = tokenizer
         self._valid_ids = tokenizer.valid_token_ids
-        self._ids = list(prompt_token_ids)
-        for token in self._ids:
+        prompt = tuple(prompt_token_ids)
+        for token in prompt[-MAX_SEED_WINDOW:]:
             require_int(token, "prompt token id")
             self._validate_token(token)
+        self._ids = seed_window(prompt, self._decode_ids)
         self._prefix = self._decode()
         self._raw_text = ""
 
@@ -273,8 +300,11 @@ class _ReferenceDecoder(IncrementalDetokenizer):
             raise ValueError(f"unknown token id: {token_id}")
 
     def _decode(self) -> str:
+        return self._decode_ids(self._ids)
+
+    def _decode_ids(self, ids: Sequence[int]) -> str:
         return self._tok.decode(
-            self._ids,
+            ids,
             skip_special_tokens=self._params.skip_special_tokens,
             spaces_between_special_tokens=self._params.spaces_between_special_tokens,
         )
@@ -311,9 +341,8 @@ class FastIncrementalDetokenizer(_ReferenceDecoder):
         *,
         tokenizer: TokenizerLike,
         prompt_token_ids: Sequence[int] = (),
-        lock: RLock | None = None,
     ) -> None:
-        super().__init__(tokenizer, params, prompt_token_ids=prompt_token_ids, lock=lock)
+        super().__init__(tokenizer, params, prompt_token_ids=prompt_token_ids)
         self._stream = stream
         self._pieces: list[str] = []
         for token in self._ids:

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from threading import RLock
-
 import pytest
 
 from ayaka.configs.tokenizer import DetokenizeParams
@@ -71,10 +69,11 @@ class TestBackendSelection:
         with pytest.raises(ValueError, match="unknown detokenizer backend"):
             IncrementalDetokenizer.create(fake, PARAMS, backend="nope")  # type: ignore[arg-type]
 
-    def test_shared_lock_is_used(self, fake: FakeTokenizer) -> None:
-        lock = RLock()
+    def test_each_detokenizer_has_a_lock_of_its_own(self, fake: FakeTokenizer) -> None:
+        first = IncrementalDetokenizer.create(fake, PARAMS)
+        second = IncrementalDetokenizer.create(fake, PARAMS)
 
-        assert IncrementalDetokenizer.create(fake, PARAMS, lock=lock)._lock is lock
+        assert first._lock is not second._lock  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.unit
