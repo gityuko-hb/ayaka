@@ -90,6 +90,68 @@ def build_hf_dir(
     return path
 
 
+def _metaspace() -> Any:
+    """A SentencePiece-style tokenizer: ``▁`` marks spaces and is undone when decoding."""
+    tokenizers = import_module("tokenizers")
+    tok = tokenizers.Tokenizer(tokenizers.models.BPE(unk_token="<unk>"))
+    tok.pre_tokenizer = tokenizers.pre_tokenizers.Metaspace(replacement="▁", prepend_scheme="first")
+    tok.decoder = tokenizers.decoders.Metaspace(replacement="▁", prepend_scheme="first")
+    corpus = CORPUS + "héllo wörld, ça va? 中文 текст "
+    trainer = tokenizers.trainers.BpeTrainer(
+        vocab_size=400, special_tokens=["<unk>", *SPECIAL], limit_alphabet=200
+    )
+    tok.train_from_iterator([corpus * 5] * 20, trainer)
+    return tok
+
+
+def _byte_fallback() -> Any:
+    """A Llama-2-style tokenizer: characters outside the vocabulary become ``<0xNN>`` tokens."""
+    tokenizers = import_module("tokenizers")
+    letters = "abcdefghijklmnopqrstuvwxyz,.?!"
+    vocab = {"<unk>": 0, **{token: 1 + i for i, token in enumerate(SPECIAL)}}
+    for byte in range(256):
+        vocab[f"<0x{byte:02X}>"] = len(vocab)
+    for piece in ["▁", *letters, "▁h", "▁he", "▁hel", "▁hell", "▁hello", "▁w", "▁wo"]:
+        vocab.setdefault(piece, len(vocab))
+    merges = [("▁", "h"), ("▁h", "e"), ("▁he", "l"), ("▁hel", "l"), ("▁hell", "o"), ("▁", "w")]
+    merges.append(("▁w", "o"))
+    model = tokenizers.models.BPE(vocab=vocab, merges=merges, unk_token="<unk>", byte_fallback=True)
+    tok = tokenizers.Tokenizer(model)
+    tok.normalizer = tokenizers.normalizers.Sequence(
+        [tokenizers.normalizers.Prepend("▁"), tokenizers.normalizers.Replace(" ", "▁")]
+    )
+    tok.decoder = tokenizers.decoders.Sequence(
+        [
+            tokenizers.decoders.Replace("▁", " "),
+            tokenizers.decoders.ByteFallback(),
+            tokenizers.decoders.Fuse(),
+            tokenizers.decoders.Strip(" ", 1, 0),
+        ]
+    )
+    tok.add_special_tokens(SPECIAL)
+    return tok
+
+
+#: The tokenizer kinds :func:`build_hf_dir_of` can write, by name.
+KINDS = ("byte_level", "metaspace", "byte_fallback")
+
+
+def build_hf_dir_of(path: Path, kind: str) -> Path:
+    """Write a loadable HuggingFace tokenizer directory of one kind (see :data:`KINDS`).
+
+    ``byte_level`` is the GPT-2 and Llama-3 layout, ``metaspace`` the SentencePiece one, and
+    ``byte_fallback`` Llama-2's, where a character the vocabulary lacks is spelled byte by byte.
+    """
+    transformers = import_module("transformers")
+    trained = {"byte_level": _train, "metaspace": _metaspace, "byte_fallback": _byte_fallback}
+    fast = transformers.PreTrainedTokenizerFast(
+        tokenizer_object=trained[kind](), bos_token="<s>", eos_token="</s>", pad_token="</s>"
+    )
+    path.mkdir(parents=True, exist_ok=True)
+    fast.save_pretrained(path)
+    return path
+
+
 def build_tiktoken_dir(path: Path) -> Path:
     """Write a tiktoken vocabulary: 256 byte tokens, a few merges and three specials.
 

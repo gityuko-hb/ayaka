@@ -550,7 +550,12 @@ class TokenizerService:
     def new_detokenizer(
         self, params: DetokenizeParams, *, prompt_token_ids: tuple[int, ...] = ()
     ) -> IncrementalDetokenizer:
-        """Create a per-request detokenizer that shares this service's adapter lock.
+        """Create a per-request detokenizer with its own state and lock.
+
+        It does not take the adapter lock that serializes encoding: decoding reads only the
+        adapter's read-only tables and the tokenizer's thread-safe decode, so a long prompt
+        being encoded on another thread never holds up token delivery. Only the end of the
+        prompt is replayed, so the cost does not grow with the prompt.
 
         Raises:
             ValueError: If the tokenizer is disabled or cannot decode.
@@ -558,17 +563,15 @@ class TokenizerService:
         """
         if self.tokenizer is None or not self.loaded.capabilities.text_decode:
             raise ValueError("tokenizer disabled: text output is unavailable")
-        with self._adapter_lock:
-            with self._cv:
-                if self._closed:
-                    raise RuntimeError("tokenizer service is closed")
-            return IncrementalDetokenizer.create(
-                self.tokenizer,
-                params,
-                prompt_token_ids=prompt_token_ids,
-                backend=self.config.detokenize_backend,
-                lock=self._adapter_lock,
-            )
+        with self._cv:
+            if self._closed:
+                raise RuntimeError("tokenizer service is closed")
+        return IncrementalDetokenizer.create(
+            self.tokenizer,
+            params,
+            prompt_token_ids=prompt_token_ids,
+            backend=self.config.detokenize_backend,
+        )
 
     # -- lifecycle -------------------------------------------------------------
 

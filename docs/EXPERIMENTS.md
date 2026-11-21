@@ -503,3 +503,79 @@ special-token guard, uncached tokenization takes **`0.98%`** of cold TTFT (`0.80
 `render + encode` alone), roughly five times below the pre-registered 5% threshold. The existing
 session encode cache stays as-is, and segmented caching between special tokens is deferred until
 much faster prefill hardware or warm-cache multi-turn regimes push encoding above 5% of TTFT.
+
+## Detokenizer seed and the shared lock (#77, 2026-11-21)
+
+Thresholds, setup and workload were written to #77 before any run
+([comment](https://github.com/gityuko-hb/ayaka/issues/77#issuecomment-7069506207)). A is `main` at `5c1d790`, B is
+`69532cc` (the bounded seed and the per-detokenizer lock); A B B A order, 5 pairs, each slot a fresh process with
+`PYTHONPATH` pointing at that side's `python/`. Machine: Linux 6.6, **Tesla T4** (15 GiB, `sm_75`), driver 580.82.07,
+CUDA 13.0, `torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, Python 3.13.16, 2 CPU cores. This is not the RTX 3050 of
+the baseline above; the numbers are only compared A with B on this machine. The raw result files were kept on the
+machine and not committed; every value they hold is below.
+
+### 1 and 2: creation cost and token delivery during an encode (`benchmarks/tokenizers/detokenizer_seed.py`)
+
+`unsloth/Llama-3.2-1B-Instruct` tokenizer; prompts of 4,096, 16,384 and 50,000 tokens cut from the recorded Claude
+Code session (`004-anthropic.json`) repeated to 50,061 tokens. Creation: median of 20 calls of
+`TokenizerService.new_detokenizer` per slot. Contention: one-token `update()` calls every millisecond for 3 s while
+another thread encodes the 50,061-token prompt in a loop.
+
+Median creation time at 50,000 tokens per slot (ms), slots in run order (A1 B1 B2 A2 per pair):
+
+| Path | A (10 slots) | B (10 slots) |
+| --- | --- | --- |
+| byte table | 35.07, 66.95, 69.79, 34.42, 31.59, 67.85, 37.26, 61.52, 31.06, 31.39 | 0.0090, 0.0091, 0.0082, 0.0105, 0.0096, 0.0084, 0.0087, 0.0083, 0.0082, 0.0157 |
+| `DecodeStream` | 204.59, 98.27, 92.14, 92.16, 91.10, 101.66, 168.88, 91.76, 174.13, 88.79 | 0.1654, 0.1003, 0.1633, 0.0870, 0.1011, 0.0910, 0.0950, 0.0854, 0.0936, 0.1729 |
+
+At 4,096 tokens A took 2.54–5.63 ms (bytes) and 6.75–14.24 ms (stream); B took 0.0081–0.0131 ms and 0.083–0.170 ms,
+the same as at 50,000.
+
+p99 of one-token `update()` latency while the other thread encodes (ms):
+
+| Path | A (10 slots) | B (10 slots) |
+| --- | --- | --- |
+| byte table | 364.1, 699.0, 265.5, 395.7, 387.5, 440.4, 265.5, 441.5, 218.6, 141.7 | 0.060, 0.060, 0.065, 0.064, 0.065, 0.065, 0.062, 0.060, 0.057, 0.049 |
+| `DecodeStream` | 247.2, 260.6, 256.4, 469.6, 224.8, 255.4, 144.5, 133.4, 279.7, 405.7 | 0.072, 0.072, 0.068, 0.080, 0.077, 0.078, 0.072, 0.070, 0.068, 0.075 |
+
+Gates: **(1) passed** in every pair: with B the 50,000-token creation is 0.73–1.13× the 4,096-token one (gate ≤ 2×),
+and B/A at 50,000 is 0.0002–0.0014 (gate ≤ 0.5). **(2) passed** in every pair: B's update p99 is at most 0.080 ms
+(gate ≤ 1 ms), B/A of the p99 is 0.0001–0.0005 (gate ≤ 0.5). With A every update waited for the encoder's lock.
+
+### 3: end to end on the GPU, no-regression gate (`benchmarks/e2e/serving_overhead.py --mode server`)
+
+`ayaka serve unsloth/Llama-3.2-1B-Instruct --device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph
+--memory-ratio 0.8 --max-running 6` (19,146 KV blocks), one server per slot; harness `--streams 4 --tokens 128 --rounds
+3 --burst --burst-requests 1 --burst-prompt-chars 400000` (the burst prompt is 50,035 tokens). The first burst round
+of each slot prefills the whole prompt; rounds 2 and 3 find it in the prefix cache.
+
+Burst-phase client ITL p99 per round (ms), each slot `[round 1, round 2, round 3]`:
+
+| Pair | A1 | B1 | B2 | A2 |
+| --- | --- | --- | --- | --- |
+| 1 | 1466.6, 25.5, 19.7 | 1528.1, 34.1, 55.6 | 1608.0, 47.6, 66.5 | 1624.5, 58.6, 65.1 |
+| 2 | 1617.3, 58.9, 28.7 | 1623.1, 37.0, 60.7 | 1623.2, 56.4, 62.9 | 1568.8, 61.3, 29.1 |
+| 3 | 1616.7, 23.9, 38.6 | 1568.0, 56.7, 53.1 | 1606.3, 60.7, 24.0 | 1621.1, 25.1, 31.8 |
+| 4 | 1567.5, 56.6, 56.8 | 1621.3, 61.0, 37.0 | 1620.6, 23.2, 52.9 | 1617.3, 25.8, 62.6 |
+| 5 | 1627.8, 64.0, 61.2 | 1618.5, 45.2, 32.6 | 1557.6, 23.3, 60.1 | 1612.5, 63.6, 30.9 |
+
+Per pair, mean over the two slots of each side of the per-slot median over rounds:
+
+| Pair | A burst ITL p99 | B burst ITL p99 | B/A | A burst step-gap p99 | B burst step-gap p99 | A steady ITL p99 | B steady ITL p99 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 45.3 ms | 61.0 ms | 1.347 | 5.82 ms | 12.90 ms | 21.34 ms | 22.09 ms |
+| 2 | 60.1 ms | 61.8 ms | 1.029 | 4.22 ms | 41.52 ms | 23.09 ms | 22.19 ms |
+| 3 | 35.2 ms | 58.7 ms | 1.666 | 4.17 ms | 23.74 ms | 23.76 ms | 22.93 ms |
+| 4 | 59.7 ms | 57.0 ms | 0.955 | 4.42 ms | 20.70 ms | 23.49 ms | 22.32 ms |
+| 5 | 63.8 ms | 52.6 ms | 0.825 | 4.52 ms | 6.15 ms | 21.74 ms | 24.21 ms |
+
+Gate **(3) missed**: the median of B/A over the pairs is **1.029** (gate ≤ 1.0). The burst-round values are bimodal
+(about 24 ms or about 60 ms in both A and B) and the cold first round is about 1.6 s in both, so the ITL comparison is
+dominated by that noise. The step-gap p99 of the burst phase, though, is higher with B in all five pairs (6.2–41.5 ms
+against 4.2–5.8 ms). Not measured, so only a hypothesis: with the lock gone, the engine thread no longer sleeps while
+the 50K prompt is encoded and validated on another thread; it competes with that thread's Python per-token loops for the
+GIL instead, in switch-interval slices. Removing those loops is the next item of #77 (admission without
+re-validation). Steady-phase ITL p99 is unchanged (21.3–23.8 ms against 22.1–24.2 ms).
+
+**Verdict:** the detokenizer part passes its own gates by three to four orders of magnitude; the end-to-end
+no-regression gate is missed. Per the rule written in #77, the change is not merged as a speed-up on this evidence.

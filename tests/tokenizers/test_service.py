@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -365,15 +366,40 @@ class TestWorkerPool:
 
 @pytest.mark.unit
 class TestDetokenizer:
-    def test_uses_the_configured_backend_and_shares_the_lock(self, make_service: Make) -> None:
+    def test_uses_the_configured_backend_and_does_not_wait_for_the_encoder(
+        self, make_service: Make
+    ) -> None:
         tokenizer = FakeTokenizer()
         assert tokenizer.verify_byte_path()
         service = make_service(tokenizer)
+        held = threading.Event()
+        release = threading.Event()
 
-        detok = service.new_detokenizer(DetokenizeParams())
+        def encoding() -> None:  # stands for a long prompt being encoded
+            with service._adapter_lock:  # pyright: ignore[reportPrivateUsage]
+                held.set()
+                release.wait(10)
 
+        deltas: list[object] = []
+
+        def decoding() -> None:
+            detok = service.new_detokenizer(DetokenizeParams(), prompt_token_ids=(104, 105))
+            deltas.extend((detok, detok.update([106]).delta))
+
+        encoder = threading.Thread(target=encoding)
+        encoder.start()
+        try:
+            assert held.wait(10)
+            decoder = threading.Thread(target=decoding)
+            decoder.start()
+            decoder.join(2.0)
+            assert not decoder.is_alive(), "creating or updating a detokenizer waited for the lock"
+        finally:
+            release.set()
+            encoder.join()
+        detok, delta = deltas
         assert isinstance(detok, ByteIncrementalDetokenizer)
-        assert detok._lock is service._adapter_lock
+        assert delta == "j"
 
     def test_closed_service_refuses_new_detokenizers(self, make_service: Make) -> None:
         service = make_service()
