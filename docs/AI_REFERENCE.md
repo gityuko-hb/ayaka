@@ -30,6 +30,13 @@ With `--api-key` or `--api-key-file`, every path but `/health` needs `Authorizat
 
 `ayaka connect TOOL --check` checks these on a running server, in the tool's protocol.
 
+Usage and the prefix cache: Chat Completions, Completions and Responses report the prompt tokens read from the
+prefix cache as `cached_tokens`; Responses also reports the prompt tokens this request registered in it as
+`cache_write_tokens`. Messages splits the prompt three ways that add up to it: `cache_read_input_tokens` (read
+from the cache), `cache_creation_input_tokens` (computed and registered, whole cache blocks only) and
+`input_tokens` (the rest). A streamed Messages answer reports `input_tokens` alone in `message_start` and the whole
+usage, cumulatively, in `message_delta`, so the SDK's final message has the same usage as an unstreamed answer.
+
 ## Errors
 
 | Cause | Status | Notes |

@@ -519,15 +519,30 @@ class Scheduler:
                     token_ids=emitted,
                     logprobs=logprobs,
                     cached_tokens=request.cached_tokens,
+                    cache_written_tokens=request.cache_written_tokens,
                 )
             )
         return len(emitted)
 
     def _cache_full_blocks(self, request: Request) -> None:
-        """Register the blocks the last commit filled, so later requests can attach them."""
+        """Register the blocks the last commit filled, so later requests can attach them.
+
+        The prompt's blocks are registered in a call of their own, so the blocks this request
+        added to the cache from its prompt are counted (``cache_written_tokens``); the blocks
+        of its output are registered too but are not prompt tokens.
+        """
         registered, full = self._kv.cacheable_blocks(request.request_id)
+        if full <= registered:
+            return
+        size = self._kv.block_size
+        prompt_end = min(max(len(request.prompt) // size, registered), full)
+        if prompt_end > registered:
+            added = self._kv.cache_blocks(
+                request.request_id, request.tokens_between(registered * size, prompt_end * size)
+            )
+            request.cache_written_tokens += added * size
+            registered = prompt_end
         if full > registered:
-            size = self._kv.block_size
             self._kv.cache_blocks(
                 request.request_id, request.tokens_between(registered * size, full * size)
             )

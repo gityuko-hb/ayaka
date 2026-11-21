@@ -308,8 +308,10 @@ def _cache_share(protocol: Protocol, answer: Mapping[str, object]) -> tuple[int,
     usage = answer.get("usage")
     values = cast("dict[str, object]", usage) if isinstance(usage, dict) else {}
     if protocol == "anthropic":
+        # Anthropic splits the prompt three ways: read from the cache, written to it, the rest.
         cached = _number(values.get("cache_read_input_tokens"))
-        return cached, cached + _number(values.get("input_tokens"))
+        written = _number(values.get("cache_creation_input_tokens"))
+        return cached, cached + written + _number(values.get("input_tokens"))
     key, total = (
         ("input_tokens_details", "input_tokens")
         if protocol == "openai-responses"

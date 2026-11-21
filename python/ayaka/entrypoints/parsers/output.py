@@ -211,6 +211,11 @@ class OutputParser:
         return self._tokens
 
     @property
+    def reasoning_tokens(self) -> int:
+        """Tokens fed so far inside the reasoning block, at most :attr:`generated_tokens`."""
+        return min(self._reasoning_tokens, self._tokens)
+
+    @property
     def in_reasoning(self) -> bool:
         """Whether the output is inside the reasoning block now."""
         return self._reasoning is not None and self._reasoning.inside
@@ -274,6 +279,7 @@ class OutputParser:
                 completion_tokens=self._tokens,
                 cached_tokens=usage.cached_tokens,
                 reasoning_tokens=min(self._reasoning_tokens, self._tokens),
+                cache_written_tokens=usage.cache_written_tokens,
             )
         )
         events.append(FinishEvent(FinishReason.STOP, tool_calls=True))
@@ -295,6 +301,7 @@ class OutputParser:
             completion_tokens=usage.completion_tokens,
             cached_tokens=usage.cached_tokens,
             reasoning_tokens=min(self._reasoning_tokens, usage.completion_tokens),
+            cache_written_tokens=usage.cache_written_tokens,
         )
 
     def _terminal(self, output: RequestOutput) -> FinishEvent | ErrorEvent:
@@ -372,11 +379,14 @@ class ChoicesParser:
         if output.finished or all(parser.done for parser in self._parsers):
             self._done = True
             usage = output.usage
+            reasoning = sum(parser.reasoning_tokens for parser in self._parsers)
             events.append(
                 UsageEvent(
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
                     cached_tokens=usage.cached_tokens,
+                    reasoning_tokens=min(reasoning, usage.completion_tokens),
+                    cache_written_tokens=usage.cache_written_tokens,
                 )
             )
             error = output.error if output.finished else None

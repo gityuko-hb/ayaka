@@ -55,11 +55,18 @@ def _require_top_logprobs(value: object) -> tuple[tuple[TokenId, float], ...]:
 
 @dataclass(frozen=True, slots=True)
 class Usage:
-    """Token accounting for one finished request."""
+    """Token accounting for one finished request.
+
+    The prompt splits three ways: ``cached_tokens`` were read from the prefix cache,
+    ``cache_written_tokens`` were computed and registered in it for later requests (whole blocks
+    only), and the rest were computed and kept private. The two never add up to more than
+    ``prompt_tokens``.
+    """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    cache_written_tokens: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -77,8 +84,17 @@ class Usage:
             "cached_tokens",
             require_int(self.cached_tokens, "cached_tokens", minimum=0),
         )
+        object.__setattr__(
+            self,
+            "cache_written_tokens",
+            require_int(self.cache_written_tokens, "cache_written_tokens", minimum=0),
+        )
         if self.cached_tokens > self.prompt_tokens:
             raise InvalidRequestError("cached_tokens must be <= prompt_tokens")
+        if self.cached_tokens + self.cache_written_tokens > self.prompt_tokens:
+            raise InvalidRequestError(
+                "cached_tokens + cache_written_tokens must be <= prompt_tokens"
+            )
 
     @property
     def total_tokens(self) -> int:
