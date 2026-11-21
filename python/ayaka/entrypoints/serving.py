@@ -9,7 +9,10 @@ names and the metrics. A handler reads its protocol's request into a
         -> stream | collect -> finish
 
 Until :meth:`Serving.attach` is called every generation route answers 503 and ``/health`` says
-``starting``.
+``starting``. Once ready, ``/health`` says ``stalled`` while the engine has work and has made no
+progress for ``stall_seconds`` (:meth:`Serving.stalled`); the server keeps serving, it only
+reports. :meth:`Serving.shutdown` drains the engine and then cuts the streams whose client
+stopped reading, so they cannot hold the process.
 
 The default log level records request ids, token counts and timings, never prompt or output text.
 
@@ -19,6 +22,7 @@ This module imports aiohttp, from the ``serve`` extra; ``import ayaka`` does not
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -66,6 +70,10 @@ if TYPE_CHECKING:
 __all__ = ["REQUEST_ID", "SERVING", "Generation", "Readiness", "Serving"]
 
 _LOG = logging.getLogger("ayaka.serve")
+
+#: Seconds the event streams get at shutdown to write their last frames, once the engine has
+#: ended every request; a stream still writing after that has a client that stopped reading.
+_FLUSH_SECONDS: Final = 1.0
 
 
 class Readiness(StrEnum):
@@ -141,6 +149,11 @@ class Serving:
         self.max_context_tokens = 0
         self.prefix_cache: bool | None = None
         self.suggested_tool_call_parser: str | None = None
+        # Requests whose event stream is open, by id(): an aiohttp request is not hashable.
+        self._streaming: dict[int, web.Request] = {}
+        self._no_streams = asyncio.Event()
+        self._no_streams.set()
+        self.metrics.progress_age.set_function(self.progress_age)
 
     def normalized(
         self, conversation: Conversation, headers: Mapping[str, str], request_id: str = ""
@@ -188,6 +201,49 @@ class Serving:
         if self.status is not Readiness.DEAD:
             self.status = Readiness.DRAINING
         self.metrics.ready.set(0)
+
+    def progress_age(self) -> float:
+        """Seconds since the engine last made progress while it had work; 0 when it has none."""
+        llm = self.llm
+        if llm is None:
+            return 0.0
+        health = llm.health()
+        if not health.busy or health.state is not EngineState.RUNNING:
+            return 0.0
+        return max(0.0, time.monotonic() - health.progress_at)
+
+    def stalled(self) -> bool:
+        """Whether the engine has had work without progress for longer than ``stall_seconds``."""
+        return self.progress_age() > self.config.stall_seconds
+
+    async def shutdown(self, grace: float, *, flush: float = _FLUSH_SECONDS) -> int:
+        """Stop serving: refuse new requests, drain the engine, then cut the stuck streams.
+
+        The requests in flight get ``grace`` seconds to finish and are cancelled after that. The
+        event streams then get ``flush`` seconds to write their last frames; a stream still open
+        after that is blocked on a client that stopped reading, and its connection is cut.
+
+        Returns:
+            How many connections were cut.
+        """
+        self.begin_draining()
+        if self.llm is not None:
+            await self.llm.shutdown(grace)
+        return await self._cut_stuck_streams(flush)
+
+    async def _cut_stuck_streams(self, within: float) -> int:
+        """Give open event streams ``within`` seconds to end, then abort the ones still writing.
+
+        Aborting a transport drops what it has buffered and fails the blocked write, so the
+        handler ends at once; closing it would wait for the buffer to drain, which never happens.
+        """
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._no_streams.wait(), within)
+        stuck = [request.transport for request in self._streaming.values()]
+        for transport in stuck:
+            if transport is not None:
+                transport.abort()
+        return len(stuck)
 
     def require_ready(self) -> EngineClient:
         """The engine, if the server accepts requests now.
@@ -408,6 +464,9 @@ class Serving:
             }
         )
         await response.prepare(request)
+        self._streaming[id(request)] = request  # until the end of the body: _cut_stuck_streams
+        self._no_streams.clear()
+        answered = False
         try:
             await pump(
                 generation.stream,
@@ -419,6 +478,8 @@ class Serving:
                 write_deadline=config.slow_client_seconds,
                 observe=self._observer(generation),
             )
+            answered = True
+            await response.write_eof()
         except SlowClientError:
             generation.outcome = "slow_client"
             self.metrics.finished.labels("slow_client").inc()
@@ -427,10 +488,13 @@ class Serving:
                 request.transport.close()
             return response
         except ConnectionError:
-            generation.outcome = "client_gone"
-            self.metrics.finished.labels("client_gone").inc()
-            return response
-        await response.write_eof()
+            if not answered:  # once every frame is written, a lost end of body changes nothing
+                generation.outcome = "client_gone"
+                self.metrics.finished.labels("client_gone").inc()
+        finally:
+            del self._streaming[id(request)]
+            if not self._streaming:
+                self._no_streams.set()
         return response
 
     async def collect(self, generation: Generation) -> Collected:

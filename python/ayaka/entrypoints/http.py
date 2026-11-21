@@ -7,7 +7,8 @@ generation route answers 503 and ``/health`` says ``starting``.
 
 Routes::
 
-    GET  /health                ready (200), or starting / draining / dead (503); no key needed
+    GET  /health                ready (200), or starting / draining / stalled / dead (503); no key
+                                needed
     GET  /metrics               Prometheus text; no per-request labels
     GET  /v1/models             the loaded model and its aliases
     POST /v1/chat/completions   OpenAI Chat Completions
@@ -308,6 +309,8 @@ async def _health(request: web.Request) -> web.Response:
     if serving.llm is not None and serving.llm.health().state is EngineState.DEAD:
         serving.status = Readiness.DEAD
     status = serving.status
+    if status is Readiness.READY and serving.stalled():
+        return web.json_response({"status": "stalled"}, status=503)
     return web.json_response(
         {"status": status.value}, status=200 if status is Readiness.READY else 503
     )

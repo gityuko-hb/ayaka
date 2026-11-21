@@ -489,6 +489,12 @@ def _server_flags(command: argparse.ArgumentParser) -> None:
         help="cancel a request whose client blocks a write this long (30)",
     )
     server.add_argument(
+        "--stall-timeout",
+        type=float,
+        metavar="S",
+        help="/health answers stalled once the engine has work but no progress for S (60)",
+    )
+    server.add_argument(
         "--no-normalize",
         dest="normalize_prompts",
         action="store_false",

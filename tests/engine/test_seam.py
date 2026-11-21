@@ -9,6 +9,8 @@ with exactly one final output on every path, and the caller that aborts gets not
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -132,6 +134,59 @@ class TestContract:
             assert llm.health().state is EngineState.STOPPED
 
         asyncio.run(main())
+
+
+class TestProgress:
+    """``health()`` tells a stuck step from an idle engine: busy, with a clock that stands still."""
+
+    def test_a_blocked_step_is_busy_and_its_progress_stands_still(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        release = threading.Event()
+
+        async def body(llm: AsyncLLM) -> None:
+            runner = llm.engine.runner
+            real = runner.execute
+
+            def blocked(step: Any, drafts: Any = None) -> StepOutput:
+                release.wait(10)
+                return real(step, drafts)
+
+            assert not llm.health().busy
+            await asyncio.sleep(0.2)  # idle long enough for an old timestamp to show
+            runner.execute = blocked  # type: ignore[method-assign]  # a step that hangs
+            added = time.monotonic()
+            stream = await llm.add(_request("stuck", 3))
+            first = llm.health()
+            # Work that ends an idle period counts as progress: not the idle timestamp.
+            assert first.busy
+            assert first.progress_at >= added
+            await asyncio.sleep(0.2)
+            second = llm.health()
+            assert second.busy
+            assert second.progress_at == first.progress_at
+            release.set()
+            _ended_once(await _all(stream))
+            assert await llm.drain(5.0)
+            done = llm.health()
+            assert not done.busy
+            assert done.progress_at > second.progress_at
+
+        try:
+            _run(checkpoint, body)
+        finally:
+            release.set()
+
+    def test_the_fake_engine_stalls_and_resumes(self) -> None:
+        fake = FakeEngine(_INFO)
+        assert not fake.health().busy
+        fake.stall()
+        stalled = fake.health()
+        assert stalled.busy
+        assert fake.health().progress_at == stalled.progress_at
+        fake.resume()
+        assert not fake.health().busy
+        assert fake.health().progress_at >= stalled.progress_at
 
 
 class TestEveryAdmittedRequestEndsOnce:

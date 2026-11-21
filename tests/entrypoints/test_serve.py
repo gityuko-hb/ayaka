@@ -7,8 +7,10 @@ are tested in a child process by ``tests/e2e/test_serving.py``).
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -77,6 +79,10 @@ class TestSettings:
         assert config.host == "0.0.0.0"  # noqa: S104  # read from the file
         assert config.cors_origins == ("*",)
         assert config.shutdown_timeout == ServerConfig().shutdown_timeout
+
+    def test_the_stall_timeout_flag_sets_stall_seconds(self) -> None:
+        assert server_config(_args()).stall_seconds == ServerConfig().stall_seconds == 60.0
+        assert server_config(_args("--stall-timeout", "5")).stall_seconds == 5.0
 
     def test_repeated_flags_become_tuples(self) -> None:
         config = server_config(
@@ -217,6 +223,28 @@ class TestLifeCycle:
         assert len(records) == 2
         assert [record.completion_tokens for record in records] == [5, 5]
 
+    def test_start_up_objects_are_frozen_while_serving_and_handed_back_after(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        before = gc.get_freeze_count()
+
+        async def main_() -> None:
+            task, stop, url, said = await _run_server(checkpoint, ServerConfig(port=0))
+            assert gc.get_freeze_count() > before
+            reported = re.fullmatch(
+                r"froze (\d+) start-up objects out of the garbage collector's view", said[1]
+            )
+            assert reported is not None
+            assert int(reported[1]) > 0
+            assert said[2].startswith("ready: tiny")  # frozen before the server says it is ready
+            async with aiohttp.ClientSession() as session:
+                assert (await session.get(f"{url}/health")).status == 200
+            stop.set()
+            await asyncio.wait_for(task, 30)
+
+        asyncio.run(main_())
+        assert gc.get_freeze_count() == before
+
     def test_stopping_drains_requests_in_flight_and_refuses_new_ones(
         self, checkpoint: TinyCheckpoint
     ) -> None:
@@ -239,7 +267,8 @@ class TestLifeCycle:
                 assert last["choices"][0]["finish_reason"] == "length"
             await asyncio.wait_for(task, 30)
             assert said[0].startswith("listening on http://127.0.0.1:")
-            assert said[1].startswith("ready: tiny")
+            assert said[1].startswith("froze ")
+            assert said[2].startswith("ready: tiny")
             assert said[-1] == "stopped"
 
         asyncio.run(main_())

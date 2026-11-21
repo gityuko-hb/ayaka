@@ -45,6 +45,7 @@ SERVER_FLAGS: Final = (
     ("sse_coalesce_ms", "sse_coalesce_ms"),
     ("keepalive", "keepalive_seconds"),
     ("slow_client_timeout", "slow_client_seconds"),
+    ("stall_timeout", "stall_seconds"),
     ("normalize_prompts", "normalize_prompts"),
 )
 

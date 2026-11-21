@@ -75,6 +75,11 @@ class ServingMetrics:
         self.ready = Gauge(
             "ayaka_server_ready", "1 when the server accepts requests", registry=self.registry
         )
+        self.progress_age = Gauge(
+            "ayaka_engine_progress_age_seconds",
+            "Seconds since the engine last made progress while it had work; 0 when idle",
+            registry=self.registry,
+        )
         self.duration = Histogram(
             "ayaka_request_seconds",
             "Time from a generation request's arrival to its last byte",

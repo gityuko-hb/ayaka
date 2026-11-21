@@ -2,12 +2,18 @@
 
 ::
 
-    listening  ->  loading the model (503 "starting")  ->  one warm-up token  ->  ready (200)
+    listening  ->  loading the model (503 "starting")  ->  one warm-up token
+               ->  freeze the start-up objects  ->  ready (200)
     first SIGINT/SIGTERM  ->  draining: new requests get 503; requests in flight get
-                              ``shutdown_timeout`` seconds, then end CANCELLED at a step boundary
+                              ``shutdown_timeout`` seconds, then end CANCELLED at a step boundary;
+                              a stream still writing one second after that has a client that
+                              stopped reading and is cut; aiohttp gets 5 s for the other handlers
     second signal         ->  the process exits at once
 
 The server listens before the model is loaded, so a health check can tell "starting" from "down".
+Everything alive after the warm-up (the model, the caches, the compiled graphs) is moved out of
+the garbage collector's view, so later collections do not walk it during decode steps; it is
+handed back when the server stops.
 Nothing here is imported by ``import ayaka`` or by ``ayaka run``: it loads aiohttp.
 """
 
@@ -15,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
+import logging
 import os
 import signal
 from typing import TYPE_CHECKING, Final
@@ -31,6 +39,7 @@ from ayaka.entrypoints.http import create_app
 from ayaka.entrypoints.parsers.output import OutputFormat
 from ayaka.entrypoints.serving import Serving
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput
+from ayaka.utils.gc_control import freeze_startup_objects
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -48,6 +57,11 @@ __all__ = ["EXIT_SECOND_SIGNAL", "serve"]
 
 #: The exit code when a second signal ends the process without waiting.
 EXIT_SECOND_SIGNAL: Final = 130
+
+#: Seconds aiohttp gives the handlers still running at shutdown before it cancels them.
+_HTTP_SHUTDOWN_SECONDS: Final = 5.0
+
+_LOG = logging.getLogger("ayaka.serve")
 
 
 class _Signals:
@@ -124,11 +138,17 @@ async def serve(
     loop = asyncio.get_running_loop()
     stop = stop if stop is not None else asyncio.Event()
     serving = Serving(config, model_name=model_name)
-    runner = web.AppRunner(create_app(serving), handler_cancellation=True, access_log=None)
+    runner = web.AppRunner(
+        create_app(serving),
+        handler_cancellation=True,
+        access_log=None,
+        shutdown_timeout=_HTTP_SHUTDOWN_SECONDS,
+    )
     await runner.setup()
     signals = _Signals(loop, stop) if handle_signals else None
     llm: AsyncLLM | None = None
     recorder: SessionRecorder | None = None
+    frozen = False
     try:
         site = web.TCPSite(runner, config.host, config.port)
         await site.start()
@@ -149,6 +169,9 @@ async def serve(
         await _warm_up(llm, core.tokenizer)
         if stop.is_set():
             return
+        count = freeze_startup_objects()
+        frozen = True
+        say(f"froze {count} start-up objects out of the garbage collector's view")
         if recorder is not None:
             recorder.recording = True
             say(
@@ -164,8 +187,9 @@ async def serve(
             "stopping: new requests get 503; requests in flight have "
             f"{config.shutdown_timeout:g} s to finish (a second signal exits at once)"
         )
-        serving.begin_draining()
-        await llm.shutdown(config.shutdown_timeout)
+        cut = await serving.shutdown(config.shutdown_timeout)
+        if cut:
+            _LOG.info("cut %d streams whose client stopped reading", cut)
     finally:
         if llm is not None:
             with contextlib.suppress(Exception):
@@ -175,6 +199,8 @@ async def serve(
         await runner.cleanup()
         if signals is not None:
             signals.restore()
+        if frozen:
+            gc.unfreeze()
     say("stopped")
 
 
