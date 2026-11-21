@@ -26,7 +26,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, cast
 
 from ayaka.core.constraints import ConstraintKind
 from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
@@ -38,12 +38,12 @@ from ayaka.entrypoints.conversation import (
     ToolCall,
     ToolSpec,
 )
-from ayaka.entrypoints.http import JsonObject, sampling_params
+from ayaka.entrypoints.wire.policy import apply_policy
+from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ayaka.core.params import SamplingParams
     from ayaka.entrypoints.conversation import Conversation, FinishEvent, UsageEvent
     from ayaka.entrypoints.failures import ApiFailure
 
@@ -85,7 +85,8 @@ class MessagesRequest:
     Attributes:
         model: The model the client asked for.
         conversation: The system prompt, messages and tools.
-        sampling: The sampling fields; ``max_tokens`` is the client's, not yet capped.
+        sampling: The sampling fields, without ``max_tokens``: the server builds them once
+            it has capped ``max_tokens`` by the room the prompt leaves.
         max_tokens: The client's limit on generated tokens.
         stream: Whether to answer with server-sent events.
         tools: Whether the model may call the tools.
@@ -95,38 +96,12 @@ class MessagesRequest:
 
     model: str | None
     conversation: Conversation
-    sampling: SamplingParams
+    sampling: SamplingFields
     max_tokens: int
     stream: bool
     tools: bool
     parallel_tool_calls: bool
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
-
-
-_KEYS: Final = frozenset(
-    {
-        "model",
-        "messages",
-        "system",
-        "max_tokens",
-        "stop_sequences",
-        "temperature",
-        "top_p",
-        "top_k",
-        "stream",
-        "tools",
-        "tool_choice",
-        "thinking",
-        "metadata",
-        "service_tier",
-        "container",
-        "mcp_servers",
-        "cache_control",
-        "output_format",
-        "output_config",
-        "n",
-    }
-)
 
 
 def _output_format(body: JsonObject) -> tuple[ConstraintKind | None, Mapping[str, object] | None]:
@@ -149,9 +124,6 @@ def _output_format(body: JsonObject) -> tuple[ConstraintKind | None, Mapping[str
 
 def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
     """The conversation, whether the model may call tools, and whether several at once."""
-    for field in ("container", "mcp_servers"):
-        if body.has(field):
-            raise _unsupported(field, "not available on this server")
     if body.has("n") and body.raw("n") != 1:
         raise _unsupported("n", "Messages returns one answer per request")
     builder = ConversationBuilder()
@@ -180,9 +152,7 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
         InvalidRequestError: For a malformed or missing field, naming it.
         UnsupportedFeatureError: For a field that would change the answer and is not available.
     """
-    unknown = body.unknown(_KEYS)
-    if unknown:
-        _LOG.debug("messages: ignoring unknown fields %s", unknown)
+    apply_policy(body, "/v1/messages")
     max_tokens = body.integer("max_tokens", required=True)
     assert max_tokens is not None  # noqa: S101  # required
     if max_tokens < 1:
@@ -194,12 +164,13 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
     stop = body.array("stop_sequences")
     if stop is not None and not all(isinstance(item, str) for item in stop):
         raise _invalid("stop_sequences", "must be an array of strings")
-    sampling = sampling_params(
-        temperature=body.number("temperature"),
-        top_p=body.number("top_p"),
-        top_k=body.integer("top_k"),
-        stop=tuple(cast("list[str]", stop)) if stop else None,
-        max_tokens=max_tokens,
+    sampling = SamplingFields(
+        {
+            "temperature": body.number("temperature"),
+            "top_p": body.number("top_p"),
+            "top_k": body.integer("top_k"),
+            "stop": tuple(cast("list[str]", stop)) if stop else None,
+        }
     )
     return MessagesRequest(
         model=body.string("model"),
@@ -215,9 +186,7 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
 
 def parse_count_tokens_request(body: JsonObject) -> tuple[str | None, Conversation]:
     """Read a ``count_tokens`` request: the model and the conversation to count."""
-    unknown = body.unknown(_KEYS)
-    if unknown:
-        _LOG.debug("count_tokens: ignoring unknown fields %s", unknown)
+    apply_policy(body, "/v1/messages/count_tokens")
     conversation, _, _ = _conversation(body)
     return body.string("model"), conversation
 

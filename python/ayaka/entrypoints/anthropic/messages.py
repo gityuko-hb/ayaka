@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import replace
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 from aiohttp import web
@@ -257,9 +256,7 @@ async def create_message(request: web.Request) -> web.StreamResponse:
         message.conversation, request.headers, request_id=request[REQUEST_ID]
     )
     prompt = await serving.tokenize_chat(conversation, max_tokens=message.max_tokens)
-    sampling = replace(
-        message.sampling, max_tokens=serving.output_tokens(len(prompt), message.max_tokens)
-    )
+    sampling = message.sampling.build(serving.output_tokens(len(prompt), message.max_tokens))
     public_id = request[REQUEST_ID]
     generation = await serving.start(
         prompt,

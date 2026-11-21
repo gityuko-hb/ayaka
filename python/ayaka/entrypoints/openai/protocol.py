@@ -16,7 +16,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, cast
 
 from ayaka.core.constraints import ConstraintKind
 from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
@@ -29,13 +29,13 @@ from ayaka.entrypoints.conversation import (
     ToolSpec,
     parse_arguments,
 )
-from ayaka.entrypoints.http import JsonObject, sampling_params
+from ayaka.entrypoints.wire.policy import apply_policy
+from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from ayaka.core.outputs import TokenLogprob
-    from ayaka.core.params import SamplingParams
     from ayaka.entrypoints.conversation import (
         Collected,
         Conversation,
@@ -109,53 +109,25 @@ def _logit_bias(body: JsonObject) -> dict[int, float] | None:
     return result
 
 
-def _sampling(body: JsonObject, *, max_tokens: int | None, logprobs: int | None) -> SamplingParams:
-    return sampling_params(
-        n=body.integer("n"),
-        temperature=body.number("temperature"),
-        top_p=body.number("top_p"),
-        top_k=body.integer("top_k"),
-        min_p=body.number("min_p"),
-        presence_penalty=body.number("presence_penalty"),
-        frequency_penalty=body.number("frequency_penalty"),
-        repetition_penalty=body.number("repetition_penalty"),
-        seed=body.integer("seed"),
-        stop=_stop(body),
-        logit_bias=_logit_bias(body),
-        logprobs=logprobs,
-        min_tokens=body.integer("min_tokens"),
-        ignore_eos=body.raw("ignore_eos"),
-        # The server caps max_tokens by the room the prompt leaves, once it is tokenized.
-        max_tokens=max_tokens,
-    )
-
-
-_SAMPLING_KEYS: Final = frozenset(
-    {
-        "n",
-        "temperature",
-        "top_p",
-        "top_k",
-        "min_p",
-        "presence_penalty",
-        "frequency_penalty",
-        "repetition_penalty",
-        "seed",
-        "stop",
-        "logit_bias",
-        "min_tokens",
-        "ignore_eos",
-        "max_tokens",
-        "logprobs",
-        "stream",
-        "stream_options",
-        "model",
-        "user",
-        "metadata",
-        "store",
-        "service_tier",
+def _sampling(body: JsonObject, *, logprobs: int | None) -> SamplingFields:
+    """The sampling fields; the server adds ``max_tokens`` once it knows the prompt's length."""
+    fields: dict[str, object] = {
+        "n": body.integer("n"),
+        "temperature": body.number("temperature"),
+        "top_p": body.number("top_p"),
+        "top_k": body.integer("top_k"),
+        "min_p": body.number("min_p"),
+        "presence_penalty": body.number("presence_penalty"),
+        "frequency_penalty": body.number("frequency_penalty"),
+        "repetition_penalty": body.number("repetition_penalty"),
+        "seed": body.integer("seed"),
+        "stop": _stop(body),
+        "logit_bias": _logit_bias(body),
+        "logprobs": logprobs,
+        "min_tokens": body.integer("min_tokens"),
+        "ignore_eos": body.raw("ignore_eos"),
     }
-)
+    return SamplingFields(fields)
 
 
 def _stream_options(body: JsonObject) -> bool:
@@ -173,7 +145,8 @@ class ChatRequest:
     Attributes:
         model: The model the client asked for, or ``None``.
         conversation: The messages and tools.
-        sampling: The sampling fields; ``max_tokens`` is the client's, not yet capped.
+        sampling: The sampling fields, without ``max_tokens``: the server builds them once
+            it has capped ``max_tokens`` by the room the prompt leaves.
         max_tokens: The client's limit on generated tokens, or ``None``.
         stream: Whether to answer with server-sent events.
         include_usage: Whether a streamed answer ends with a usage chunk.
@@ -185,31 +158,13 @@ class ChatRequest:
 
     model: str | None
     conversation: Conversation
-    sampling: SamplingParams
+    sampling: SamplingFields
     max_tokens: int | None
     stream: bool
     include_usage: bool
     tools: bool
     parallel_tool_calls: bool
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
-
-
-_CHAT_KEYS: Final = _SAMPLING_KEYS | {
-    "messages",
-    "tools",
-    "tool_choice",
-    "parallel_tool_calls",
-    "response_format",
-    "max_completion_tokens",
-    "top_logprobs",
-    "functions",
-    "function_call",
-    "audio",
-    "modalities",
-    "prediction",
-    "web_search_options",
-    "reasoning_effort",
-}
 
 
 def parse_chat_request(body: JsonObject) -> ChatRequest:
@@ -219,21 +174,11 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         InvalidRequestError: For a malformed field, naming it.
         UnsupportedFeatureError: For a field that would change the answer and is not available.
     """
-    unknown = body.unknown(_CHAT_KEYS)
-    if unknown:
-        _LOG.debug("chat completions: ignoring unknown fields %s", unknown)
-    for field in ("functions", "function_call"):
-        if body.has(field):
-            raise _unsupported(field, "the deprecated function fields are not served; use tools")
-    for field in ("audio", "prediction", "web_search_options"):
-        if body.has(field):
-            raise _unsupported(field, "not available on this server")
+    apply_policy(body, "/v1/chat/completions")
     modalities = body.array("modalities")
     if modalities is not None and any(item != "text" for item in modalities):
         raise _unsupported("modalities", "only text output is available")
     response, schema = response_format(body.child("response_format"), "response_format")
-    if body.has("reasoning_effort"):
-        _LOG.debug("chat completions: reasoning_effort is a hint; the model reasons as trained")
 
     builder = ConversationBuilder()
     messages = body.objects("messages")
@@ -254,7 +199,7 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
     return ChatRequest(
         model=body.string("model"),
         conversation=builder.build(),
-        sampling=_sampling(body, max_tokens=max_tokens, logprobs=logprobs),
+        sampling=_sampling(body, logprobs=logprobs),
         max_tokens=max_tokens,
         stream=body.flag("stream"),
         include_usage=_stream_options(body),
@@ -417,13 +362,10 @@ class CompletionRequest:
 
     model: str | None
     prompt: str | tuple[int, ...]
-    sampling: SamplingParams
+    sampling: SamplingFields
     max_tokens: int | None
     stream: bool
     include_usage: bool
-
-
-_COMPLETION_KEYS: Final = _SAMPLING_KEYS | {"prompt", "echo", "suffix", "best_of"}
 
 
 def parse_completion_request(body: JsonObject) -> CompletionRequest:
@@ -433,13 +375,9 @@ def parse_completion_request(body: JsonObject) -> CompletionRequest:
         InvalidRequestError: For a malformed field, naming it.
         UnsupportedFeatureError: For ``echo``, ``suffix``, ``best_of > 1`` or several prompts.
     """
-    unknown = body.unknown(_COMPLETION_KEYS)
-    if unknown:
-        _LOG.debug("completions: ignoring unknown fields %s", unknown)
+    apply_policy(body, "/v1/completions")
     if body.flag("echo"):
         raise _unsupported("echo", "returning the prompt is not available")
-    if body.has("suffix"):
-        raise _unsupported("suffix", "fill-in-the-middle is not available")
     best_of = body.integer("best_of")
     if best_of is not None and best_of > 1:
         raise _unsupported("best_of", "several candidates per request are not available")
@@ -447,11 +385,7 @@ def parse_completion_request(body: JsonObject) -> CompletionRequest:
     return CompletionRequest(
         model=body.string("model"),
         prompt=_prompt(body),
-        sampling=_sampling(
-            body,
-            max_tokens=16 if max_tokens is None else max_tokens,
-            logprobs=body.integer("logprobs"),
-        ),
+        sampling=_sampling(body, logprobs=body.integer("logprobs")),
         max_tokens=16 if max_tokens is None else max_tokens,
         stream=body.flag("stream"),
         include_usage=_stream_options(body),

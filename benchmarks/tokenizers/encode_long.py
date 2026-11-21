@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "_support
 from ayaka.configs.tokenizer import TokenizerConfig
 from ayaka.entrypoints.anthropic.protocol import parse_messages_request
 from ayaka.entrypoints.conversation import Conversation, ToolCall, Turn
-from ayaka.entrypoints.http import JsonObject
+from ayaka.entrypoints.wire.reader import JsonObject
 from ayaka.tokenizers.contracts import EncodeOptions
 from ayaka.tokenizers.factory import DefaultTokenizerFactory
 from ayaka.tokenizers.service import TokenizerService

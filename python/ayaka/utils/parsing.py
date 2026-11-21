@@ -132,11 +132,12 @@ def format_human_int(value: int, *, binary: bool = True) -> str:
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    counts = Counter(key for key, _ in pairs)
-    duplicated = sorted(key for key, count in counts.items() if count > 1)
-    if duplicated:
+    result = dict(pairs)
+    if len(result) != len(pairs):  # a key repeats: only now count them, to name it
+        counts = Counter(key for key, _ in pairs)
+        duplicated = sorted(key for key, count in counts.items() if count > 1)
         raise ValueError(f"duplicate object keys: {duplicated}")
-    return dict(pairs)
+    return result
 
 
 def parse_json_strict(text: str) -> object:

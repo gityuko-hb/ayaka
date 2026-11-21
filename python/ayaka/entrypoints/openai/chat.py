@@ -22,7 +22,7 @@ tokens of every choice.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 from aiohttp import web
@@ -319,9 +319,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         chat.conversation, request.headers, request_id=request[REQUEST_ID]
     )
     prompt = await serving.tokenize_chat(conversation, max_tokens=chat.max_tokens)
-    sampling = replace(
-        chat.sampling, max_tokens=serving.output_tokens(len(prompt), chat.max_tokens)
-    )
+    sampling = chat.sampling.build(serving.output_tokens(len(prompt), chat.max_tokens))
     public_id = request[REQUEST_ID]
     structured = serving.constraint(
         chat.output,
@@ -354,10 +352,7 @@ async def create_completion(request: web.Request) -> web.StreamResponse:
     completion = parse_completion_request(await read_body(request))
     serving.check_model(completion.model)
     prompt = await serving.tokenize_text(completion.prompt, max_tokens=completion.max_tokens)
-    sampling = replace(
-        completion.sampling,
-        max_tokens=serving.output_tokens(len(prompt), completion.max_tokens),
-    )
+    sampling = completion.sampling.build(serving.output_tokens(len(prompt), completion.max_tokens))
     public_id = request[REQUEST_ID]
     generation = await serving.start(prompt, sampling, public_id=public_id, tools=False)
     meta = _Meta(f"cmpl-{public_id}", int(time.time()), serving.model_name)
