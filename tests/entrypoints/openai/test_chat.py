@@ -28,10 +28,10 @@ from ayaka.entrypoints.conversation import (
 pytest.importorskip("torch")
 pytest.importorskip("aiohttp")
 
-from ayaka.entrypoints.http import JsonObject
 from ayaka.entrypoints.openai.chat import ChatStreamEncoder, _Meta  # pyright: ignore[reportPrivateUsage]
 from ayaka.entrypoints.openai.protocol import parse_chat_request
 from ayaka.entrypoints.parsers.output import OutputFormat
+from ayaka.entrypoints.wire.reader import JsonObject
 from serving_support import parse_sse, read_sse, script, serve
 from tiny_model import TinyCheckpoint, write_tiny_gpt2
 

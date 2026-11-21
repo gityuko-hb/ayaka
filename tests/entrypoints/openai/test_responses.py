@@ -26,13 +26,13 @@ from tokenizer_fakes import FakeTokenizer
 pytest.importorskip("torch")
 pytest.importorskip("aiohttp")
 
-from ayaka.entrypoints.http import JsonObject
 from ayaka.entrypoints.openai.responses import (
     ResponsesStreamEncoder,
     _Snapshot,  # pyright: ignore[reportPrivateUsage]
     parse_responses_request,
 )
 from ayaka.entrypoints.parsers.output import OutputFormat
+from ayaka.entrypoints.wire.reader import JsonObject
 from serving_support import parse_sse, read_sse, script, serve, write_long_gpt2
 from tiny_model import TinyCheckpoint, greedy_reference, write_tiny_gpt2
 

@@ -37,10 +37,10 @@ from aiohttp import web
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from ayaka.core.errors import EngineError, InvalidRequestError
-from ayaka.core.params import SamplingParams
 from ayaka.engine.seam import EngineState
 from ayaka.entrypoints.failures import AnswerFailedError, ErrorRenderer, failure_for
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING, Readiness
+from ayaka.entrypoints.wire.reader import JsonObject
 from ayaka.utils.parsing import parse_json_strict
 
 if TYPE_CHECKING:
@@ -49,113 +49,12 @@ if TYPE_CHECKING:
     from ayaka.configs.server import ServerConfig
     from ayaka.entrypoints.serving import Serving
 
-__all__ = ["JsonObject", "create_app", "read_body", "sampling_params"]
+__all__ = ["create_app", "read_body"]
 
 _LOG = logging.getLogger("ayaka.serve")
 
 
 # -- reading request bodies -------------------------------------------------------------------
-
-
-class JsonObject:
-    """A JSON object from a request body, read field by field with the field's path in errors.
-
-    Args:
-        data: The object.
-        path: Where it is in the body, for messages (``messages[2]``); empty at the top.
-    """
-
-    def __init__(self, data: dict[str, object], path: str = "") -> None:
-        self.data = data
-        self.path = path
-
-    @classmethod
-    def of(cls, value: object, path: str) -> JsonObject:
-        """``value`` as an object, or an error naming ``path``."""
-        if not isinstance(value, dict):
-            raise _invalid(path, "must be an object")
-        return cls(cast("dict[str, object]", value), path)
-
-    def where(self, key: str) -> str:
-        """The path of ``key`` in the body."""
-        return f"{self.path}.{key}" if self.path else key
-
-    def has(self, key: str) -> bool:
-        """Whether the field is present and not null."""
-        return self.data.get(key) is not None
-
-    def raw(self, key: str) -> object:
-        """The field as it is, ``None`` when absent."""
-        return self.data.get(key)
-
-    def string(self, key: str, *, required: bool = False) -> str | None:
-        """An optional string field."""
-        value = self._get(key, required)
-        if value is not None and not isinstance(value, str):
-            raise _invalid(self.where(key), "must be a string")
-        return value
-
-    def text(self, key: str) -> str:
-        """A required string field."""
-        value = self.string(key, required=True)
-        assert value is not None  # noqa: S101  # required
-        return value
-
-    def integer(self, key: str, *, required: bool = False) -> int | None:
-        """An optional integer field."""
-        value = self._get(key, required)
-        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
-            raise _invalid(self.where(key), "must be an integer")
-        return value
-
-    def number(self, key: str) -> float | None:
-        """An optional number field."""
-        value = self.data.get(key)
-        if value is None:
-            return None
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise _invalid(self.where(key), "must be a number")
-        return float(value)
-
-    def flag(self, key: str, default: bool = False) -> bool:
-        """An optional boolean field."""
-        value = self.data.get(key)
-        if value is None:
-            return default
-        if not isinstance(value, bool):
-            raise _invalid(self.where(key), "must be true or false")
-        return value
-
-    def child(self, key: str) -> JsonObject | None:
-        """An optional object field."""
-        value = self.data.get(key)
-        return None if value is None else JsonObject.of(value, self.where(key))
-
-    def array(self, key: str, *, required: bool = False) -> list[object] | None:
-        """An optional array field."""
-        value = self._get(key, required)
-        if value is not None and not isinstance(value, list):
-            raise _invalid(self.where(key), "must be an array")
-        return cast("list[object] | None", value)
-
-    def objects(self, key: str) -> list[JsonObject]:
-        """An optional array of objects; empty when absent."""
-        items = self.array(key) or []
-        return [JsonObject.of(item, f"{self.where(key)}[{i}]") for i, item in enumerate(items)]
-
-    def unknown(self, known: frozenset[str]) -> list[str]:
-        """Fields this server does not know, for a debug log line."""
-        return sorted(set(self.data) - known)
-
-    def _get(self, key: str, required: bool) -> object:
-        value = self.data.get(key)
-        if value is None and required:
-            raise _invalid(self.where(key), "is required")
-        return value
-
-
-def _invalid(path: str, message: str) -> InvalidRequestError:
-    return InvalidRequestError(f"{path}: {message}", context={"param": path})
 
 
 async def read_body(request: web.Request) -> JsonObject:
@@ -173,29 +72,6 @@ async def read_body(request: web.Request) -> JsonObject:
     if not isinstance(value, dict):
         raise InvalidRequestError("the body must be a JSON object")
     return JsonObject(cast("dict[str, object]", value))
-
-
-# -- errors -----------------------------------------------------------------------------------
-
-
-# -- metrics ----------------------------------------------------------------------------------
-
-
-# -- the shared state -------------------------------------------------------------------------
-
-
-def sampling_params(**fields: object) -> SamplingParams:
-    """``SamplingParams`` from request fields; a bad value is an invalid request.
-
-    Fields that are ``None`` keep the defaults.
-    """
-    values = {key: value for key, value in fields.items() if value is not None}
-    try:
-        return SamplingParams(**values)  # type: ignore[arg-type]  # SamplingParams checks each field
-    except (TypeError, ValueError) as exc:
-        if isinstance(exc, InvalidRequestError):
-            raise
-        raise InvalidRequestError(str(exc)) from exc
 
 
 # -- the application --------------------------------------------------------------------------

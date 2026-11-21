@@ -54,7 +54,9 @@ CI runs the same commands on Ubuntu only for now. All of them must pass before r
 The public pages under `docs/` describe what the code does, nothing it does not. `docs/CAPABILITIES.md` is generated:
 edit `docs/capabilities.toml` (a row is `runs` only with a result file, `does-not-run` only with a result file and a
 reason, otherwise `untested`) and run `uv run python tools/generate_capabilities.py`; `tests/test_docs.py` fails when
-the page drifts, when a link breaks or when a page names an `ayaka` command or flag that does not exist. A new public
+the page drifts, when a link breaks or when a page names an `ayaka` command or flag that does not exist. The
+"Request fields" section of `docs/AI_REFERENCE.md` is generated too: change the table in
+`python/ayaka/entrypoints/wire/policy.py` and run `uv run python tools/generate_wire_reference.py`. A new public
 page is added to the allowlist in `.gitignore` by name.
 
 ## Layering

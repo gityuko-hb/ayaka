@@ -31,8 +31,8 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final, Literal, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, cast
 
 from aiohttp import web
 
@@ -55,13 +55,14 @@ from ayaka.entrypoints.conversation import (
     parse_arguments,
 )
 from ayaka.entrypoints.failures import responses_code
-from ayaka.entrypoints.http import JsonObject, read_body, sampling_params
+from ayaka.entrypoints.http import read_body
 from ayaka.entrypoints.openai.protocol import response_format
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
+from ayaka.entrypoints.wire.policy import apply_policy
+from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
 
 if TYPE_CHECKING:
-    from ayaka.core.params import SamplingParams
     from ayaka.entrypoints.conversation import Collected, Conversation, OutputEvent
 
 __all__ = [
@@ -96,7 +97,8 @@ class ResponsesRequest:
     Attributes:
         model: The model the client asked for.
         conversation: The instructions, input items and tools.
-        sampling: The sampling fields; ``max_tokens`` is the client's, not yet capped.
+        sampling: The sampling fields, without ``max_tokens``: the server builds them once
+            it has capped ``max_tokens`` by the room the prompt leaves.
         max_tokens: ``max_output_tokens``, or ``None``.
         stream: Whether to answer with server-sent events.
         tools: Whether the model may call the tools.
@@ -107,47 +109,13 @@ class ResponsesRequest:
 
     model: str | None
     conversation: Conversation
-    sampling: SamplingParams
+    sampling: SamplingFields
     max_tokens: int | None
     stream: bool
     tools: bool
     parallel_tool_calls: bool
     echo: dict[str, object]
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
-
-
-_KEYS: Final = frozenset(
-    {
-        "model",
-        "input",
-        "instructions",
-        "tools",
-        "tool_choice",
-        "parallel_tool_calls",
-        "max_output_tokens",
-        "temperature",
-        "top_p",
-        "stream",
-        "stream_options",
-        "previous_response_id",
-        "conversation",
-        "store",
-        "text",
-        "reasoning",
-        "include",
-        "truncation",
-        "metadata",
-        "user",
-        "prompt_cache_key",
-        "safety_identifier",
-        "service_tier",
-        "background",
-        "prompt",
-        "top_logprobs",
-        "max_tool_calls",
-        "n",
-    }
-)
 
 
 def parse_responses_request(body: JsonObject) -> ResponsesRequest:
@@ -157,31 +125,17 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
         InvalidRequestError: For a malformed field, or one that needs conversation state.
         UnsupportedFeatureError: For a field that would change the answer and is not available.
     """
-    unknown = body.unknown(_KEYS)
-    if unknown:
-        _LOG.debug("responses: ignoring unknown fields %s", unknown)
-    if body.has("previous_response_id") or body.has("conversation"):
-        field = "previous_response_id" if body.has("previous_response_id") else "conversation"
-        raise _invalid(
-            field, "this server keeps no conversation state; send the whole conversation in input"
-        )
+    apply_policy(body, "/v1/responses")
     if body.flag("store"):
         raise _invalid("store", "this server stores no responses; send store: false")
-    for field in ("background", "prompt", "max_tool_calls"):
-        if body.has(field):
-            raise _unsupported(field, "not available on this server")
     if body.has("n") and body.raw("n") != 1:
         raise _unsupported("n", "the Responses API returns one answer; use Chat Completions")
-    if body.has("top_logprobs"):
-        raise _unsupported("top_logprobs", "logprobs are not available yet")
     if body.string("truncation") not in (None, "disabled"):
         raise _unsupported("truncation", "only disabled is available")
     text = body.child("text")
     text_format = text.child("format") if text is not None else None
     response, schema = response_format(text_format, "text.format")
     reasoning = body.child("reasoning")
-    if reasoning is not None and reasoning.has("effort"):
-        _LOG.debug("responses: reasoning.effort is a hint; the model reasons as trained")
 
     builder = ConversationBuilder()
     instructions = body.string("instructions")
@@ -207,10 +161,8 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
     return ResponsesRequest(
         model=body.string("model"),
         conversation=builder.build(),
-        sampling=sampling_params(
-            temperature=body.number("temperature"),
-            top_p=body.number("top_p"),
-            max_tokens=max_tokens,
+        sampling=SamplingFields(
+            {"temperature": body.number("temperature"), "top_p": body.number("top_p")}
         ),
         max_tokens=max_tokens,
         stream=body.flag("stream"),
@@ -643,9 +595,7 @@ async def create_response(request: web.Request) -> web.StreamResponse:
         responses.conversation, request.headers, request_id=request[REQUEST_ID]
     )
     prompt = await serving.tokenize_chat(conversation, max_tokens=responses.max_tokens)
-    sampling = replace(
-        responses.sampling, max_tokens=serving.output_tokens(len(prompt), responses.max_tokens)
-    )
+    sampling = responses.sampling.build(serving.output_tokens(len(prompt), responses.max_tokens))
     public_id = request[REQUEST_ID]
     generation = await serving.start(
         prompt,

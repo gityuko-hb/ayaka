@@ -287,6 +287,28 @@ class TestErrors:
 
         _run(checkpoint, body)
 
+    def test_each_request_builds_its_sampling_parameters_once_after_the_cap(
+        self, checkpoint: TinyCheckpoint, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ayaka.entrypoints.wire import reader
+
+        built: list[SamplingParams] = []
+
+        def counting(**fields: Any) -> SamplingParams:
+            built.append(SamplingParams(**fields))
+            return built[-1]
+
+        monkeypatch.setattr(reader, "SamplingParams", counting)
+
+        async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
+            assert (await client.post(_CHAT, json=_chat("hi", 100_000))).status == 200
+            completion = {"prompt": "hi", "temperature": 0}
+            assert (await client.post("/v1/completions", json=completion)).status == 200
+
+        _run(checkpoint, body)
+        assert len(built) == 2  # one per request, already capped
+        assert built[0].max_tokens == 128 - len(_chat_prompt("hi"))
+
     def test_a_large_max_tokens_is_capped_by_the_context(self, checkpoint: TinyCheckpoint) -> None:
         async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
             response = await client.post(_CHAT, json=_chat("hi", 100_000))

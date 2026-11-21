@@ -35,6 +35,28 @@ def _generator() -> Any:
 generator = _generator()
 
 
+def _wire_generator() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "generate_wire_reference", ROOT / "tools" / "generate_wire_reference.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["generate_wire_reference"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestWireReference:
+    def test_the_request_field_section_is_the_policy_table(self) -> None:
+        wire = _wire_generator()
+        page = (ROOT / "docs" / "AI_REFERENCE.md").read_text(encoding="utf-8")
+        assert wire.render(page) == page, (
+            "the request-field section of docs/AI_REFERENCE.md and the wire policy table differ: "
+            "run uv run python tools/generate_wire_reference.py"
+        )
+
+
 class TestCapabilities:
     def test_the_page_is_what_the_generator_writes(self) -> None:
         page = (ROOT / "docs" / "CAPABILITIES.md").read_text(encoding="utf-8")
