@@ -210,7 +210,13 @@ class TestFixedEvents:
         assert frames[-2][1] == {
             "type": "message_delta",
             "delta": {"stop_reason": "tool_use", "stop_sequence": None},
-            "usage": {"output_tokens": 5},
+            # Cumulative: the whole usage, not only the output tokens.
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
         }
 
     def test_an_error_ends_the_stream_with_one_error_event(self) -> None:
@@ -246,6 +252,15 @@ def _chat_prompt(text: str) -> list[int]:
     return list(f"<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n".encode())
 
 
+def _prompt_total(usage: dict[str, int]) -> int:
+    """Anthropic splits the prompt three ways; they add up to the whole prompt."""
+    return (
+        usage["input_tokens"]
+        + usage["cache_read_input_tokens"]
+        + usage["cache_creation_input_tokens"]
+    )
+
+
 class TestOverHttp:
     def test_an_answer_and_a_stream_say_the_reference_text(
         self, checkpoint: TinyCheckpoint
@@ -266,8 +281,13 @@ class TestOverHttp:
                 assert answer["id"].startswith("msg_")
                 assert answer["content"] == [{"type": "text", "text": expected}]
                 assert answer["stop_reason"] == "max_tokens"
-                assert answer["usage"]["input_tokens"] == len(_chat_prompt("hi"))
-                assert answer["usage"]["output_tokens"] == 6
+                usage = answer["usage"]
+                prompt = len(_chat_prompt("hi"))
+                # The first request computes the prompt and registers its whole blocks.
+                assert usage["cache_read_input_tokens"] == 0
+                assert usage["cache_creation_input_tokens"] > 0
+                assert _prompt_total(usage) == prompt
+                assert usage["output_tokens"] == 6
                 frames = await read_sse(
                     await client.post(_MESSAGES, json={**request, "stream": True})
                 )
@@ -276,6 +296,13 @@ class TestOverHttp:
                 )
                 assert text == expected
                 assert frames[-1] == ("message_stop", {"type": "message_stop"})
+                # The same prompt again reads those blocks; message_delta says it, cumulatively.
+                [delta] = [data["usage"] for name, data in frames if name == "message_delta"]
+                # At most what the first one wrote: the last token is always computed again.
+                assert 0 < delta["cache_read_input_tokens"] <= usage["cache_creation_input_tokens"]
+                assert delta["cache_creation_input_tokens"] == 0
+                assert _prompt_total(delta) == prompt
+                assert delta["output_tokens"] == 6
                 count = await (
                     await client.post(
                         "/v1/messages/count_tokens",

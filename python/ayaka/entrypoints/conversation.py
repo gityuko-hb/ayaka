@@ -348,14 +348,18 @@ class ToolCallEnd:
 class UsageEvent:
     """Token counts of the request, sent once before it finishes.
 
+    ``cached_tokens`` of the prompt were read from the prefix cache and ``cache_written_tokens``
+    were computed and registered in it (see :class:`~ayaka.core.outputs.Usage`).
     ``reasoning_tokens`` is attributed per engine step, so a step whose tokens straddle the end
-    of the reasoning block counts by where the step started.
+    of the reasoning block counts by where the step started; with several choices it is their
+    sum, like ``completion_tokens``.
     """
 
     prompt_tokens: int
     completion_tokens: int
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    cache_written_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)

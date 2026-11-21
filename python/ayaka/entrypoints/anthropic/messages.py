@@ -130,7 +130,8 @@ class MessagesStreamEncoder:
                         {
                             "type": "message_delta",
                             "delta": delta,
-                            "usage": {"output_tokens": usage["output_tokens"]},
+                            # Cumulative, as the API documents it: the SDK takes every field.
+                            "usage": usage,
                         },
                         event="message_delta",
                     )

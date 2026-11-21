@@ -77,13 +77,23 @@ class _Family:
     first_token_at: float | None = None
     completion_tokens: int = 0
     cached_tokens: int = 0
+    cache_written_tokens: int = 0
 
     def usage(self) -> Usage:
+        """The request's usage: its prompt counts once, however many sequences it has.
+
+        The cache read is the largest of the sequences' (with ``n > 1`` the siblings attach the
+        prompt the first sequence prefilled, and that attach counts as a read). The cache write
+        is what the sequences registered, cut to what the read leaves of the prompt, so the
+        read, the write and the rest always add up to the prompt.
+        """
         prompt = len(self.prompt)
+        cached = min(self.cached_tokens, prompt)
         return Usage(
             prompt_tokens=prompt,
             completion_tokens=self.completion_tokens,
-            cached_tokens=min(self.cached_tokens, prompt),
+            cached_tokens=cached,
+            cache_written_tokens=min(self.cache_written_tokens, prompt - cached),
         )
 
 
@@ -99,6 +109,7 @@ class _Sequence:
     tokens: list[TokenId] = field(default_factory=list[int])
     text: list[str] = field(default_factory=list[str])
     cached_tokens: int = 0
+    cache_written_tokens: int = 0
     logprobs: list[TokenLogprob] = field(default_factory=list[TokenLogprob])
 
     def cumulative(self) -> float | None:
@@ -245,6 +256,9 @@ class OutputProcessor:
         error = event.error
         sequence.cached_tokens = max(sequence.cached_tokens, event.cached_tokens)
         family.cached_tokens = max(family.cached_tokens, sequence.cached_tokens)
+        written = max(sequence.cache_written_tokens, event.cache_written_tokens)
+        family.cache_written_tokens += written - sequence.cache_written_tokens
+        sequence.cache_written_tokens = written
         if kept and family.first_token_at is None:
             family.first_token_at = now
         detokenizer = sequence.detokenizer

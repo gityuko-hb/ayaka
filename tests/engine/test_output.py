@@ -335,3 +335,71 @@ class TestFailures:
         assert out_last.usage.prompt_tokens == 3
         assert out_last.usage.completion_tokens == 9
         assert out_last.usage.cached_tokens == 2
+
+    def test_a_request_s_cache_writes_are_counted_once_and_fit_the_prompt(
+        self, service: TokenizerService
+    ) -> None:
+        processor = OutputProcessor(service, abort=_Aborts())
+        prompt = tuple(range(104, 114))  # ten tokens
+        processor.register(
+            TokenizedRequest(
+                request_id=RID, prompt_token_ids=prompt, sampling=SamplingParams(temperature=0.0)
+            ),
+            stream=True,
+        )
+
+        first, last = processor.process(
+            [
+                RequestEvent(request_id=RID, token_ids=_bytes("a"), cache_written_tokens=4),
+                # Events carry the running total, so a repeated value is not added again.
+                RequestEvent(
+                    request_id=RID,
+                    token_ids=_bytes("b"),
+                    cache_written_tokens=8,
+                    finish_reason=FinishReason.LENGTH,
+                ),
+            ]
+        )
+
+        assert first.usage.cache_written_tokens == 4
+        assert last.usage.cache_written_tokens == 8
+        usage = last.usage
+        assert usage.cached_tokens + usage.cache_written_tokens <= usage.prompt_tokens
+
+    def test_with_siblings_the_write_is_cut_to_what_the_read_leaves(
+        self, service: TokenizerService
+    ) -> None:
+        processor = OutputProcessor(service, abort=_Aborts())
+        siblings = tuple(
+            TokenizedRequest(
+                request_id=RequestId(f"r-{i}"),
+                sequence_index=i,
+                prompt_token_ids=tuple(range(104, 113)),  # nine tokens
+                sampling=SamplingParams(temperature=0.0),
+            )
+            for i in range(2)
+        )
+        processor.register_family(RID, siblings, stream=False)
+
+        [out] = processor.process(
+            [
+                # The first sequence prefilled and registered eight tokens; the second attached
+                # them, which counts as a read.
+                RequestEvent(
+                    request_id=RequestId("r-0"),
+                    token_ids=_bytes("a"),
+                    cache_written_tokens=8,
+                    finish_reason=FinishReason.LENGTH,
+                ),
+                RequestEvent(
+                    request_id=RequestId("r-1"),
+                    token_ids=_bytes("b"),
+                    cached_tokens=8,
+                    finish_reason=FinishReason.LENGTH,
+                ),
+            ]
+        )
+
+        assert out.usage.prompt_tokens == 9
+        assert out.usage.cached_tokens == 8
+        assert out.usage.cache_written_tokens == 1

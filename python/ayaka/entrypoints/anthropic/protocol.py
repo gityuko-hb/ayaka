@@ -353,12 +353,25 @@ def stop_reason(finish: FinishEvent) -> str:
     return "stop_sequence" if finish.stop_sequence is not None else "end_turn"
 
 
-def anthropic_usage(usage: UsageEvent | None, *, prompt_tokens: int) -> dict[str, object]:
-    """The usage object; the prompt tokens read from the prefix cache, when the engine says."""
-    cached = usage.cached_tokens if usage is not None else 0
+def anthropic_usage(usage: UsageEvent | None, *, prompt_tokens: int) -> dict[str, int]:
+    """The usage object of a whole answer and of a stream's ``message_delta``, the same one.
+
+    The prompt splits three ways, as Anthropic counts it: ``cache_read_input_tokens`` came from
+    the prefix cache, ``cache_creation_input_tokens`` were computed and registered in it, and
+    ``input_tokens`` are the rest, so the three add up to the prompt. Before the engine reports
+    (``usage`` is ``None``, a stream's ``message_start``) the whole prompt is ``input_tokens``.
+    """
+    if usage is None:
+        return {
+            "input_tokens": prompt_tokens,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+    read, written = usage.cached_tokens, usage.cache_written_tokens
     return {
-        "input_tokens": (usage.prompt_tokens if usage is not None else prompt_tokens) - cached,
-        "output_tokens": usage.completion_tokens if usage is not None else 0,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": cached,
+        "input_tokens": usage.prompt_tokens - read - written,
+        "output_tokens": usage.completion_tokens,
+        "cache_creation_input_tokens": written,
+        "cache_read_input_tokens": read,
     }

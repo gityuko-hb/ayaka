@@ -129,6 +129,7 @@ class Roster:
                 error=error,
                 logprobs=logprobs,
                 cached_tokens=request.cached_tokens,
+                cache_written_tokens=request.cache_written_tokens,
             )
         )
 

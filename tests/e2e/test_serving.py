@@ -398,6 +398,41 @@ class TestAnthropicSdk:
 
         _run(checkpoint, body)
 
+    def test_a_stream_reports_the_same_cumulative_usage_as_an_answer_with_cache_reads(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        async def body(base: str) -> None:
+            client = _sdk(anthropic.AsyncAnthropic, base_url=base, api_key=_KEY)
+            messages = [{"role": "user", "content": "the same prompt, twice over"}]
+            extra = {"temperature": 0}
+            whole = await client.messages.create(
+                model="tiny", max_tokens=4, messages=messages, extra_body=extra
+            )
+            async with client.messages.stream(
+                model="tiny", max_tokens=4, messages=messages, extra_body=extra
+            ) as stream:
+                final = await stream.get_final_message()
+            again = await client.messages.create(
+                model="tiny", max_tokens=4, messages=messages, extra_body=extra
+            )
+            prompt = whole.usage.input_tokens + (whole.usage.cache_creation_input_tokens or 0)
+            assert whole.usage.cache_read_input_tokens == 0  # the first time nothing is cached
+            assert (whole.usage.cache_creation_input_tokens or 0) > 0
+            # The repeat, streamed: message_delta carries the whole usage, so the SDK's final
+            # message sees the cache read, and it is the usage the same request gets unstreamed.
+            streamed = final.usage
+            assert (streamed.cache_read_input_tokens or 0) > 0
+            assert streamed.model_dump() == again.usage.model_dump()
+            for usage in (whole.usage, streamed):
+                total = (
+                    usage.input_tokens
+                    + (usage.cache_read_input_tokens or 0)
+                    + (usage.cache_creation_input_tokens or 0)
+                )
+                assert total == prompt
+
+        _run(checkpoint, body)
+
     def test_messages_stream_text_and_count_tokens(self, checkpoint: TinyCheckpoint) -> None:
         expected = _expected(checkpoint, "hi", 6)
 
@@ -413,7 +448,13 @@ class TestAnthropicSdk:
             assert final.stop_reason == "max_tokens"
             assert final.usage.output_tokens == 6
             count = await client.messages.count_tokens(model="tiny", messages=messages)
-            assert count.input_tokens == final.usage.input_tokens
+            usage = final.usage
+            # count_tokens is the whole prompt: the three parts of the usage together.
+            assert count.input_tokens == (
+                usage.input_tokens
+                + (usage.cache_read_input_tokens or 0)
+                + (usage.cache_creation_input_tokens or 0)
+            )
 
         _run(checkpoint, body)
 

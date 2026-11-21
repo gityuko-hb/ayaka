@@ -38,7 +38,7 @@ from ayaka.entrypoints.parsers.formats import (
     tool_call_format,
 )
 from ayaka.entrypoints.parsers.markers import Marker, MarkerScanner, resolve_marker
-from ayaka.entrypoints.parsers.output import OutputFormat
+from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
 from tokenizer_fakes import FakeTokenizer
 
 if TYPE_CHECKING:
@@ -256,6 +256,38 @@ class TestReasoning:
 
         usage = next(event for event in events if isinstance(event, UsageEvent))
         assert usage.reasoning_tokens == 4  # "a", "b", "c" and the closing marker
+
+    def test_with_two_choices_the_reasoning_tokens_of_both_are_counted(self) -> None:
+        fmt = _format(reasoning="think", tools=None)
+        first = tokens("<think>", "abc", "</think>", "de")  # four reasoning tokens, as above
+        second = tokens("<think>", "x", "</think>", "yz")  # two
+        parser = ChoicesParser([fmt.parser(call_id_prefix=f"c{i}", tools=False) for i in (0, 1)])
+        pieces = [
+            CompletionOutput(
+                index=index,
+                token_ids=tuple(token for token, _ in output[i : i + 1]),
+                text="".join(text for _, text in output[i : i + 1]),
+                finish_reason=FinishReason.STOP if i == len(output) - 1 else None,
+            )
+            for index, output in enumerate((first, second))
+            for i in range(len(output))
+        ]
+        count = len(first) + len(second)
+        events: list[OutputEvent] = []
+        for k, piece in enumerate(pieces):
+            last = k == len(pieces) - 1
+            events += parser.feed(
+                RequestOutput(
+                    request_id=RequestId("r"),
+                    outputs=(piece,),
+                    finished=last,
+                    usage=Usage(prompt_tokens=5, completion_tokens=count if last else 0),
+                )
+            )
+
+        [usage] = [event for event in events if isinstance(event, UsageEvent)]
+        assert usage.completion_tokens == count
+        assert usage.reasoning_tokens == 4 + 2  # 0 before: the choices' counts were dropped
 
 
 _CALL = '{"name": "get_weather", "arguments": {"city": "Paris", "days": [1, 2]}}'

@@ -93,3 +93,51 @@ def test_two_running_requests_share_the_prefix_and_both_finish() -> None:
     assert b_events[-1].cached_tokens == 12
     stats = loop.kv.stats()
     assert stats.free_blocks == stats.usable_blocks
+
+
+class TestCacheWrites:
+    """``cache_written_tokens``: the prompt tokens a request computed and registered."""
+
+    @staticmethod
+    def _final(loop: StepLoop, name: str) -> int:
+        [final] = [e for e in loop.events if e.request_id == rid(name) and e.finished]
+        return final.cache_written_tokens
+
+    def test_the_first_request_writes_its_whole_prompt_blocks_and_a_repeat_writes_none(
+        self,
+    ) -> None:
+        loop = _loop()
+        loop.scheduler.add_request(make_request("a", 13, max_tokens=3))
+        loop.run()
+        loop.scheduler.add_request(make_request("b", 13, max_tokens=3))
+        loop.run()
+
+        assert self._final(loop, "a") == 12  # three whole blocks of four; the 13th stays private
+        [b] = [e for e in loop.events if e.request_id == rid("b") and e.finished]
+        assert (b.cached_tokens, b.cache_written_tokens) == (12, 0)
+
+    def test_a_prompt_prefilled_in_chunks_counts_every_chunk(self) -> None:
+        loop = _loop(budget=8)
+        loop.scheduler.add_request(make_request("a", 13, max_tokens=2))
+
+        loop.run()
+
+        assert self._final(loop, "a") == 12
+
+    def test_blocks_of_the_output_are_not_prompt_writes(self) -> None:
+        loop = _loop()
+        loop.scheduler.add_request(make_request("a", 5, max_tokens=9))
+
+        loop.run()
+
+        assert loop.kv.stats().cached_blocks == (3,)  # one block of prompt, two of output
+        assert self._final(loop, "a") == BLOCK_SIZE
+
+    def test_a_request_that_opts_out_writes_nothing(self) -> None:
+        loop = _loop()
+        request = dataclasses.replace(make_request("a", 13, max_tokens=3), prefix_cache=False)
+        loop.scheduler.add_request(request)
+
+        loop.run()
+
+        assert self._final(loop, "a") == 0

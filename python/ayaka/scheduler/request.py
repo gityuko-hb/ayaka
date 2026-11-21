@@ -81,6 +81,8 @@ class RequestEvent:
         logprobs: Logprobs of ``token_ids`` when the runner supplied them.
         cached_tokens: Prompt tokens whose KV came from the prefix cache; known once the
             request runs, 0 before.
+        cache_written_tokens: Prompt tokens this request computed and registered in the prefix
+            cache so far, so later requests can read them (whole blocks only).
     """
 
     request_id: RequestId
@@ -90,6 +92,7 @@ class RequestEvent:
     error: ErrorInfo | None = None
     logprobs: tuple[TokenLogprob, ...] | None = None
     cached_tokens: int = 0
+    cache_written_tokens: int = 0
 
     @property
     def finished(self) -> bool:
@@ -118,6 +121,8 @@ class Request:
         cache_salt: Isolation salt of the prefix cache.
         prefix_cache: Whether the request may reuse and share cached blocks.
         cached_tokens: Prompt tokens whose KV was attached from the prefix cache at admission.
+        cache_written_tokens: Prompt tokens this request computed and registered in the prefix
+            cache; a block another request registered first is not counted.
         sequence_index: Which output sequence of a parent with ``n > 1`` this request is.
         blocked_on: A sibling whose prompt prefill this request waits for, so it can attach the
             shared prefix instead of computing it again; ``None`` for no wait.
@@ -138,6 +143,7 @@ class Request:
     cache_salt: str | None = None
     prefix_cache: bool = True
     cached_tokens: int = 0
+    cache_written_tokens: int = 0
     sequence_index: int = 0
     blocked_on: RequestId | None = None
     _status: RequestStatus = field(default=RequestStatus.WAITING, init=False)

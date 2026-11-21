@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from ayaka.entrypoints.cli import main
-from ayaka.entrypoints.connect.check import check_lines, run_check
+from ayaka.entrypoints.connect.check import (
+    _cache_share,  # pyright: ignore[reportPrivateUsage]
+    check_lines,
+    run_check,
+)
 from ayaka.entrypoints.connect.observe import (
     agent_version,
     count_parts,
@@ -568,6 +572,15 @@ class TestCheckSteps:
 
         assert step.ok is False
         assert "--tool-call-parser llama3_json" in (step.fix or "")
+
+    def test_the_anthropic_prompt_is_the_three_parts_of_its_usage(self) -> None:
+        usage = {
+            "input_tokens": 4,
+            "cache_read_input_tokens": 40,
+            "cache_creation_input_tokens": 8,
+        }
+
+        assert _cache_share("anthropic", {"usage": usage}) == (40, 52)
 
     def test_a_cache_miss_says_where_the_prompts_diverge(self) -> None:
         script = _Script()
