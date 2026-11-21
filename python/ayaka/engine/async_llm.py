@@ -276,6 +276,7 @@ class AsyncLLM:
         self._dead: EngineDeadError | None = None
         self._stopped = threading.Event()
         self._progress_at = time.monotonic()  # written by the engine thread only
+        self._busy_since = self._progress_at  # written under _idle_lock when work ends an idle
 
     @classmethod
     def from_config(
@@ -307,14 +308,19 @@ class AsyncLLM:
         return self._info
 
     def health(self) -> EngineHealth:
-        """Where the engine is in its life, and when its thread last made progress."""
+        """Where the engine is in its life, whether it has work and when it last made progress.
+
+        Work that arrives while the engine is idle counts as progress, so the time between its
+        arrival and the engine thread waking up is never read as a stuck step.
+        """
         if self._dead is not None:
             state = EngineState.DEAD
         elif self._thread is not None and self._thread.is_alive() and self._accepting:
             state = EngineState.RUNNING
         else:
             state = EngineState.STOPPED
-        return EngineHealth(state, self._progress_at)
+        busy = not self._idle.is_set()
+        return EngineHealth(state, max(self._progress_at, self._busy_since), busy)
 
     @property
     def num_streams(self) -> int:
@@ -388,6 +394,8 @@ class AsyncLLM:
         self._streams[request_id] = stream
         future: Future[None] = Future()
         with self._idle_lock:
+            if self._idle.is_set():
+                self._busy_since = time.monotonic()
             self._idle.clear()
             self._send(_Add(request, future))
         try:

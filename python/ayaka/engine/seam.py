@@ -73,13 +73,16 @@ class EngineHealth:
 
     Attributes:
         state: Where the engine is in its life.
-        progress_at: ``time.monotonic()`` when the engine thread last finished a step or went
-            idle. While requests are running it moves at every step; a value that stops moving
-            then means a step is stuck.
+        progress_at: ``time.monotonic()`` when the engine last made progress: its thread finished
+            a step or went idle, or work arrived while it was idle. While it is busy the value
+            moves at every step; one that stops moving then means a step is stuck.
+        busy: Whether work is queued or running. An idle engine makes no progress and is not
+            stuck.
     """
 
     state: EngineState
     progress_at: float
+    busy: bool
 
 
 @runtime_checkable

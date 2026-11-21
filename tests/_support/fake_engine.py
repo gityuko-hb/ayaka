@@ -11,6 +11,8 @@ engine's place and decide what the engine does:
   ``abort``, ``abort_all``, ``shutdown`` or ``die``.
 * ``die()`` kills the fake engine: every open stream ends with an ``engine_dead`` error output
   and every later ``add`` raises.
+* ``stall()`` makes the engine look stuck in a step: ``health()`` reports it busy with a progress
+  time that no longer moves, until ``resume()``.
 
 The injection points are arguments of the test, never flags in the product code. ``requests``
 and ``aborted`` record what the server sent. The fake keeps the contract of the seam: every
@@ -99,6 +101,7 @@ class FakeEngine:
         self._open: dict[RequestId, tuple[RequestStream, asyncio.Task[None]]] = {}
         self._accepting = True
         self._dead = False
+        self._stalled_at: float | None = None
 
     async def add(self, request: GenerateRequest) -> RequestStream:
         if self._dead:
@@ -159,7 +162,17 @@ class FakeEngine:
             state = EngineState.DEAD
         else:
             state = EngineState.RUNNING if self._accepting else EngineState.STOPPED
-        return EngineHealth(state, time.monotonic())
+        if self._stalled_at is not None:
+            return EngineHealth(state, self._stalled_at, busy=True)
+        return EngineHealth(state, time.monotonic(), busy=bool(self._open))
+
+    def stall(self) -> None:
+        """Stop making progress, as an engine stuck in a step: busy, and the clock stands still."""
+        self._stalled_at = time.monotonic()
+
+    def resume(self) -> None:
+        """Make progress again after :meth:`stall`."""
+        self._stalled_at = None
 
     def die(self) -> None:
         """Kill the engine now: open streams end with ``engine_dead``, later calls raise."""

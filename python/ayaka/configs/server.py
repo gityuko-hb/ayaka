@@ -63,6 +63,9 @@ class ServerConfig(ConfigMixin):
             not cut a connection while a long prompt is being read.
         slow_client_seconds: Seconds a write to a client may block before the request is
             cancelled and the connection closed. The engine never waits for a client.
+        stall_seconds: Seconds the engine may have work without making progress before
+            ``/health`` reports it ``stalled`` (503). Long by default: the first use of a new
+            shape can compile an attention kernel inside one step.
         served_model_names: Names clients may use for the model, the first one reported in
             responses. Empty: the name the model was loaded by.
         reasoning_parser: Name of the model's reasoning format, or ``None``.
@@ -85,6 +88,7 @@ class ServerConfig(ConfigMixin):
     sse_coalesce_ms: int = 0
     keepalive_seconds: float = 15.0
     slow_client_seconds: float = 30.0
+    stall_seconds: float = 60.0
     served_model_names: tuple[str, ...] = ()
     reasoning_parser: str | None = None
     tool_call_parser: str | None = None
@@ -102,6 +106,7 @@ class ServerConfig(ConfigMixin):
         _int(self.sse_coalesce_ms, "server.sse_coalesce_ms", 0, 1000)
         _seconds(self.keepalive_seconds, "server.keepalive_seconds", allow_zero=False)
         _seconds(self.slow_client_seconds, "server.slow_client_seconds", allow_zero=False)
+        _seconds(self.stall_seconds, "server.stall_seconds", allow_zero=False)
         _strings(self.served_model_names, "server.served_model_names")
         if len(set(self.served_model_names)) != len(self.served_model_names):
             raise ConfigError("server.served_model_names", "DUPLICATE", "names must be unique")

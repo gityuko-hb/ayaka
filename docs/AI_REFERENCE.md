@@ -9,8 +9,8 @@ the code or ask before assuming either way.
 
 | Method and path | Protocol | Notes |
 | --- | --- | --- |
-| `GET /health` | | `{"status": "ready"}` with 200; `starting`, `draining` or `dead` with 503. No key needed. |
-| `GET /metrics` | Prometheus text | counters and histograms; no per-request labels |
+| `GET /health` | | `{"status": "ready"}` with 200; `starting`, `draining`, `stalled` or `dead` with 503. `stalled`: the engine has had work and no progress for `--stall-timeout` seconds (60); it goes back to `ready` once a step finishes, and the server keeps serving meanwhile. No key needed. |
+| `GET /metrics` | Prometheus text | counters, gauges and histograms; no per-request labels. `ayaka_engine_progress_age_seconds` is the seconds since the engine last made progress while it had work (0 when idle) |
 | `GET /v1/models` | OpenAI | each served name with `max_model_len`, `max_context_tokens` (what one request can hold on this machine), `prefix_cache` and, when detected from the chat template, `suggested_tool_call_parser` |
 | `POST /v1/chat/completions` | OpenAI Chat Completions | streaming, tools, `n`, logprobs, `response_format` |
 | `POST /v1/completions` | OpenAI Completions | streaming; `echo` and `suffix` are refused |

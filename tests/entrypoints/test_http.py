@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import socket
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -407,6 +408,93 @@ class TestStateEndpoints:
         _run(checkpoint, body)
 
 
+class TestStalls:
+    def test_a_stalled_engine_turns_health_to_503_and_back(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        async def body(client: Client, serving: Serving, llm: FakeEngine) -> None:
+            assert (await client.get("/health")).status == 200
+            llm.stall()
+            await asyncio.sleep(0.2)
+            stalled = await client.get("/health")
+            assert stalled.status == 503
+            assert await stalled.json() == {"status": "stalled"}
+            age = _gauge(await (await client.get("/metrics")).text())
+            assert age > 0.1
+            llm.resume()
+            ready = await client.get("/health")
+            assert ready.status == 200
+            assert await ready.json() == {"status": "ready"}
+            assert _gauge(await (await client.get("/metrics")).text()) == 0.0
+
+        _run(checkpoint, body, scripts=[], config=ServerConfig(stall_seconds=0.1))
+
+    def test_an_idle_engine_is_never_stalled(self, checkpoint: TinyCheckpoint) -> None:
+        async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
+            assert (await client.post(_CHAT, json=_chat("x", 2))).status == 200
+            assert await llm.drain(5.0)
+            await asyncio.sleep(0.2)  # idle for longer than the limit
+            health = await client.get("/health")
+            assert health.status == 200
+            assert _gauge(await (await client.get("/metrics")).text()) == 0.0
+
+        _run(checkpoint, body, config=ServerConfig(stall_seconds=0.1))
+
+
+def _gauge(metrics: str) -> float:
+    [line] = [
+        line
+        for line in metrics.splitlines()
+        if line.startswith("ayaka_engine_progress_age_seconds ")
+    ]
+    return float(line.split()[1])
+
+
+class TestShutdown:
+    def test_a_client_that_stopped_reading_does_not_hold_shutdown(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        # 64 fragments of 256 KiB: far more than the socket buffers of both ends hold, so the
+        # write really blocks once the client stops reading. The script has no final output.
+        hanging = script(*[(120, "x" * 262_144)] * 64)[:-1]
+
+        async def body(client: Client, serving: Serving, llm: FakeEngine) -> None:
+            server = client.server
+            reader, writer = await _stuck_client(str(server.host), int(server.port or 0))
+            try:
+                payload = json.dumps(_chat("x", 50, stream=True)).encode()
+                writer.write(
+                    b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n"
+                    b"Content-Type: application/json\r\n"
+                    + f"Content-Length: {len(payload)}\r\n\r\n".encode()
+                    + payload
+                )
+                await writer.drain()
+                while not llm.requests:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+                await asyncio.sleep(1.0)  # the fragments fill the buffers; nothing is read
+                started = time.monotonic()
+                cut = await serving.shutdown(0.0, flush=0.5)
+                waited = time.monotonic() - started
+                assert cut == 1  # the stream was still blocked once the engine had ended it
+                assert waited < 0.5 + 2.0
+                assert (await client.get("/health")).status == 503
+            finally:
+                writer.close()
+            del reader
+
+        _run(checkpoint, body, scripts=[hanging], config=ServerConfig(slow_client_seconds=60))
+
+
+async def _stuck_client(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """A connection with a small receive buffer whose owner never reads."""
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.setblocking(False)
+    await asyncio.get_running_loop().sock_connect(raw, (host, port))
+    return await asyncio.open_connection(sock=raw, limit=4096)
+
+
 class TestDisconnectsAndSlowClients:
     def test_a_client_that_leaves_mid_stream_frees_its_request(
         self, checkpoint: TinyCheckpoint
@@ -539,6 +627,8 @@ def test_a_server_config_refuses_bad_values() -> None:
         ServerConfig(port=70000)
     with pytest.raises(ConfigError, match="UNKNOWN_KEY"):
         ServerConfig.from_mapping({"prot": 1})
+    with pytest.raises(ConfigError, match=r"server\.stall_seconds"):
+        ServerConfig(stall_seconds=0)
     config = ServerConfig.from_mapping({"cors_origins": ["*"], "api_key": "s3cret-key"})
     assert config.cors_origins == ("*",)
     assert "s3cret-key" not in config.canonical_json()
