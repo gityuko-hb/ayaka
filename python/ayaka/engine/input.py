@@ -19,7 +19,12 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Final
 
-from ayaka.core.errors import InvalidRequestError, OverloadedError, UnsupportedFeatureError
+from ayaka.core.errors import (
+    ContextLengthError,
+    InvalidRequestError,
+    OverloadedError,
+    UnsupportedFeatureError,
+)
 from ayaka.core.params import SamplingParams
 from ayaka.core.request import TokenizedRequest
 from ayaka.sampling.structured.compiler import GrammarCompiler
@@ -109,7 +114,8 @@ class InputProcessor:
 
         Raises:
             UnsupportedFeatureError: If the request needs a feature the engine lacks.
-            InvalidRequestError: If the prompt cannot be tokenized or does not fit the model.
+            ContextLengthError: If the prompt and ``max_tokens`` do not fit the model.
+            InvalidRequestError: If the prompt cannot be tokenized.
             OverloadedError: If the tokenizer queue is full.
         """
         require_supported(request.sampling, can_decode_text=self._service.tokenizer is not None)
@@ -186,6 +192,8 @@ class InputProcessor:
             encoded = self._service.encode(prompt, EncodeOptions(max_output_tokens=wanted))
         except TokenizerOverloaded as exc:
             raise OverloadedError(f"the tokenizer is busy: {exc}") from exc
+        except ContextLengthError:
+            raise
         except ValueError as exc:
             raise InvalidRequestError(f"cannot use this prompt: {exc}") from exc
         sampling.validate_for_model(

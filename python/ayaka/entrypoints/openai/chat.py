@@ -318,7 +318,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         chat.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation)
+    prompt = await serving.tokenize_chat(conversation, max_tokens=chat.max_tokens)
     sampling = replace(
         chat.sampling, max_tokens=serving.output_tokens(len(prompt), chat.max_tokens)
     )
@@ -353,7 +353,7 @@ async def create_completion(request: web.Request) -> web.StreamResponse:
     serving = request.app[SERVING]
     completion = parse_completion_request(await read_body(request))
     serving.check_model(completion.model)
-    prompt = await serving.tokenize_text(completion.prompt)
+    prompt = await serving.tokenize_text(completion.prompt, max_tokens=completion.max_tokens)
     sampling = replace(
         completion.sampling,
         max_tokens=serving.output_tokens(len(prompt), completion.max_tokens),

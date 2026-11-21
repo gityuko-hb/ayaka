@@ -137,7 +137,8 @@ class MessagesStreamEncoder:
                     + sse_json({"type": "message_stop"}, event="message_stop")
                 )
             case ErrorEvent():
-                failure = failure_for_event(event, self._id)
+                # The message id is ``msg_`` and the request id, which the error names.
+                failure = failure_for_event(event, self._id.removeprefix("msg_"))
                 return sse_json(anthropic_error(failure), event="error")
             case _:
                 return b""
@@ -254,7 +255,7 @@ async def create_message(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         message.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation)
+    prompt = await serving.tokenize_chat(conversation, max_tokens=message.max_tokens)
     sampling = replace(
         message.sampling, max_tokens=serving.output_tokens(len(prompt), message.max_tokens)
     )

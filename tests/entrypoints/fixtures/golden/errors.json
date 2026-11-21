@@ -1,12 +1,12 @@
 {
   "answer/backend_error": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"a kernel failed (request 0123456789abcdef0123456789abcdef)\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"a kernel failed (request 0123456789abcdef0123456789abcdef)\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"a kernel failed (request 0123456789abcdef0123456789abcdef)\", \"type\": \"server_error\", \"param\": null, \"code\": \"backend_error\"}}",
     "status": 500
   },
   "answer/cancelled": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the request was cancelled\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the request was cancelled\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {
       "Retry-After": "1"
     },
@@ -14,7 +14,7 @@
     "status": 503
   },
   "answer/engine_dead": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the engine stopped\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the engine stopped\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {
       "Retry-After": "1"
     },
@@ -22,7 +22,7 @@
     "status": 503
   },
   "answer/not_ready": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the server is draining\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the server is draining\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {
       "Retry-After": "1"
     },
@@ -30,49 +30,67 @@
     "status": 503
   },
   "answer/request_timeout": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"the request ran out of time\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"the request ran out of time\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"the request ran out of time\", \"type\": \"timeout_error\", \"param\": null, \"code\": \"request_timeout\"}}",
     "status": 408
   },
+  "answer/unknown_code": {
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"something the table does not know (request 0123456789abcdef0123456789abcdef)\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
+    "headers": {},
+    "openai": "{\"error\": {\"message\": \"something the table does not know (request 0123456789abcdef0123456789abcdef)\", \"type\": \"server_error\", \"param\": null, \"code\": \"internal_error\"}}",
+    "status": 500
+  },
   "stream/backend_error": {
-    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"a kernel failed (request msg_0123456789abcdef0123456789abcdef)\"}}\n\n",
+    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"a kernel failed (request 0123456789abcdef0123456789abcdef)\"},\"request_id\":\"0123456789abcdef0123456789abcdef\"}\n\n",
     "openai-chat": "data: {\"error\":{\"message\":\"a kernel failed (request chatcmpl-0123456789abcdef0123456789abcdef)\",\"type\":\"server_error\",\"param\":null,\"code\":\"backend_error\"}}\n\ndata: [DONE]\n\n",
     "openai-completions": "data: {\"error\":{\"message\":\"a kernel failed (request cmpl-0123456789abcdef0123456789abcdef)\",\"type\":\"server_error\",\"param\":null,\"code\":\"backend_error\"}}\n\ndata: [DONE]\n\n",
-    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"backend_error\",\"message\":\"a kernel failed\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
+    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"a kernel failed\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
   },
   "stream/cancelled": {
-    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"the request was cancelled\"}}\n\n",
+    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"the request was cancelled\"},\"request_id\":\"0123456789abcdef0123456789abcdef\"}\n\n",
     "openai-chat": "data: {\"error\":{\"message\":\"the request was cancelled\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"cancelled\"}}\n\ndata: [DONE]\n\n",
     "openai-completions": "data: {\"error\":{\"message\":\"the request was cancelled\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"cancelled\"}}\n\ndata: [DONE]\n\n",
-    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"cancelled\",\"message\":\"the request was cancelled\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
+    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"the request was cancelled\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
   },
   "stream/engine_dead": {
-    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"the engine stopped\"}}\n\n",
+    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"the engine stopped\"},\"request_id\":\"0123456789abcdef0123456789abcdef\"}\n\n",
     "openai-chat": "data: {\"error\":{\"message\":\"the engine stopped\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"engine_dead\"}}\n\ndata: [DONE]\n\n",
     "openai-completions": "data: {\"error\":{\"message\":\"the engine stopped\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"engine_dead\"}}\n\ndata: [DONE]\n\n",
-    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"engine_dead\",\"message\":\"the engine stopped\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
+    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"the engine stopped\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
   },
   "stream/not_ready": {
-    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"the server is draining\"}}\n\n",
+    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"the server is draining\"},\"request_id\":\"0123456789abcdef0123456789abcdef\"}\n\n",
     "openai-chat": "data: {\"error\":{\"message\":\"the server is draining\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"not_ready\"}}\n\ndata: [DONE]\n\n",
     "openai-completions": "data: {\"error\":{\"message\":\"the server is draining\",\"type\":\"service_unavailable_error\",\"param\":null,\"code\":\"not_ready\"}}\n\ndata: [DONE]\n\n",
-    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"not_ready\",\"message\":\"the server is draining\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
+    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"the server is draining\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
   },
   "stream/request_timeout": {
-    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"the request ran out of time\"}}\n\n",
+    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"the request ran out of time\"},\"request_id\":\"0123456789abcdef0123456789abcdef\"}\n\n",
     "openai-chat": "data: {\"error\":{\"message\":\"the request ran out of time\",\"type\":\"timeout_error\",\"param\":null,\"code\":\"request_timeout\"}}\n\ndata: [DONE]\n\n",
     "openai-completions": "data: {\"error\":{\"message\":\"the request ran out of time\",\"type\":\"timeout_error\",\"param\":null,\"code\":\"request_timeout\"}}\n\ndata: [DONE]\n\n",
-    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"request_timeout\",\"message\":\"the request ran out of time\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
+    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"the request ran out of time\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
+  },
+  "stream/unknown_code": {
+    "anthropic-messages": "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"something the table does not know (request 0123456789abcdef0123456789abcdef)\"},\"request_id\":\"0123456789abcdef0123456789abcdef\"}\n\n",
+    "openai-chat": "data: {\"error\":{\"message\":\"something the table does not know (request chatcmpl-0123456789abcdef0123456789abcdef)\",\"type\":\"server_error\",\"param\":null,\"code\":\"internal_error\"}}\n\ndata: [DONE]\n\n",
+    "openai-completions": "data: {\"error\":{\"message\":\"something the table does not know (request cmpl-0123456789abcdef0123456789abcdef)\",\"type\":\"server_error\",\"param\":null,\"code\":\"internal_error\"}}\n\ndata: [DONE]\n\n",
+    "openai-responses": "event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_0123456789abcdef0123456789abcdef\",\"object\":\"response\",\"created_at\":1700000000,\"status\":\"failed\",\"model\":\"tiny\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"something the table does not know\"},\"incomplete_details\":null,\"previous_response_id\":null,\"store\":false,\"text\":{\"format\":{\"type\":\"text\"}},\"truncation\":\"disabled\",\"usage\":null,\"instructions\":null,\"max_output_tokens\":null,\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":null,\"summary\":null},\"temperature\":null,\"top_p\":null,\"tool_choice\":\"auto\",\"tools\":[],\"metadata\":{}}}\n\n"
   },
   "unary/capacity_exceeded": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"the prompt needs 900 blocks; 512 exist\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"the prompt needs 900 blocks; 512 exist\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"the prompt needs 900 blocks; 512 exist\", \"type\": \"invalid_request_error\", \"param\": null, \"code\": \"capacity_exceeded\"}}",
     "status": 400
   },
+  "unary/context_length_exceeded": {
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"the prompt is too long: 130 prompt tokens and 16 requested output tokens exceed the maximum context length of 128 tokens\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
+    "headers": {},
+    "openai": "{\"error\": {\"message\": \"the prompt is too long: 130 prompt tokens and 16 requested output tokens exceed the maximum context length of 128 tokens\", \"type\": \"invalid_request_error\", \"param\": null, \"code\": \"context_length_exceeded\"}}",
+    "status": 400
+  },
   "unary/engine_dead": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the engine cannot serve requests (request 0123456789abcdef0123456789abcdef)\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the engine cannot serve requests (request 0123456789abcdef0123456789abcdef)\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {
       "Retry-After": "1"
     },
@@ -80,25 +98,25 @@
     "status": 503
   },
   "unary/internal": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"internal server error (request 0123456789abcdef0123456789abcdef)\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"internal server error (request 0123456789abcdef0123456789abcdef)\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"internal server error (request 0123456789abcdef0123456789abcdef)\", \"type\": \"server_error\", \"param\": null, \"code\": \"internal_error\"}}",
     "status": 500
   },
   "unary/invalid_request": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"temperature: must be a number\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"temperature: must be a number\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"temperature: must be a number\", \"type\": \"invalid_request_error\", \"param\": \"temperature\", \"code\": \"invalid_request\"}}",
     "status": 400
   },
   "unary/not_found": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"not_found_error\", \"message\": \"model 'x' is not served here; available: tiny\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"not_found_error\", \"message\": \"model 'x' is not served here; available: tiny\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"model 'x' is not served here; available: tiny\", \"type\": \"not_found_error\", \"param\": null, \"code\": \"not_found\"}}",
     "status": 404
   },
   "unary/not_ready": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the server is starting; retry later\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"the server is starting; retry later\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {
       "Retry-After": "1"
     },
@@ -106,7 +124,7 @@
     "status": 503
   },
   "unary/overloaded": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"rate_limit_error\", \"message\": \"the waiting queue is full\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"rate_limit_error\", \"message\": \"the waiting queue is full\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {
       "Retry-After": "1"
     },
@@ -114,25 +132,25 @@
     "status": 429
   },
   "unary/request_timeout": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"the request ran out of time\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"api_error\", \"message\": \"the request ran out of time\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"the request ran out of time\", \"type\": \"timeout_error\", \"param\": null, \"code\": \"request_timeout\"}}",
     "status": 408
   },
   "unary/too_large": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"request_too_large\", \"message\": \"the request body is larger than this server accepts\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"request_too_large\", \"message\": \"the request body is larger than this server accepts\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"the request body is larger than this server accepts\", \"type\": \"invalid_request_error\", \"param\": null, \"code\": \"too_large\"}}",
     "status": 413
   },
   "unary/unauthorized": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"authentication_error\", \"message\": \"a valid API key is required\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"authentication_error\", \"message\": \"a valid API key is required\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"a valid API key is required\", \"type\": \"authentication_error\", \"param\": null, \"code\": \"authentication\"}}",
     "status": 401
   },
   "unary/unsupported_feature": {
-    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"audio: not available on this server\"}}",
+    "anthropic": "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"audio: not available on this server\"}, \"request_id\": \"0123456789abcdef0123456789abcdef\"}",
     "headers": {},
     "openai": "{\"error\": {\"message\": \"audio: not available on this server\", \"type\": \"invalid_request_error\", \"param\": \"audio\", \"code\": \"unsupported_feature\"}}",
     "status": 400

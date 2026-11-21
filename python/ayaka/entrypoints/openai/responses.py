@@ -54,6 +54,7 @@ from ayaka.entrypoints.conversation import (
     UsageEvent,
     parse_arguments,
 )
+from ayaka.entrypoints.failures import responses_code
 from ayaka.entrypoints.http import JsonObject, read_body, sampling_params
 from ayaka.entrypoints.openai.protocol import response_format
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
@@ -379,7 +380,7 @@ class _Snapshot:
             "output": list(self.output or []),
             "error": None
             if self.error is None
-            else {"code": self.error.code, "message": self.error.message},
+            else {"code": responses_code(self.error.code), "message": self.error.message},
             "incomplete_details": {"reason": "max_output_tokens"} if self.incomplete else None,
             "previous_response_id": None,
             "store": False,
@@ -640,7 +641,7 @@ async def create_response(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         responses.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation)
+    prompt = await serving.tokenize_chat(conversation, max_tokens=responses.max_tokens)
     sampling = replace(
         responses.sampling, max_tokens=serving.output_tokens(len(prompt), responses.max_tokens)
     )

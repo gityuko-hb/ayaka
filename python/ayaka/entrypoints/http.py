@@ -18,7 +18,8 @@ Routes::
     POST /v1/messages/count_tokens   the prompt length of a Messages request
 
 The middleware maps every exception through :func:`~ayaka.entrypoints.failures.failure_for` and
-renders it in the shape of the route's protocol.
+renders it in the shape of the route's protocol; an error on an Anthropic route also carries its
+request id in a ``request-id`` header, as Anthropic's API does.
 
 This module imports aiohttp, from the ``serve`` extra; ``import ayaka`` does not load it.
 """
@@ -214,9 +215,13 @@ _ROUTE_LABELS: Final = (
 type Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
+def _is_anthropic(path: str) -> bool:
+    return path.startswith("/v1/messages")
+
+
 def _renderer(path: str) -> ErrorRenderer:
     """Errors on the Anthropic routes in Anthropic's shape, everywhere else in OpenAI's."""
-    if path.startswith("/v1/messages"):
+    if _is_anthropic(path):
         from ayaka.entrypoints.anthropic.protocol import anthropic_error
 
         return anthropic_error
@@ -254,8 +259,11 @@ async def _middleware(request: web.Request, handler: Handler) -> web.StreamRespo
             _LOG.info(
                 "request %s %s: %d %s", request_id, request.path, failure.status, failure.code
             )
+        headers = failure.headers
+        if _is_anthropic(request.path):
+            headers["request-id"] = request_id  # read by the Anthropic SDK as the request id
         response = web.json_response(
-            _renderer(request.path)(failure), status=failure.status, headers=failure.headers
+            _renderer(request.path)(failure), status=failure.status, headers=headers
         )
     if not response.prepared:
         response.headers["x-request-id"] = request_id

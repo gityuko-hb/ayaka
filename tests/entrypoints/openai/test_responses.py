@@ -207,7 +207,13 @@ class TestFixedEvents:
         failed = _encoder()
         [(name, data)] = parse_sse(failed.encode(ErrorEvent("cancelled", "gone")).decode())
         assert name == "response.failed"
-        assert json.loads(data)["response"]["error"] == {"code": "cancelled", "message": "gone"}
+        # The event carries the code OpenAI documents for a server-side failure; the text stays.
+        assert json.loads(data)["response"]["error"] == {"code": "server_error", "message": "gone"}
+
+        too_long = _encoder()
+        event = ErrorEvent("context_length_exceeded", "the prompt is too long")
+        [(_, data)] = parse_sse(too_long.encode(event).decode())
+        assert json.loads(data)["response"]["error"]["code"] == "context_length_exceeded"
 
 
 def _chat_prompt(text: str) -> list[int]:

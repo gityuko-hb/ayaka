@@ -358,8 +358,46 @@ class TestOpenAISdk:
 
         _run(checkpoint, body)
 
+    def test_a_prompt_that_does_not_fit_raises_context_length_exceeded(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        async def body(base: str) -> None:
+            client = _sdk(openai.AsyncOpenAI, base_url=f"{base}/v1", api_key=_KEY, max_retries=0)
+            long = [{"role": "user", "content": "x" * 400}]
+            with pytest.raises(openai.BadRequestError) as chat:
+                await client.chat.completions.create(model="tiny", messages=long, max_tokens=9)
+            assert chat.value.code == "context_length_exceeded"
+            assert "9 requested output tokens" in chat.value.message
+            assert "maximum context length of 128 tokens" in chat.value.message
+            with pytest.raises(openai.BadRequestError) as responses:
+                await client.responses.create(model="tiny", input="x" * 400, max_output_tokens=16)
+            assert responses.value.code == "context_length_exceeded"
+
+        _run(checkpoint, body)
+
 
 class TestAnthropicSdk:
+    def test_a_prompt_that_does_not_fit_raises_the_sdk_error_with_its_request_id(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        async def body(base: str) -> None:
+            client = _sdk(anthropic.AsyncAnthropic, base_url=base, api_key=_KEY, max_retries=0)
+            with pytest.raises(anthropic.BadRequestError) as caught:
+                await client.messages.create(
+                    model="tiny", max_tokens=8, messages=[{"role": "user", "content": "x" * 400}]
+                )
+            error = caught.value
+            assert error.status_code == 400
+            body = error.body
+            assert isinstance(body, dict)
+            assert body["error"]["type"] == "invalid_request_error"
+            assert body["error"]["message"].startswith("the prompt is too long:")
+            assert "8 requested output tokens" in body["error"]["message"]
+            assert error.request_id == body["request_id"]
+            assert error.request_id
+
+        _run(checkpoint, body)
+
     def test_messages_stream_text_and_count_tokens(self, checkpoint: TinyCheckpoint) -> None:
         expected = _expected(checkpoint, "hi", 6)
 

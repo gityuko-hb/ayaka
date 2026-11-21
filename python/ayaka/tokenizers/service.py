@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self
 
 from ayaka.configs.tokenizer import DetokenizeParams, EncodeResult, TokenizerConfig
-from ayaka.core.errors import CancelledError
+from ayaka.core.errors import CancelledError, ContextLengthError
 from ayaka.tokenizers.contracts import (
     ChatInput,
     EncodeInput,
@@ -523,13 +523,18 @@ class TokenizerService:
                 self._valid_ids is not None and token not in self._valid_ids
             ):
                 raise ValueError(f"token ID is not supported by model/tokenizer: {token}")
-        limit = self.max_model_len - options.max_output_tokens
-        if options.max_input_tokens is not None:
-            limit = min(limit, options.max_input_tokens)
+        room = self.max_model_len - options.max_output_tokens
+        limit = room if options.max_input_tokens is None else min(room, options.max_input_tokens)
         truncated = len(ids) > limit
         if truncated:
             if not options.truncate:
-                raise ValueError("prompt plus output reservation exceeds context capacity")
+                if len(ids) > room:
+                    raise ContextLengthError(
+                        prompt_tokens=len(ids),
+                        output_tokens=options.max_output_tokens,
+                        max_context_tokens=self.max_model_len,
+                    )
+                raise ValueError(f"the prompt has {len(ids)} tokens; max_input_tokens is {limit}")
             ids = ids[-limit:] if self.config.truncation_side == "left" else ids[:limit]
         if not ids:
             raise ValueError("empty encoded prompt")

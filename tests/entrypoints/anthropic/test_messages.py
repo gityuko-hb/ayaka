@@ -223,6 +223,7 @@ class TestFixedEvents:
         assert json.loads(data) == {
             "type": "error",
             "error": {"type": "overloaded_error", "message": "the request was cancelled"},
+            "request_id": "1",
         }
         assert parse_sse(encoder.keepalive().decode()) == [("ping", '{"type":"ping"}')]
 

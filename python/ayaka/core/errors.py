@@ -25,6 +25,7 @@ __all__ = [
     "CapabilityError",
     "CapacityError",
     "ConfigError",
+    "ContextLengthError",
     "EngineDeadError",
     "EngineError",
     "ErrorInfo",
@@ -144,6 +145,56 @@ class UnsupportedFeatureError(InvalidRequestError):
     """The request is valid but asks for a feature this build does not support."""
 
     code = "unsupported_feature"
+
+
+class ContextLengthError(InvalidRequestError):
+    """The prompt and the output it asks for do not fit the model's context.
+
+    The message gives the three numbers, and :attr:`context` carries them as ``prompt_tokens``,
+    ``output_tokens`` and ``max_context_tokens``. It keeps the phrases the providers use for this
+    case (``prompt is too long``, ``maximum context length``) so clients that look for them find
+    them.
+
+    Args:
+        prompt_tokens: The length of the prompt.
+        output_tokens: The output the request asked for (at least 1).
+        max_context_tokens: The longest sequence the model takes.
+    """
+
+    code = "context_length_exceeded"
+
+    def __init__(self, *, prompt_tokens: int, output_tokens: int, max_context_tokens: int) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.output_tokens = output_tokens
+        self.max_context_tokens = max_context_tokens
+        super().__init__(
+            f"the prompt is too long: {prompt_tokens} prompt tokens and {output_tokens} requested "
+            f"output tokens exceed the maximum context length of {max_context_tokens} tokens",
+            context={
+                "prompt_tokens": prompt_tokens,
+                "output_tokens": output_tokens,
+                "max_context_tokens": max_context_tokens,
+            },
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[..., object], tuple[object, ...], dict[str, object]]:
+        return (
+            _rebuild_context_length_error,
+            (self.prompt_tokens, self.output_tokens, self.max_context_tokens),
+            {},
+        )
+
+
+def _rebuild_context_length_error(
+    prompt_tokens: int, output_tokens: int, max_context_tokens: int
+) -> ContextLengthError:
+    return ContextLengthError(
+        prompt_tokens=prompt_tokens,
+        output_tokens=output_tokens,
+        max_context_tokens=max_context_tokens,
+    )
 
 
 class CapacityError(AyakaError, RuntimeError):

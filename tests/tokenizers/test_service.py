@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from ayaka.configs.tokenizer import DetokenizeParams, TokenizerConfig
-from ayaka.core.errors import CancelledError
+from ayaka.core.errors import CancelledError, ContextLengthError
 from ayaka.tokenizers.contracts import (
     ChatInput,
     ChatMessage,
@@ -121,8 +121,18 @@ class TestLengthLimits:
         service = make_service(max_model_len=10)
         text = TextInput("abcdefghij", add_special_tokens=False)
 
-        with pytest.raises(ValueError, match="exceeds context"):
+        with pytest.raises(ContextLengthError) as caught:
             service.encode(text, EncodeOptions(max_output_tokens=4))
+        error = caught.value
+        assert (error.prompt_tokens, error.output_tokens, error.max_context_tokens) == (10, 4, 10)
+
+    def test_a_tighter_input_limit_is_not_the_model_context(self, make_service: Make) -> None:
+        service = make_service(max_model_len=10)
+        text = TextInput("abcdef", add_special_tokens=False)
+
+        with pytest.raises(ValueError, match="max_input_tokens is 4") as caught:
+            service.encode(text, EncodeOptions(max_output_tokens=1, max_input_tokens=4))
+        assert not isinstance(caught.value, ContextLengthError)
 
     def test_truncate_keeps_the_end_by_default(self, make_service: Make) -> None:
         service = make_service(max_model_len=10)
