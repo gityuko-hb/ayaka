@@ -25,6 +25,7 @@ from aiohttp import web
 
 from ayaka.core.errors import (
     CapacityError,
+    ContextLengthError,
     EngineError,
     InvalidRequestError,
     OverloadedError,
@@ -308,6 +309,9 @@ _FAILURES: dict[str, Callable[[], BaseException]] = {
     "unsupported_feature": lambda: UnsupportedFeatureError(
         "audio: not available on this server", context={"features": ("audio",), "param": "audio"}
     ),
+    "context_length_exceeded": lambda: ContextLengthError(
+        prompt_tokens=130, output_tokens=16, max_context_tokens=128
+    ),
     "capacity_exceeded": lambda: CapacityError("the prompt needs 900 blocks; 512 exist"),
     "overloaded": lambda: OverloadedError("the waiting queue is full"),
     "request_timeout": lambda: RequestTimeout("the request ran out of time"),
@@ -326,6 +330,7 @@ _EVENTS: dict[str, ErrorEvent] = {
     "engine_dead": ErrorEvent("engine_dead", "the engine stopped"),
     "not_ready": ErrorEvent("not_ready", "the server is draining", True),
     "backend_error": ErrorEvent("backend_error", "a kernel failed"),
+    "unknown_code": ErrorEvent("a_code_with_no_row", "something the table does not know"),
 }
 
 _RENDERERS: dict[str, Callable[[Any], dict[str, object]]] = {

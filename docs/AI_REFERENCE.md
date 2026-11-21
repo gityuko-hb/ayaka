@@ -36,6 +36,7 @@ With `--api-key` or `--api-key-file`, every path but `/health` needs `Authorizat
 | --- | --- | --- |
 | an invalid field | 400 | names the field |
 | a feature this server does not have | 400 | names the feature |
+| a prompt that leaves no room in the model's context for one output token | 400 | code `context_length_exceeded`; the message gives the prompt tokens, the requested output tokens and the model's limit, and starts with `the prompt is too long` |
 | a prompt that needs more KV than one request can get | 400 | |
 | no key or a wrong key | 401 | |
 | too many requests waiting | 429 | `Retry-After` |
@@ -44,7 +45,11 @@ With `--api-key` or `--api-key-file`, every path but `/health` needs `Authorizat
 | anything else | 500 | logged with its traceback |
 
 Shapes: OpenAI endpoints answer `{"error": {"message", "type", "param", "code"}}`; Anthropic endpoints answer
-`{"type": "error", "error": {"type", "message"}}`. Unknown request fields are ignored (with a debug log line naming
+`{"type": "error", "error": {"type", "message"}, "request_id"}` with the same id in a `request-id` header. A
+Responses stream that fails ends with `response.failed`, whose `error.code` is `context_length_exceeded`,
+`rate_limit_exceeded`, `invalid_prompt` or `server_error`. Every code comes from one fixed table; a failure with no
+row in it is answered as `internal_error`. A request that asks for more output than its context leaves is not an
+error: `max_tokens` is capped to the room. Unknown request fields are ignored (with a debug log line naming
 them); a known field that would change the answer and is not available is refused with 400.
 
 ## Tool calls and structured output

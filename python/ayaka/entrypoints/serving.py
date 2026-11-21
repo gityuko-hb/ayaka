@@ -32,7 +32,12 @@ from typing import TYPE_CHECKING, Final
 from aiohttp import web
 
 from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolSchema
-from ayaka.core.errors import EngineError, InvalidRequestError, UnsupportedFeatureError
+from ayaka.core.errors import (
+    ContextLengthError,
+    EngineError,
+    InvalidRequestError,
+    UnsupportedFeatureError,
+)
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import RequestId
 from ayaka.engine.seam import EngineState
@@ -273,23 +278,33 @@ class Serving:
 
     # -- the generation path ---------------------------------------------------------------
 
-    async def tokenize_chat(self, conversation: Conversation) -> tuple[int, ...]:
+    async def tokenize_chat(
+        self, conversation: Conversation, *, max_tokens: int | None = None
+    ) -> tuple[int, ...]:
         """Render a conversation with the model's chat template and tokenize it.
 
+        Args:
+            conversation: What to render.
+            max_tokens: The output limit the client asked for; it is only reported in the
+                error of a prompt that does not fit, since :meth:`output_tokens` caps it.
+
         Raises:
-            InvalidRequestError: If it cannot be rendered or does not fit the context.
+            ContextLengthError: If the prompt leaves no room for one output token.
+            InvalidRequestError: If it cannot be rendered.
             OverloadedError: If the tokenizer is busy.
         """
-        return await self._encode(conversation.template_input())
+        return await self._encode(conversation.template_input(), max_tokens)
 
-    async def tokenize_text(self, prompt: str | tuple[int, ...]) -> tuple[int, ...]:
-        """Tokenize a raw completion prompt (text, or ids to validate)."""
+    async def tokenize_text(
+        self, prompt: str | tuple[int, ...], *, max_tokens: int | None = None
+    ) -> tuple[int, ...]:
+        """Tokenize a raw completion prompt (text, or ids to validate); as :meth:`tokenize_chat`."""
         value: EncodeInput = (
             TokenIdsInput(prompt) if isinstance(prompt, tuple) else TextInput(prompt)
         )
-        return await self._encode(value)
+        return await self._encode(value, max_tokens)
 
-    async def _encode(self, value: EncodeInput) -> tuple[int, ...]:
+    async def _encode(self, value: EncodeInput, max_tokens: int | None) -> tuple[int, ...]:
         self.require_ready()
         service = self.tokenizer
         assert service is not None  # noqa: S101  # attach() sets it with the engine
@@ -297,11 +312,13 @@ class Serving:
             result = await asyncio.to_thread(
                 service.encode, value, EncodeOptions(max_output_tokens=1)
             )
+        except ContextLengthError as exc:
+            raise ContextLengthError(
+                prompt_tokens=exc.prompt_tokens,
+                output_tokens=max(max_tokens or 1, 1),
+                max_context_tokens=exc.max_context_tokens,
+            ) from None
         except ValueError as exc:
-            if "exceeds context capacity" in str(exc):
-                raise InvalidRequestError(
-                    f"the prompt does not fit the model context of {self.max_model_len} tokens"
-                ) from exc
             raise InvalidRequestError(f"cannot use this prompt: {exc}") from exc
         except RuntimeError as exc:
             raise InvalidRequestError(f"cannot render this prompt: {exc}") from exc
@@ -314,13 +331,14 @@ class Serving:
         more is not an error; asking with no room left is.
 
         Raises:
-            InvalidRequestError: If the prompt leaves no room for one token.
+            ContextLengthError: If the prompt leaves no room for one token.
         """
         room = self.max_model_len - prompt_tokens
         if room < 1:
-            raise InvalidRequestError(
-                f"the prompt has {prompt_tokens} tokens and the model context is "
-                f"{self.max_model_len}: no room is left for an answer"
+            raise ContextLengthError(
+                prompt_tokens=prompt_tokens,
+                output_tokens=max(requested or 1, 1),
+                max_context_tokens=self.max_model_len,
             )
         if requested is None:
             return None

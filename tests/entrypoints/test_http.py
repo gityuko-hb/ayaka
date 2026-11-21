@@ -260,9 +260,30 @@ class TestErrors:
         self, checkpoint: TinyCheckpoint
     ) -> None:
         async def body(client: Client, serving: Serving, llm: AsyncLLM) -> None:
-            response = await client.post(_CHAT, json=_chat("x" * 400, 2))
+            response = await client.post(_CHAT, json=_chat("x" * 400, 7))
             assert response.status == 400
-            assert "128 tokens" in (await response.json())["error"]["message"]
+            error = (await response.json())["error"]
+            assert error["code"] == "context_length_exceeded"
+            assert error["type"] == "invalid_request_error"
+            prompt = len(_chat_prompt("x" * 400))
+            assert error["message"] == (
+                f"the prompt is too long: {prompt} prompt tokens and 7 requested output tokens "
+                "exceed the maximum context length of 128 tokens"
+            )
+            messages = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "tiny",
+                    "max_tokens": 5,
+                    "messages": [{"role": "user", "content": "x" * 400}],
+                },
+            )
+            assert messages.status == 400
+            answer = await messages.json()
+            assert answer["error"]["type"] == "invalid_request_error"
+            assert answer["error"]["message"].startswith("the prompt is too long:")
+            assert answer["request_id"] == messages.headers["request-id"]
+            assert messages.headers["request-id"] == messages.headers["x-request-id"]
 
         _run(checkpoint, body)
 

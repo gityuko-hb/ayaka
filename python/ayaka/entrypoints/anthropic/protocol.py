@@ -58,23 +58,13 @@ __all__ = [
 
 _LOG = logging.getLogger("ayaka.serve")
 
-_ERROR_TYPES: Final = {
-    "invalid_request": "invalid_request_error",
-    "authentication": "authentication_error",
-    "not_found": "not_found_error",
-    "too_large": "request_too_large",
-    "overloaded": "rate_limit_error",
-    "timeout": "api_error",
-    "unavailable": "overloaded_error",
-    "internal": "api_error",
-}
-
 
 def anthropic_error(failure: ApiFailure) -> dict[str, object]:
-    """An error body in Anthropic's shape."""
+    """An error body in Anthropic's shape, with the request id the SDK reports."""
     return {
         "type": "error",
-        "error": {"type": _ERROR_TYPES[failure.kind], "message": failure.message},
+        "error": {"type": failure.row.anthropic_type, "message": failure.message},
+        "request_id": failure.request_id,
     }
 
 

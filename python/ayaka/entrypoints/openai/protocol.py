@@ -57,24 +57,13 @@ __all__ = [
 
 _LOG = logging.getLogger("ayaka.serve")
 
-_ERROR_TYPES: Final = {
-    "invalid_request": "invalid_request_error",
-    "authentication": "authentication_error",
-    "not_found": "not_found_error",
-    "too_large": "invalid_request_error",
-    "overloaded": "rate_limit_error",
-    "timeout": "timeout_error",
-    "unavailable": "service_unavailable_error",
-    "internal": "server_error",
-}
-
 
 def openai_error(failure: ApiFailure) -> dict[str, object]:
-    """An error body in OpenAI's shape."""
+    """An error body in OpenAI's shape: the row's type, and the code itself."""
     return {
         "error": {
             "message": failure.message,
-            "type": _ERROR_TYPES[failure.kind],
+            "type": failure.row.openai_type,
             "param": failure.param,
             "code": failure.code,
         }

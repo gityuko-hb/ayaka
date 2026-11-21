@@ -13,6 +13,7 @@ from ayaka.core.errors import (
     CapabilityError,
     CapacityError,
     ConfigError,
+    ContextLengthError,
     EngineDeadError,
     EngineError,
     ErrorInfo,
@@ -192,6 +193,36 @@ class TestCancelledError:
         assert restored.message == "client disconnected"
 
 
+class TestContextLengthError:
+    def test_the_message_gives_the_three_numbers_and_the_providers_phrases(self) -> None:
+        error = ContextLengthError(prompt_tokens=130, output_tokens=16, max_context_tokens=128)
+
+        assert isinstance(error, InvalidRequestError)
+        assert error.code == "context_length_exceeded"
+        assert error.message == (
+            "the prompt is too long: 130 prompt tokens and 16 requested output tokens exceed "
+            "the maximum context length of 128 tokens"
+        )
+        assert error.context == {
+            "prompt_tokens": 130,
+            "output_tokens": 16,
+            "max_context_tokens": 128,
+        }
+
+    def test_pickle_round_trip(self) -> None:
+        error = ContextLengthError(prompt_tokens=5, output_tokens=1, max_context_tokens=4)
+
+        restored = _round_trip(error)
+
+        assert type(restored) is ContextLengthError
+        assert (restored.prompt_tokens, restored.output_tokens, restored.max_context_tokens) == (
+            5,
+            1,
+            4,
+        )
+        assert str(restored) == str(error)
+
+
 @pytest.mark.parametrize(
     ("error_type", "code", "retryable", "builtin"),
     [
@@ -232,6 +263,7 @@ def test_simple_error_types(
 
 def test_error_hierarchy_relationships() -> None:
     assert issubclass(UnsupportedFeatureError, InvalidRequestError)
+    assert issubclass(ContextLengthError, InvalidRequestError)
     assert issubclass(OverloadedError, CapacityError)
     assert issubclass(EngineDeadError, EngineError)
     assert issubclass(ConfigError, ValueError)
