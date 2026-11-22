@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 from ayaka.core.errors import InvalidRequestError
-from ayaka.tokenizers.contracts import TemplateInput
+from ayaka.tokenizers.contracts import TemplateData, TemplateInput
 from ayaka.utils.parsing import parse_json_strict
 
 if TYPE_CHECKING:
@@ -201,6 +201,14 @@ class Conversation:
         return TemplateInput(
             messages_json=_dumps(self.messages()), tools_json=_dumps(self.tool_definitions())
         )
+
+    def template_data(self) -> TemplateData:
+        """The same as :meth:`template_input` without the JSON, for a render in this process.
+
+        The server renders through this: it gives the template the same values, without
+        serializing a long conversation and parsing it back.
+        """
+        return TemplateData(messages=tuple(self.messages()), tools=tuple(self.tool_definitions()))
 
 
 def _dumps(value: object) -> str:

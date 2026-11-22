@@ -14,8 +14,10 @@ or rejects such text **before** templating::
 The service applies the guard for every adapter, driven by
 ``TokenizerConfig.special_token_policy`` (default ``reject``), so the protection does
 not depend on which tokenizer is loaded. It covers every string in the messages and
-tool definitions of ``ChatInput`` and ``TemplateInput``, including roles. It does not
-cover:
+tool definitions of ``ChatInput``, ``TemplateInput`` and ``TemplateData``, including roles.
+For ``TemplateData`` the one walk that checks the strings also turns the values into what a
+JSON round trip would give back (:func:`plain_json`), so the template sees the same thing either
+way. It does not cover:
 
 * Plain completion text (``TextInput``) and already-rendered prompts
   (``RenderedInput``): pre-templated prompts legitimately contain control tokens.
@@ -28,17 +30,63 @@ cover:
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ayaka.tokenizers.errors import SpecialTokenInContent
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
-__all__ = ["SpecialTokenGuard", "SpecialTokenPolicy"]
+__all__ = ["SpecialTokenGuard", "SpecialTokenPolicy", "plain_json"]
 
 _ZERO_WIDTH_SPACE = "\u200b"
+
+
+def _json_key(key: object) -> str:
+    """A mapping key as ``json.dumps`` writes it."""
+    if type(key) is str:
+        return key
+    if isinstance(key, str):
+        return str.__str__(key)
+    if key is None or isinstance(key, bool):
+        return {None: "null", True: "true", False: "false"}[key]
+    if isinstance(key, int):
+        return int.__repr__(key)
+    if isinstance(key, float):
+        return {"nan": "NaN", "inf": "Infinity", "-inf": "-Infinity"}.get(
+            float.__repr__(key), float.__repr__(key)
+        )
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
+
+
+def plain_json(value: object, text: Callable[[str], str] | None = None) -> Any:
+    """``value`` as ``json.loads(json.dumps(value))`` gives it back, in one walk.
+
+    Mappings become dicts with string keys, lists and tuples become lists, numbers and strings
+    keep their value as their exact built-in type. Each string goes through ``text`` when given.
+
+    Raises:
+        TypeError: For a value JSON cannot hold, as ``json.dumps`` would.
+    """
+    if isinstance(value, str):
+        plain = value if type(value) is str else str.__str__(value)
+        return plain if text is None else text(plain)
+    if value is None or type(value) in (bool, int, float):
+        return value
+    if isinstance(value, Mapping):
+        items = cast("Mapping[object, object]", value).items()
+        return {_json_key(key): plain_json(item, text) for key, item in items}
+    if isinstance(value, list | tuple):
+        return [plain_json(item, text) for item in cast("list[object]", value)]
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 class SpecialTokenPolicy(StrEnum):
@@ -96,6 +144,20 @@ class SpecialTokenGuard:
         if isinstance(content, dict):
             return {key: self.sanitize(value) for key, value in content.items()}  # pyright: ignore[reportUnknownVariableType]
         return content
+
+    def sanitize_json(self, value: object) -> Any:
+        """``value`` made safe under the policy and turned into plain JSON values, in one walk.
+
+        The result equals :meth:`sanitize` of ``json.loads(json.dumps(value))``.
+
+        Raises:
+            SpecialTokenInContent: Under ``REJECT``, if any string contains a special token.
+            TypeError: For a value JSON cannot hold.
+        """
+        pattern = self._pattern
+        if pattern is None or self.policy is SpecialTokenPolicy.ALLOW:
+            return plain_json(value)
+        return plain_json(value, lambda text: self._sanitize_text(text, pattern))
 
     def _sanitize_text(self, text: str, pattern: re.Pattern[str]) -> str:
         if self.policy is SpecialTokenPolicy.REJECT:

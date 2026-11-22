@@ -9,6 +9,7 @@ request fails at the door and never reaches a worker::
     RenderedInput   \\                                         EncodeResult
     ChatInput        >-- EncodeInput + EncodeOptions --> ...     (ayaka.configs.tokenizer)
     TemplateInput   /
+    TemplateData   /     (the same history as Python values: no JSON round trip in process)
     TokenIdsInput  /
 
     factory builds
@@ -23,6 +24,7 @@ Types that only describe configuration or results live in
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -39,6 +41,7 @@ __all__ = [
     "EncodeOptions",
     "LoadedTokenizer",
     "RenderedInput",
+    "TemplateData",
     "TemplateInput",
     "TextInput",
     "TokenIdsInput",
@@ -194,7 +197,62 @@ class TemplateInput:
             raise ValueError("tools must be a JSON array of objects")
 
 
-type EncodeInput = TextInput | RenderedInput | ChatInput | TemplateInput | TokenIdsInput
+@dataclass(frozen=True, slots=True, eq=False)
+class TemplateData:
+    """Chat history as JSON-like Python values, rendered in this process without a JSON round trip.
+
+    It renders exactly as the :class:`TemplateInput` of the same values: the service's guard
+    walks it once, checking every string and turning the values into what ``json.loads`` would
+    give back. Only a worker process needs the JSON (:meth:`to_template_input`). The containers
+    are the caller's: it hands them over and does not change them afterwards.
+
+    Attributes:
+        messages: Message objects (non-empty).
+        tools: Tool definitions; empty for none.
+    """
+
+    messages: tuple[Mapping[str, object], ...]
+    tools: tuple[Mapping[str, object], ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.messages) is not tuple or type(self.tools) is not tuple:
+            raise TypeError("template data must be tuples of objects")
+        if not self.messages:
+            raise ValueError("messages must not be empty")
+        if any(not isinstance(m, Mapping) for m in cast("tuple[object, ...]", self.messages)):
+            raise ValueError("messages must contain objects")
+        if any(not isinstance(t, Mapping) for t in cast("tuple[object, ...]", self.tools)):
+            raise ValueError("tools must be objects")
+
+    def to_template_input(self) -> TemplateInput:
+        """The same history as JSON, for a worker process.
+
+        Raises:
+            TypeError: For a value JSON cannot hold.
+        """
+        from ayaka.tokenizers.security import plain_json
+
+        return TemplateInput(
+            messages_json=json.dumps(plain_json(self.messages), ensure_ascii=False),
+            tools_json=json.dumps(plain_json(self.tools), ensure_ascii=False),
+        )
+
+
+def _plain_weight(value: object) -> int:
+    """Characters of every string in a JSON-like value, plus one per other item."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, Mapping):
+        items = cast("Mapping[object, object]", value).items()
+        return sum(len(str(key)) + _plain_weight(item) for key, item in items)
+    if isinstance(value, list | tuple):
+        return sum(_plain_weight(item) for item in cast("list[object]", value))
+    return 1
+
+
+type EncodeInput = (
+    TextInput | RenderedInput | ChatInput | TemplateInput | TemplateData | TokenIdsInput
+)
 """Anything :class:`~ayaka.tokenizers.service.TokenizerService` can encode."""
 
 
@@ -300,8 +358,8 @@ def encode_input_weight(value: EncodeInput) -> int:
     """Logical size of an input in bytes, as charged against admission budgets.
 
     Text counts as UTF-8 bytes, chat as content plus role plus template override,
-    and token ids as 8 bytes each. It is a stable estimate used to bound queued
-    work, not the exact memory used.
+    template data as the characters of its strings, and token ids as 8 bytes each. It is
+    a stable estimate used to bound queued work, not the exact memory used.
 
     Raises:
         TypeError: If ``value`` is not an :data:`EncodeInput`.
@@ -313,6 +371,8 @@ def encode_input_weight(value: EncodeInput) -> int:
         return body + len((value.chat_template or "").encode())
     if isinstance(value, TemplateInput):
         return len(value.messages_json.encode()) + len(value.tools_json.encode())
+    if isinstance(value, TemplateData):
+        return _plain_weight(value.messages) + _plain_weight(value.tools)
     if isinstance(value, TokenIdsInput):  # pyright: ignore[reportUnnecessaryIsInstance]
         return _ID_BYTES * len(value.token_ids)
     raise TypeError("unsupported encode input")
