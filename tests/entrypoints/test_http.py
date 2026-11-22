@@ -30,7 +30,7 @@ from ayaka.engine.async_llm import AsyncLLM  # noqa: E402
 from ayaka.engine.build import build_engine  # noqa: E402
 from ayaka.entrypoints.conversation import ErrorEvent, FinishEvent  # noqa: E402
 from ayaka.entrypoints.parsers.output import OutputFormat  # noqa: E402
-from ayaka.entrypoints.stream import SlowClientError, pump  # noqa: E402
+from ayaka.entrypoints.stream import SlowClientError, StreamWatchdog, pump  # noqa: E402
 from serving_support import parse_sse, read_sse, script, serve  # noqa: E402
 from tiny_model import (  # noqa: E402  # needs the importorskip above
     TinyCheckpoint,
@@ -618,6 +618,7 @@ class TestDisconnectsAndSlowClients:
                 slow = await llm.add(request("slow", (256, *b"slow")))
                 fast = await llm.add(request("fast", prompt))
                 meta = _Meta("x", 0, "tiny")
+                watchdog = StreamWatchdog(tick=0.05)
 
                 async def slow_side() -> float:
                     started = time.monotonic()
@@ -627,8 +628,7 @@ class TestDisconnectsAndSlowClients:
                             fmt.parser(call_id_prefix="c", tools=False),
                             CompletionStreamEncoder(meta, include_usage=False),
                             Stuck(),
-                            keepalive=5,
-                            write_deadline=0.3,
+                            watch=watchdog.watch(slow, keepalive=5, slow_after=0.3),
                         )
                     llm.abort(RequestId("slow"))
                     return time.monotonic() - started
@@ -641,8 +641,7 @@ class TestDisconnectsAndSlowClients:
                         fmt.parser(call_id_prefix="c", tools=False),
                         CompletionStreamEncoder(meta, include_usage=False),
                         sink,
-                        keepalive=5,
-                        write_deadline=5,
+                        watch=watchdog.watch(fast, keepalive=5, slow_after=5),
                     )
 
                 waited, terminal = await asyncio.gather(slow_side(), fast_side())

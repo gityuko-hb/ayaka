@@ -61,8 +61,10 @@ class ServerConfig(ConfigMixin):
             yet shows that waiting pays).
         keepalive_seconds: Idle seconds after which a stream sends a keepalive frame, so proxies do
             not cut a connection while a long prompt is being read.
-        slow_client_seconds: Seconds a write to a client may block before the request is
-            cancelled and the connection closed. The engine never waits for a client.
+        slow_client_seconds: Seconds a client may leave what was written to it untaken (on Linux,
+            counted from when its socket stops acknowledging bytes), or one write may block,
+            before the request is cancelled and the connection cut. Checked about once a second.
+            The engine never waits for a client.
         stall_seconds: Seconds the engine may have work without making progress before
             ``/health`` reports it ``stalled`` (503). Long by default: the first use of a new
             shape can compile an attention kernel inside one step.

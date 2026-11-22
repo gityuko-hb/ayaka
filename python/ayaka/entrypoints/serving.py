@@ -55,7 +55,13 @@ from ayaka.entrypoints.metrics import ServingMetrics
 from ayaka.entrypoints.normalize import Normalizer, identify_client
 from ayaka.entrypoints.parsers.formats import suggest_tool_call_parser
 from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
-from ayaka.entrypoints.stream import SlowClientError, collect_events, pump
+from ayaka.entrypoints.stream import (
+    WRITE_BUFFER_HIGH,
+    SlowClientError,
+    StreamWatchdog,
+    collect_events,
+    pump,
+)
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
 from ayaka.utils.import_utils import has_module
 
@@ -159,6 +165,10 @@ class Serving:
         self._streaming: dict[int, web.Request] = {}
         self._no_streams = asyncio.Event()
         self._no_streams.set()
+        # One timer for every event stream; it ticks at least twice per keepalive interval.
+        self.watchdog = StreamWatchdog(
+            tick=max(0.01, min(1.0, config.keepalive_seconds / 2, config.slow_client_seconds / 4))
+        )
         self.metrics.progress_age.set_function(self.progress_age)
 
     def normalized(
@@ -475,8 +485,8 @@ class Serving:
     ) -> web.StreamResponse:
         """Answer with server-sent events until the terminal event.
 
-        A client that does not read within the deadline, or that went away, has its connection
-        closed; :meth:`finish` then cancels the request in the engine.
+        A client that stops taking what is written to it for ``slow_client_seconds``, or that went
+        away, has its connection cut; :meth:`finish` then cancels the request in the engine.
         """
         config = self.config
         response = web.StreamResponse(
@@ -490,6 +500,15 @@ class Serving:
         await response.prepare(request)
         self._streaming[id(request)] = request  # until the end of the body: _cut_stuck_streams
         self._no_streams.clear()
+        transport = request.transport
+        if transport is not None:
+            transport.set_write_buffer_limits(high=WRITE_BUFFER_HIGH)
+        watch = self.watchdog.watch(
+            generation.stream,
+            keepalive=config.keepalive_seconds,
+            slow_after=config.slow_client_seconds,
+            transport=transport,
+        )
         answered = False
         try:
             await pump(
@@ -497,25 +516,25 @@ class Serving:
                 generation.parser,
                 encoder,
                 response,
-                keepalive=config.keepalive_seconds,
+                watch=watch,
                 coalesce=config.sse_coalesce_ms / 1000,
-                write_deadline=config.slow_client_seconds,
                 observe=self._observer(generation),
             )
             answered = True
             await response.write_eof()
-        except SlowClientError:
+        except SlowClientError as exc:
             generation.outcome = "slow_client"
             self.metrics.finished.labels("slow_client").inc()
-            _LOG.info("request %s: the client read too slowly; cancelled", request[REQUEST_ID])
-            if request.transport is not None:
-                request.transport.close()
+            _LOG.info("request %s: cancelled, %s", request[REQUEST_ID], exc)
+            if transport is not None:
+                transport.abort()  # what it holds would never drain: drop it and free the socket
             return response
         except ConnectionError:
             if not answered:  # once every frame is written, a lost end of body changes nothing
                 generation.outcome = "client_gone"
                 self.metrics.finished.labels("client_gone").inc()
         finally:
+            watch.close()
             del self._streaming[id(request)]
             if not self._streaming:
                 self._no_streams.set()

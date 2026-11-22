@@ -676,3 +676,55 @@ one slot of ten above the flatness bound), and the step gap of a burst drops by 
 and 3); gate 2's no-regression bounds on ITL pass. On workload 3, where ITL has no gate, the median over pairs of
 B/A steady ITL p99 is 1.053 and of B/A burst ITL p99 0.979. The roadmap's proposed bound of a burst gap within 1.5× of the steady one is missed
 (2.85).
+
+## Stream watchdog, linear merge and the slow-client clock (#77, 2026-11-22)
+
+### Setup and thresholds, written before the run
+
+Not posted to #77 (the work was done locally); committed before any run reported here. A is the admission change
+of the section above (`e3ac2fc`), B is `264e068` (one watchdog for every stream, the oldest untaken byte as the
+slow-client clock, overflow kept in a list). Same Tesla T4 machine; each slot a fresh server with `PYTHONPATH`
+pointing at that side's `python/`; harness scripts from B's checkout.
+
+1. **The slow-client clock** (`benchmarks/e2e/slow_client.py`, B only, as the roadmap asks): `ayaka serve
+   HuggingFaceTB/SmolLM2-135M --device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio 0.75
+   --slow-client-timeout 10`, harness `--server-timeout 10 --settle 3 --fast 2 --tokens 128 --pairs 5
+   --control-reader --threshold 1.25`. The stuck client never reads, so its cancellation delay is measured from when
+   it stopped reading. Every stuck phase is cancelled within **12 s** (`slow_client_seconds + 2 s`), and the median
+   ratio of the readers' gaps beside the stuck client over alone is at most **1.25** (the threshold of #50). For
+   comparison only, not a gate: the same server and harness with A and `--settle 40`, 1 pair.
+2. **No cost per frame** (`benchmarks/e2e/serving_overhead.py --mode fake --streams 4 --tokens 64 --rounds 5`, no
+   burst, CPU only, A B B A, 5 pairs): the median over pairs of B/A server CPU per frame (per slot the median over
+   rounds, per pair the mean of each side's two slots) is at most **1.05**.
+
+The linear merge is checked by tests (a backlog of 1,000 outputs read in order), not timed.
+
+### Result
+
+Raw files: `benchmarks/results/2026-11-22-tesla-t4/stream-watchdog/` (`slow-B.json`, `slow-A.json`, and
+`fake-<pair>-<slot>.json`).
+
+**1. The slow-client clock.** With B, the ten stuck phases were cancelled 10.60, 11.04, 10.22, 10.98, 11.03, 11.07,
+10.20, 11.00, 10.22 and 11.04 s after the stuck client opened (median 10.99 s; threshold ≤ 12 s: **passed**). Ratio of
+the readers' median gap beside the stuck client over alone, per pair: 1.029, 1.038, 1.065, 1.052, 1.025, median
+**1.038** (threshold ≤ 1.25: **passed**); the control phase with a third reader that keeps up: 1.011, 1.063, 1.034,
+1.067, 1.010, median 1.034. The harness judged every phase valid. For comparison (A, `--settle 40`, one pair, not a
+gate): cancelled 44.59 and 44.54 s after opening, of which the 10 s of `--slow-client-timeout` started only once the
+kernel's send buffer was full (about 34.5 s); ratio 1.076.
+
+**2. No cost per frame** (`--mode fake`, server CPU per frame in µs, median over 5 rounds; slots A1 B1 B2 A2):
+
+| Pair | A1 | B1 | B2 | A2 | B/A |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 191.6 | 163.7 | 143.1 | 187.8 | 0.809 |
+| 2 | 189.5 | 162.0 | 148.5 | 190.5 | 0.817 |
+| 3 | 188.3 | 157.1 | 142.6 | 194.4 | 0.783 |
+| 4 | 195.6 | 166.5 | 150.7 | 192.7 | 0.817 |
+| 5 | 180.6 | 164.7 | 143.4 | 189.8 | 0.832 |
+
+Median B/A **0.817** (threshold ≤ 1.05: **passed**). The fake engine makes no model calls, so this is the share of the
+server's own work per frame; it says nothing about a GPU step.
+
+**Verdict:** a client that stops reading is cancelled `slow_client_seconds` plus at most one watchdog tick after it
+stopped, instead of after the kernel's send buffer filled (about 34.5 s here), the other streams are not slowed past
+the threshold of #50, and the server spends less CPU per frame.

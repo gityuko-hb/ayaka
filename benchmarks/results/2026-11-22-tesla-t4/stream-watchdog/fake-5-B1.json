@@ -1,0 +1,153 @@
+{
+  "schema": "ayaka.serving-overhead/1",
+  "mode": "fake",
+  "machine": {
+    "date": "2026-11-22T12:25:55+00:00",
+    "gpu": "Tesla T4",
+    "capability": [
+      7,
+      5
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "ac99081f625f6301d50d5bcd6468eacea818add3"
+  },
+  "settings": {
+    "model": "local",
+    "streams": 4,
+    "tokens": 64,
+    "rounds": 5,
+    "step_ms": 0.5,
+    "burst": false,
+    "burst_requests": 0,
+    "burst_prompt_chars": 0
+  },
+  "rounds": [
+    {
+      "frames": 255,
+      "wall_s": 0.05642422399978386,
+      "frames_per_sec": 4519.335525127945,
+      "server_cpu_s": 0.04876918899999999,
+      "server_cpu_per_frame_us": 191.2517215686274,
+      "engine_step_count": 0,
+      "engine_step_mean_ms": null,
+      "step_gap_ms": {
+        "count": 67,
+        "mean": 0.054356044760180654,
+        "p50": 0.0335,
+        "p99": 0.3324999999999996
+      },
+      "client_itl_ms": {
+        "count": 251,
+        "p50": 0.684353999531595,
+        "p99": 1.3129070002833032
+      },
+      "round": 0
+    },
+    {
+      "frames": 252,
+      "wall_s": 0.05526776900023833,
+      "frames_per_sec": 4559.619549667606,
+      "server_cpu_s": 0.041514485000000045,
+      "server_cpu_per_frame_us": 164.74001984127003,
+      "engine_step_count": 0,
+      "engine_step_mean_ms": null,
+      "step_gap_ms": {
+        "count": 63,
+        "mean": 0.041319698452536524,
+        "p50": 0.026250000000000002,
+        "p99": 0.15549999999999964
+      },
+      "client_itl_ms": {
+        "count": 248,
+        "p50": 0.6719599996358738,
+        "p99": 1.731315999677463
+      },
+      "round": 1
+    },
+    {
+      "frames": 253,
+      "wall_s": 0.06512371299959341,
+      "frames_per_sec": 3884.9136258797093,
+      "server_cpu_s": 0.044141761,
+      "server_cpu_per_frame_us": 174.47336363636364,
+      "engine_step_count": 0,
+      "engine_step_mean_ms": null,
+      "step_gap_ms": {
+        "count": 65,
+        "mean": 0.04151918456045678,
+        "p50": 0.02708333333333333,
+        "p99": 0.33749999999999863
+      },
+      "client_itl_ms": {
+        "count": 249,
+        "p50": 0.7326149998334586,
+        "p99": 2.189255000303092
+      },
+      "round": 2
+    },
+    {
+      "frames": 252,
+      "wall_s": 0.0681110740006261,
+      "frames_per_sec": 3699.8388837281223,
+      "server_cpu_s": 0.040490828000000034,
+      "server_cpu_per_frame_us": 160.67788888888904,
+      "engine_step_count": 0,
+      "engine_step_mean_ms": null,
+      "step_gap_ms": {
+        "count": 64,
+        "mean": 0.033022859383891046,
+        "p50": 0.025806451612903226,
+        "p99": 0.33999999999999986
+      },
+      "client_itl_ms": {
+        "count": 248,
+        "p50": 0.6962040006328607,
+        "p99": 3.0650670005343272
+      },
+      "round": 3
+    },
+    {
+      "frames": 252,
+      "wall_s": 0.054480775999763864,
+      "frames_per_sec": 4625.484776521764,
+      "server_cpu_s": 0.035313458999999936,
+      "server_cpu_per_frame_us": 140.13277380952357,
+      "engine_step_count": 0,
+      "engine_step_mean_ms": null,
+      "step_gap_ms": {
+        "count": 67,
+        "mean": 0.024427910517912477,
+        "p50": 0.025,
+        "p99": 0.0495
+      },
+      "client_itl_ms": {
+        "count": 248,
+        "p50": 0.6810140002926346,
+        "p99": 1.8677729995033587
+      },
+      "round": 4
+    }
+  ],
+  "steady_summary": {
+    "rounds": 5,
+    "frames_per_sec_median": 4519.335525127945,
+    "server_cpu_per_frame_us_median": 164.74001984127003,
+    "engine_step_mean_ms_median": null,
+    "step_gap_ms": {
+      "mean_median": 0.041319698452536524,
+      "p50_median": 0.026250000000000002,
+      "p99_median": 0.3324999999999996
+    },
+    "client_itl_ms": {
+      "p50_median": 0.684353999531595,
+      "p99_median": 1.8677729995033587
+    }
+  }
+}
