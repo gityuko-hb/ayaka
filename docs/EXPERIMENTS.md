@@ -579,3 +579,100 @@ re-validation). Steady-phase ITL p99 is unchanged (21.3–23.8 ms against 22.1�
 
 **Verdict:** the detokenizer part passes its own gates by three to four orders of magnitude; the end-to-end
 no-regression gate is missed. Per the rule written in #77, the change is not merged as a speed-up on this evidence.
+
+## Admission without re-validating the prompt (#77, 2026-11-22)
+
+### Setup and thresholds, written before the run
+
+Not posted to #77 (the work was done locally); this section was committed before any A or B run whose numbers
+are reported here. A trial of B alone (3 and 5 repetitions of gate 1, not kept) was run while the change was
+written, before these thresholds: it gave about 0.1 ms per admission at every length.
+
+A is `main` at `ca9b06c`; B is `002bf86` (requests prepared on a worker thread, vouched ids taken back without a
+second check, id checks at C speed, the KV capacity check without walking the free queue). A B B A order, 5 pairs,
+each slot a fresh process with `PYTHONPATH` pointing at that side's `python/`; the harness scripts come from B's
+checkout for both sides. Machine: the Tesla T4 of the section above (15 GiB, `sm_75`), driver 580.82.07, CUDA 13.0,
+`torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, 2 CPU cores.
+
+1. **Engine-thread admission** (`benchmarks/engine/admission.py --model unsloth/Llama-3.2-1B-Instruct --reps 20`):
+   the time the engine thread spends admitting a prompt the server already encoded, at 4,096, 16,384 and 50,000
+   tokens. With B, the median at 50,000 is at most **1 ms** and at most **2×** B's median at 4,096; B/A at 50,000 is
+   at most **0.1** in every pair.
+2. **One long prompt during decoding** (the workload of the section above): `ayaka serve
+   unsloth/Llama-3.2-1B-Instruct --device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio
+   0.8 --max-running 6`, harness `serving_overhead.py --mode server --streams 4 --tokens 128 --rounds 3 --burst
+   --burst-requests 1 --burst-prompt-chars 400000`. Per slot the median over rounds; per pair the mean of each
+   side's two slots. The median over pairs of B/A burst step-gap p99 is at most **0.5**. No regression: the median
+   over pairs of B/A burst ITL p99 and of B/A steady ITL p99 are each at most **1.10** (not 1.0: the section above
+   found the burst ITL p99 bimodal, with per-pair ratios from 0.83 to 1.67 between two builds).
+3. **A burst of short prompts** (the workload of #90): `ayaka serve HuggingFaceTB/SmolLM2-135M --device cuda
+   --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio 0.75`, harness `--streams 4 --tokens 64
+   --rounds 5 --burst --burst-requests 20 --burst-prompt-chars 4000`. With B, the median over B's slots of burst
+   step-gap p99 divided by steady step-gap p99 (same slot) is at most **1.5** (the threshold the roadmap proposed);
+   the median over pairs of B/A burst step-gap p99 is at most **0.5**.
+
+A missed threshold is reported as missed; the change is then not described as a speed-up for that workload.
+
+### Result
+
+Raw files: `benchmarks/results/2026-11-22-tesla-t4/admission/` (one JSON per slot, named `<pair>-<side><slot>`). The
+first attempt at these runs was discarded before any number was read: the driver named the second A and B slot of
+each pair like the first, so they were skipped; gate 2 then stopped at its first slot because `ninja` was not on the
+driver's `PATH` (flashinfer compiles its kernels with it). The flashinfer kernels were then compiled once by a
+throw-away server and harness run, and the three gates were run again from the start.
+
+**1. Engine-thread admission** (median of 20 admissions per slot, ms; slots A1 B1 B2 A2 per pair):
+
+| Pair | 4,096 tokens | 16,384 tokens | 50,000 tokens |
+| --- | --- | --- | --- |
+| 1 | 6.021, 0.064, 0.109, 6.573 | 36.023, 0.087, 0.143, 17.953 | 97.095, 0.164, 0.196, 51.725 |
+| 2 | 5.970, 0.110, 0.078, 12.287 | 16.871, 0.159, 0.088, 36.536 | 51.262, 0.204, 0.129, 46.417 |
+| 3 | 11.276, 0.067, 0.068, 5.945 | 32.397, 0.084, 0.085, 18.559 | 98.970, 0.117, 0.122, 50.057 |
+| 4 | 6.489, 0.070, 0.070, 12.487 | 16.772, 0.088, 0.093, 58.967 | 50.875, 0.126, 0.130, 181.731 |
+| 5 | 6.123, 0.060, 0.081, 11.640 | 17.743, 0.082, 0.093, 34.649 | 48.902, 0.095, 0.098, 97.633 |
+
+B at 50,000 tokens: 0.095–0.204 ms (threshold ≤ 1 ms: **passed**). B/A at 50,000 per pair: 0.0024, 0.0034, 0.0016,
+0.0011, 0.0013 (threshold ≤ 0.1: **passed**). B's 50,000-token median over its 4,096-token median per slot: 2.58,
+1.79, 1.86, 1.64, 1.75, 1.81, 1.81, 1.86, 1.57, 1.21 (threshold ≤ 2×: **missed in one slot of ten**, pair 1 B1, where
+0.164 ms against 0.064 ms). What still grows with the prompt on the engine thread was not measured further. In A the
+time grows with the prompt (the ids checked again) and has a floor of about 5 ms at every length: the KV capacity check
+walked the free queue of 19,146 blocks.
+
+**2. One long prompt during decoding** (per pair, mean of each side's two slots of the per-slot median over rounds):
+
+| Pair | burst step-gap p99 A / B (ms) | B/A | burst ITL p99 A / B (ms) | B/A | steady ITL p99 A / B (ms) |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 6.45 / 3.18 | 0.493 | 54.7 / 47.2 | 0.863 | 22.77 / 22.33 |
+| 2 | 25.07 / 1.35 | 0.054 | 57.9 / 52.2 | 0.900 | 21.83 / 20.93 |
+| 3 | 25.67 / 1.69 | 0.066 | 54.7 / 81.2 | 1.484 | 21.95 / 21.56 |
+| 4 | 6.45 / 1.39 | 0.216 | 53.2 / 56.2 | 1.057 | 22.80 / 21.08 |
+| 5 | 39.75 / 2.31 | 0.058 | 58.7 / 49.7 | 0.847 | 20.48 / 22.42 |
+
+Median over pairs: B/A burst step-gap p99 **0.066** (threshold ≤ 0.5: **passed**); B/A burst ITL p99 **0.900** and
+B/A steady ITL p99 **0.981** (thresholds ≤ 1.10: **passed**). As in the section above, the first burst round prefills
+the 50,035-token prompt (ITL p99 about 1.4–1.6 s on both sides) and the burst ITL p99 of the later rounds is bimodal;
+the per-round values are in the raw files. All 560 requests of the 20 server runs ended normally (`length`, from the
+server logs).
+
+**3. A burst of short prompts:**
+
+| Pair | burst step-gap p99 A / B (ms) | B/A | burst ITL p99 A / B (ms) | steady step-gap p99 A / B (ms) |
+| --- | --- | --- | --- | --- |
+| 1 | 68.00 / 1.54 | 0.023 | 21.1 / 20.8 | 5.10 / 0.62 |
+| 2 | 67.50 / 3.40 | 0.050 | 21.1 / 20.6 | 5.10 / 0.39 |
+| 3 | 111.00 / 2.47 | 0.022 | 20.8 / 21.6 | 3.61 / 0.83 |
+| 4 | 109.50 / 3.79 | 0.035 | 73.6 / 20.4 | 3.41 / 1.58 |
+| 5 | 67.50 / 3.40 | 0.050 | 74.6 / 58.9 | 2.49 / 1.95 |
+
+Median over pairs of B/A burst step-gap p99 **0.035** (threshold ≤ 0.5: **passed**). With B, burst step-gap p99 over
+steady step-gap p99 per slot: 1.72, 4.53, 7.61, 10.0, 2.26, 3.44, 3.46, 1.92, 2.21, 1.44; median **2.85** (threshold
+≤ 1.5: **missed**). The step-gap histogram's buckets are coarse at this scale (B's burst values sit on 1.5, 3.4 and
+6.8 ms, its steady values well under 1 ms), so the ratio moves in large steps, but the miss is not a rounding effect:
+twenty admissions arriving together still cost the engine thread a few milliseconds between two steps. All 2,820 requests of
+the 20 server runs ended normally (`length`, from the server logs).
+
+**Verdict:** the engine thread no longer does work that grows with the prompt when a request arrives (gate 1, with
+one slot of ten above the flatness bound), and the step gap of a burst drops by 15–30 times on both workloads (gates 2
+and 3); gate 2's no-regression bounds on ITL pass. On workload 3, where ITL has no gate, the median over pairs of
+B/A steady ITL p99 is 1.053 and of B/A burst ITL p99 0.979. The roadmap's proposed bound of a burst gap within 1.5× of the steady one is missed
+(2.85).

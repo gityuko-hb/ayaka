@@ -7,7 +7,8 @@ checks every id against the model, and never touches the scheduler or the GPU::
     (TokenizerConfig, EncodeResult, DetokenizeParams, DetokUpdate)  |
                                                                     v
     contracts   inputs, options, capabilities       service     admission, batching,
-    ports       Protocols the engine depends on     |           cache, validation
+    ports       Protocols the engine depends on     |           cache, validation (vouched:
+                                                    |           ids already checked)
     errors      TokenizerOverloaded, ...            |              |
     security    special-token guard                 |              '--> decoding.incremental
                                                     v                    byte | stream | slow
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
     from ayaka.tokenizers.process_pool import ProcessDetokenizer, ProcessTokenizerPool
     from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy
     from ayaka.tokenizers.service import TokenizerService
+    from ayaka.tokenizers.vouched import VouchedIds
 
 __all__ = [
     "Backend",
@@ -109,6 +111,7 @@ __all__ = [
     "TokenizerLike",
     "TokenizerOverloaded",
     "TokenizerService",
+    "VouchedIds",
     "encode_chunked",
     "encode_input_weight",
     "encode_media_chat",
@@ -156,6 +159,7 @@ _EXPORTS = {
     "process_pool": ("ProcessDetokenizer", "ProcessTokenizerPool"),
     "security": ("SpecialTokenGuard", "SpecialTokenPolicy"),
     "service": ("TokenizerService",),
+    "vouched": ("VouchedIds",),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())

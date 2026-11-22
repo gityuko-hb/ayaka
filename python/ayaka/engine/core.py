@@ -11,7 +11,10 @@ processors, and runs the loop the scheduler and the runner were designed around:
 
 It is not thread safe and takes no locks: the caller that owns the engine calls it from one thread.
 :class:`~ayaka.engine.llm.LLM` is the synchronous caller; an asynchronous one would put a queue in
-front of it.
+front of it. The one exception is :meth:`EngineCore.prepare`, which validates and tokenizes a
+request without touching engine state and may run on any thread, so that work whose cost grows with
+the prompt stays off the thread that runs the steps; :meth:`EngineCore.admit` then queues the result
+on the engine's own thread.
 
 A request with ``n > 1`` is tokenized once and queued as ``n`` sibling requests, ``<id>:0`` to
 ``<id>:<n-1>``, that share the prompt, the seed and every other parameter and differ only in their
@@ -180,6 +183,30 @@ class EngineCore:
         """
         self._require_running()
         self._admit(self._input.process(request), stream)
+
+    def prepare(self, request: GenerateRequest) -> TokenizedRequest:
+        """Validate and tokenize a request for :meth:`admit`; safe to call from any thread.
+
+        Raises:
+            UnsupportedFeatureError, InvalidRequestError, OverloadedError: As
+                :meth:`add_request`.
+            EngineDeadError: If the engine died.
+            EngineError: If the engine is shut down.
+        """
+        self._require_running()
+        return self._input.process(request)
+
+    def admit(self, request: TokenizedRequest, *, stream: bool = False) -> None:
+        """Queue a request :meth:`prepare` made; on the engine's thread.
+
+        Raises:
+            InvalidRequestError: If its id is in use or it does not fit the KV cache.
+            OverloadedError: If the waiting queue is full.
+            EngineDeadError: If the engine died.
+            EngineError: If the engine is shut down.
+        """
+        self._require_running()
+        self._admit(request, stream)
 
     def add_chat(
         self,

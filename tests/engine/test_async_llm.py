@@ -7,14 +7,20 @@ synchronous facade: a greedy request must give the same tokens through either.
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from ayaka.core.errors import EngineDeadError, EngineError, UnsupportedFeatureError
+from ayaka.core.errors import (
+    EngineDeadError,
+    EngineError,
+    InvalidRequestError,
+    UnsupportedFeatureError,
+)
 from ayaka.core.outputs import CompletionOutput, RequestOutput, Usage
 from ayaka.core.params import SamplingParams
-from ayaka.core.request import GenerateRequest
+from ayaka.core.request import GenerateRequest, TokenizedRequest
 from ayaka.core.types import FinishReason, RequestId
 from tokenizer_fakes import BOS
 
@@ -153,6 +159,69 @@ class TestGenerate:
             await llm.shutdown()
 
         asyncio.run(main())
+
+
+class TestPreparation:
+    def test_a_request_is_prepared_off_the_engine_thread_and_admitted_on_it(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        threads: dict[str, str] = {}
+
+        async def body(llm: AsyncLLM) -> None:
+            engine = llm.engine
+            prepare, admit = engine.prepare, engine.admit
+
+            def spy_prepare(request: GenerateRequest) -> TokenizedRequest:
+                threads["prepare"] = threading.current_thread().name
+                return prepare(request)
+
+            def spy_admit(request: TokenizedRequest, *, stream: bool = False) -> None:
+                threads["admit"] = threading.current_thread().name
+                admit(request, stream=stream)
+
+            engine.prepare = spy_prepare  # type: ignore[method-assign]  # observe the call
+            engine.admit = spy_admit  # type: ignore[method-assign]  # observe the call
+            await _collect(await llm.add(_request("where", "x", 2)))
+
+        _run(checkpoint, body)
+
+        assert threads["admit"] == "ayaka-engine"
+        assert threads["prepare"] != "ayaka-engine"
+
+    def test_a_shutdown_that_begins_during_preparation_refuses_the_request(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        async def body(llm: AsyncLLM) -> None:
+            engine = llm.engine
+            prepare = engine.prepare
+            entered, release = threading.Event(), threading.Event()
+
+            def slow_prepare(request: GenerateRequest) -> TokenizedRequest:
+                entered.set()
+                release.wait(10.0)
+                return prepare(request)
+
+            engine.prepare = slow_prepare  # type: ignore[method-assign]  # hold the request there
+            task = asyncio.create_task(llm.add(_request("late", "x", 2)))
+            await asyncio.to_thread(entered.wait, 10.0)
+            await llm.shutdown(0.0)
+            release.set()
+            # Refused either by the engine (already shut down) or by the facade; never left hanging.
+            with pytest.raises(EngineError, match="shut"):
+                await asyncio.wait_for(task, 10.0)
+            assert llm.num_streams == 0
+
+        _run(checkpoint, body)
+
+    def test_a_request_refused_while_prepared_leaves_no_stream(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        async def body(llm: AsyncLLM) -> None:
+            with pytest.raises(InvalidRequestError):
+                await llm.add(_request("big", "x", 10_000))
+            assert llm.num_streams == 0
+
+        _run(checkpoint, body)
 
 
 class TestCancellation:

@@ -566,10 +566,14 @@ def _check_context(request: TokenizedRequest, limit: int | None) -> None:
 
 
 def _check_kv_capacity(request: TokenizedRequest, kv: KVCacheManager) -> None:
-    """Admission check: the prompt fits the KV one request can hold on this machine."""
-    pool_tokens = min(kv.stats().usable_blocks) * kv.block_size
-    capacity = min(kv.max_tokens_per_request, pool_tokens)
+    """Admission check: the prompt fits the KV one request can hold on this machine.
+
+    Read from fixed sizes only: :meth:`KVCacheManager.stats` walks the free queue to count cached
+    blocks, which costs milliseconds on a large pool, on the engine thread, for every request.
+    """
+    capacity = kv.max_context_tokens
     if request.prompt_length > capacity:
+        pool_tokens = min(kv.stats().usable_blocks) * kv.block_size
         raise InvalidRequestError(
             f"prompt ({request.prompt_length} tokens) exceeds the {capacity} tokens of KV "
             f"cache this engine can give one request (block table row: "

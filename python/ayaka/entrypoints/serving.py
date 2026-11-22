@@ -27,6 +27,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, Final
 
 from aiohttp import web
@@ -279,7 +280,7 @@ class Serving:
     # -- the generation path ---------------------------------------------------------------
 
     async def tokenize_chat(
-        self, conversation: Conversation, *, max_tokens: int | None = None
+        self, conversation: Conversation, *, max_tokens: int | None = None, vouch: bool = True
     ) -> tuple[int, ...]:
         """Render a conversation with the model's chat template and tokenize it.
 
@@ -287,13 +288,16 @@ class Serving:
             conversation: What to render.
             max_tokens: The output limit the client asked for; it is only reported in the
                 error of a prompt that does not fit, since :meth:`output_tokens` caps it.
+            vouch: The ids go to the engine next (``False`` when only their count is wanted):
+                the tokenizer remembers it checked them, and the engine does not check every id
+                again.
 
         Raises:
             ContextLengthError: If the prompt leaves no room for one output token.
             InvalidRequestError: If it cannot be rendered.
             OverloadedError: If the tokenizer is busy.
         """
-        return await self._encode(conversation.template_input(), max_tokens)
+        return await self._encode(conversation.template_input(), max_tokens, vouch=vouch)
 
     async def tokenize_text(
         self, prompt: str | tuple[int, ...], *, max_tokens: int | None = None
@@ -302,15 +306,17 @@ class Serving:
         value: EncodeInput = (
             TokenIdsInput(prompt) if isinstance(prompt, tuple) else TextInput(prompt)
         )
-        return await self._encode(value, max_tokens)
+        return await self._encode(value, max_tokens, vouch=True)
 
-    async def _encode(self, value: EncodeInput, max_tokens: int | None) -> tuple[int, ...]:
+    async def _encode(
+        self, value: EncodeInput, max_tokens: int | None, *, vouch: bool
+    ) -> tuple[int, ...]:
         self.require_ready()
         service = self.tokenizer
         assert service is not None  # noqa: S101  # attach() sets it with the engine
         try:
             result = await asyncio.to_thread(
-                service.encode, value, EncodeOptions(max_output_tokens=1)
+                partial(service.encode, vouch=vouch), value, EncodeOptions(max_output_tokens=1)
             )
         except ContextLengthError as exc:
             raise ContextLengthError(

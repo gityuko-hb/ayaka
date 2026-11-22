@@ -1,0 +1,191 @@
+{
+  "schema": "ayaka.serving-overhead/1",
+  "mode": "server",
+  "machine": {
+    "date": "2026-11-22T11:54:31+00:00",
+    "gpu": "Tesla T4",
+    "capability": [
+      7,
+      5
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "c6259e7566928584481395a738bf4c462d2341c4"
+  },
+  "settings": {
+    "model": "unsloth/Llama-3.2-1B-Instruct",
+    "streams": 4,
+    "tokens": 128,
+    "rounds": 3,
+    "step_ms": null,
+    "burst": true,
+    "burst_requests": 1,
+    "burst_prompt_chars": 400000
+  },
+  "rounds": [
+    {
+      "frames": 512,
+      "wall_s": 2.267071381000278,
+      "frames_per_sec": 225.84202874727976,
+      "server_cpu_s": 2.2699999999999996,
+      "server_cpu_per_frame_us": 4433.593749999999,
+      "engine_step_count": 129,
+      "engine_step_mean_ms": 17.056106108520204,
+      "step_gap_ms": {
+        "count": 128,
+        "mean": 0.06803552341949626,
+        "p50": 0.051639344262295085,
+        "p99": 0.7866666666666664
+      },
+      "client_itl_ms": {
+        "count": 508,
+        "p50": 16.813266999633925,
+        "p99": 21.382736000305158
+      },
+      "round": 0
+    },
+    {
+      "frames": 512,
+      "wall_s": 2.223043310000321,
+      "frames_per_sec": 230.31490106233065,
+      "server_cpu_s": 2.240000000000002,
+      "server_cpu_per_frame_us": 4375.000000000004,
+      "engine_step_count": 129,
+      "engine_step_mean_ms": 16.741641046474946,
+      "step_gap_ms": {
+        "count": 128,
+        "mean": 0.062296195309841096,
+        "p50": 0.03404255319148936,
+        "p99": 0.7866666666666664
+      },
+      "client_itl_ms": {
+        "count": 508,
+        "p50": 16.803102999801922,
+        "p99": 19.577093999942008
+      },
+      "round": 1
+    },
+    {
+      "frames": 512,
+      "wall_s": 2.2198343290001503,
+      "frames_per_sec": 230.64784308953955,
+      "server_cpu_s": 2.240000000000002,
+      "server_cpu_per_frame_us": 4375.000000000004,
+      "engine_step_count": 129,
+      "engine_step_mean_ms": 16.753320627897264,
+      "step_gap_ms": {
+        "count": 128,
+        "mean": 0.05136008590511665,
+        "p50": 0.035164835164835165,
+        "p99": 0.20799999999999985
+      },
+      "client_itl_ms": {
+        "count": 508,
+        "p50": 16.805762999865692,
+        "p99": 19.560175000151503
+      },
+      "round": 2
+    }
+  ],
+  "steady_summary": {
+    "rounds": 3,
+    "frames_per_sec_median": 230.31490106233065,
+    "server_cpu_per_frame_us_median": 4375.000000000004,
+    "engine_step_mean_ms_median": 16.753320627897264,
+    "step_gap_ms": {
+      "mean_median": 0.062296195309841096,
+      "p50_median": 0.035164835164835165,
+      "p99_median": 0.7866666666666664
+    },
+    "client_itl_ms": {
+      "p50_median": 16.805762999865692,
+      "p99_median": 19.577093999942008
+    }
+  },
+  "burst_rounds": [
+    {
+      "frames": 512,
+      "wall_s": 15.973520610000378,
+      "frames_per_sec": 32.05304657005028,
+      "server_cpu_s": 15.260000000000002,
+      "server_cpu_per_frame_us": 29804.687500000004,
+      "engine_step_count": 154,
+      "engine_step_mean_ms": 102.76992614287586,
+      "step_gap_ms": {
+        "count": 153,
+        "mean": 0.23054520910936013,
+        "p50": 0.06640625,
+        "p99": 1.9262499999999996
+      },
+      "client_itl_ms": {
+        "count": 508,
+        "p50": 17.1942629995101,
+        "p99": 1560.1929419999578
+      },
+      "round": 0
+    },
+    {
+      "frames": 512,
+      "wall_s": 2.3130295840001054,
+      "frames_per_sec": 221.3547131180907,
+      "server_cpu_s": 2.559999999999995,
+      "server_cpu_per_frame_us": 4999.999999999991,
+      "engine_step_count": 130,
+      "engine_step_mean_ms": 17.156077292300044,
+      "step_gap_ms": {
+        "count": 129,
+        "mean": 0.07927110854952774,
+        "p50": 0.043000000000000003,
+        "p99": 0.8387499999999992
+      },
+      "client_itl_ms": {
+        "count": 508,
+        "p50": 16.88715499949467,
+        "p99": 52.93272899962176
+      },
+      "round": 1
+    },
+    {
+      "frames": 512,
+      "wall_s": 2.330055301000357,
+      "frames_per_sec": 219.73727395233252,
+      "server_cpu_s": 2.5600000000000023,
+      "server_cpu_per_frame_us": 5000.000000000005,
+      "engine_step_count": 130,
+      "engine_step_mean_ms": 17.24296055385471,
+      "step_gap_ms": {
+        "count": 129,
+        "mean": 0.09749662013189297,
+        "p50": 0.039329268292682934,
+        "p99": 0.9283333333333331
+      },
+      "client_itl_ms": {
+        "count": 508,
+        "p50": 16.901883000173257,
+        "p99": 56.328052999560896
+      },
+      "round": 2
+    }
+  ],
+  "burst_summary": {
+    "rounds": 3,
+    "frames_per_sec_median": 219.73727395233252,
+    "server_cpu_per_frame_us_median": 5000.000000000005,
+    "engine_step_mean_ms_median": 17.24296055385471,
+    "step_gap_ms": {
+      "mean_median": 0.09749662013189297,
+      "p50_median": 0.043000000000000003,
+      "p99_median": 0.9283333333333331
+    },
+    "client_itl_ms": {
+      "p50_median": 16.901883000173257,
+      "p99_median": 56.328052999560896
+    }
+  }
+}

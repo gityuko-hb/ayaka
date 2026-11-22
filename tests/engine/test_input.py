@@ -6,12 +6,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from ayaka.core.errors import InvalidRequestError, OverloadedError, UnsupportedFeatureError
+from ayaka.core.errors import (
+    ContextLengthError,
+    InvalidRequestError,
+    OverloadedError,
+    UnsupportedFeatureError,
+)
 from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import RequestId
 from ayaka.engine.input import InputProcessor, require_supported
-from ayaka.tokenizers.contracts import ChatMessage
+from ayaka.tokenizers.contracts import ChatMessage, EncodeOptions, TextInput, TokenIdsInput
 from ayaka.tokenizers.errors import TokenizerOverloaded
 from tokenizer_fakes import BOS, MODEL_VOCAB, make_service
 
@@ -58,6 +63,31 @@ class TestTokenizing:
 
     def test_token_ids_pass_through(self, processor: InputProcessor) -> None:
         assert processor.process(_request((1, 2, 3))).prompt_token_ids == (1, 2, 3)
+
+    def test_ids_the_service_vouched_for_are_not_encoded_again(
+        self, processor: InputProcessor, service: TokenizerService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ids = service.encode(TextInput("hi"), EncodeOptions(max_output_tokens=1), vouch=True)
+        calls: list[object] = []
+        monkeypatch.setattr(service, "encode", lambda *args, **kwargs: calls.append(args))
+
+        tokenized = processor.process(_request(ids.token_ids))
+
+        assert tokenized.prompt_token_ids is ids.token_ids
+        assert calls == []
+
+    def test_ids_nobody_vouched_for_are_checked(self, processor: InputProcessor) -> None:
+        with pytest.raises(InvalidRequestError, match="not supported"):
+            processor.process(_request((1, MODEL_VOCAB + 5)))
+
+    def test_vouched_ids_must_still_leave_room_for_max_tokens(
+        self, processor: InputProcessor, service: TokenizerService
+    ) -> None:
+        prompt = tuple(range(1, CONTEXT - 2))
+        ids = service.encode(TokenIdsInput(prompt), EncodeOptions(max_output_tokens=1), vouch=True)
+
+        with pytest.raises(ContextLengthError):
+            processor.process(_request(ids.token_ids, max_tokens=8))
 
     def test_a_chat_is_rendered_with_the_template(self, processor: InputProcessor) -> None:
         tokenized = processor.process_chat(

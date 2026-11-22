@@ -25,9 +25,15 @@ Threading rules:
   Positive workers coalesce jobs submitted within a bounded window.
 * Adapter calls and cache access are serialized by one lock, to protect slow or
   custom tokenizers. Detokenizers made by :meth:`TokenizerService.new_detokenizer`
-  share that lock.
+  do not take it.
 * Cancellation cannot interrupt a native encode: its result is discarded and its
   admission charge stays held until the native call returns.
+
+Checked ids are not checked again. An encode submitted with ``vouch=True`` remembers the tuple
+of ids it returned (:class:`~ayaka.tokenizers.vouched.VouchedIds`);
+:meth:`TokenizerService.take_vouched` hands that same tuple back with only the length rule
+applied, so a server that encoded a prompt does not pay for checking every id again when the engine
+admits it.
 """
 
 from __future__ import annotations
@@ -60,8 +66,9 @@ from ayaka.tokenizers.errors import TokenizerOverloaded
 from ayaka.tokenizers.factory import DefaultTokenizerFactory, validate_loading_config
 from ayaka.tokenizers.ports import RenderedEncoderLike, TokenizerLike
 from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy
+from ayaka.tokenizers.vouched import VouchedIds
 from ayaka.utils.cancellation import CancellationToken
-from ayaka.utils.validation import require_int
+from ayaka.utils.validation import plain_token_ids, require_int
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -99,6 +106,7 @@ class _Job:
     token: CancellationToken
     future: Future[EncodeResult]
     weight: int
+    vouch: bool = False
 
 
 class TokenizerService:
@@ -171,6 +179,10 @@ class TokenizerService:
         self._closed = False
         self._cache: OrderedDict[_CacheKey, tuple[int, ...]] = OrderedDict()
         self._cache_bytes = 0
+        self._vouched = VouchedIds(
+            max_entries=config.encode_max_pending,
+            max_ids=max(1, config.encode_max_pending_bytes // _ID_BYTES),
+        )
         self._local = _WorkerState()
         self._pool: ThreadPoolExecutor | None = None
         self._dispatcher: threading.Thread | None = None
@@ -229,6 +241,7 @@ class TokenizerService:
         options: EncodeOptions = _DEFAULT_OPTIONS,
         *,
         cancellation: CancellationToken | None = None,
+        vouch: bool = False,
     ) -> Future[EncodeResult]:
         """Admit ``value`` or reject it immediately; zero workers also run it inline.
 
@@ -236,6 +249,8 @@ class TokenizerService:
             value: What to encode.
             options: Output reservation, truncation and cache namespace.
             cancellation: Token to cancel the request; one is created if omitted.
+            vouch: Remember the returned ids, so :meth:`take_vouched` accepts them without
+                checking each one again.
 
         Returns:
             A future holding the :class:`EncodeResult` or the failure.
@@ -263,7 +278,7 @@ class TokenizerService:
             raise ValueError("loaded tokenizer does not support chat templates")
         if options.max_output_tokens >= self.max_model_len:
             raise ValueError("output reservation leaves no room for a prompt")
-        job = _Job(value, options, token, Future(), weight)
+        job = _Job(value, options, token, Future(), weight, vouch)
         with self._cv:
             if self._closed:
                 raise RuntimeError("tokenizer service is closed")
@@ -288,6 +303,7 @@ class TokenizerService:
         options: EncodeOptions = _DEFAULT_OPTIONS,
         *,
         cancellation: CancellationToken | None = None,
+        vouch: bool = False,
     ) -> EncodeResult:
         """Blocking convenience over :meth:`submit`.
 
@@ -297,7 +313,7 @@ class TokenizerService:
         """
         if self._pool is not None and self._local.in_worker:
             raise RuntimeError("blocking encode must not run from a completion callback")
-        return self.submit(value, options, cancellation=cancellation).result()
+        return self.submit(value, options, cancellation=cancellation, vouch=vouch).result()
 
     async def encode_async(
         self,
@@ -305,6 +321,7 @@ class TokenizerService:
         options: EncodeOptions = _DEFAULT_OPTIONS,
         *,
         cancellation: CancellationToken | None = None,
+        vouch: bool = False,
     ) -> EncodeResult:
         """Await a background encode without blocking the event loop.
 
@@ -317,7 +334,9 @@ class TokenizerService:
             raise ValueError("encode_async requires encode_pool_workers > 0")
         token = cancellation if cancellation is not None else CancellationToken()
         try:
-            return await asyncio.wrap_future(self.submit(value, options, cancellation=token))
+            return await asyncio.wrap_future(
+                self.submit(value, options, cancellation=token, vouch=vouch)
+            )
         except asyncio.CancelledError:
             token.cancel("async encode cancelled")
             raise
@@ -511,22 +530,53 @@ class TokenizerService:
                         self._cache_put(key, owned)
                 except Exception as exc:
                     results[i] = exc
+        for job, result in zip(jobs, results, strict=True):
+            if job.vouch and isinstance(result, EncodeResult):
+                self._vouched.vouch(result.token_ids)
         return results
 
     def _result(
         self, ids: tuple[int, ...], options: EncodeOptions, *, reused: bool
     ) -> EncodeResult:
         """Validate ids against model and tokenizer, apply the length limit, build the result."""
-        for token in ids:
-            require_int(token, "encoded token id")
-            if token >= self.model_vocab_size or (
-                self._valid_ids is not None and token not in self._valid_ids
-            ):
-                raise ValueError(f"token ID is not supported by model/tokenizer: {token}")
+        if not self._known_ids(ids):
+            for token in ids:
+                require_int(token, "encoded token id")
+                if token >= self.model_vocab_size or (
+                    self._valid_ids is not None and token not in self._valid_ids
+                ):
+                    raise ValueError(f"token ID is not supported by model/tokenizer: {token}")
+        fitted = self._fit(ids, options)
+        return EncodeResult(
+            fitted,
+            len(fitted) if reused else 0,
+            fitted is not ids,  # only truncation makes a new tuple
+            extra=(("tokenizer_fingerprint", self._fingerprint),),
+        )
+
+    def _known_ids(self, ids: tuple[int, ...]) -> bool:
+        """Whether every id is a plain int the model and the tokenizer have, at C speed.
+
+        ``False`` only means the item-by-item check has to decide (and name the bad id).
+        """
+        if not plain_token_ids(ids):
+            return False
+        if not ids:
+            return True
+        if max(ids) >= self.model_vocab_size:
+            return False
+        return self._valid_ids is None or self._valid_ids.issuperset(ids)
+
+    def _fit(self, ids: tuple[int, ...], options: EncodeOptions) -> tuple[int, ...]:
+        """Apply the length limit: the ids unchanged, truncated, or an error.
+
+        Raises:
+            ContextLengthError: If the prompt and the output reservation exceed the context.
+            ValueError: If the prompt exceeds ``max_input_tokens``, or nothing is left.
+        """
         room = self.max_model_len - options.max_output_tokens
         limit = room if options.max_input_tokens is None else min(room, options.max_input_tokens)
-        truncated = len(ids) > limit
-        if truncated:
+        if len(ids) > limit:
             if not options.truncate:
                 if len(ids) > room:
                     raise ContextLengthError(
@@ -538,12 +588,30 @@ class TokenizerService:
             ids = ids[-limit:] if self.config.truncation_side == "left" else ids[:limit]
         if not ids:
             raise ValueError("empty encoded prompt")
-        return EncodeResult(
-            ids,
-            len(ids) if reused else 0,
-            truncated,
-            extra=(("tokenizer_fingerprint", self._fingerprint),),
-        )
+        return ids
+
+    def take_vouched(
+        self, ids: tuple[int, ...], options: EncodeOptions = _DEFAULT_OPTIONS
+    ) -> tuple[int, ...] | None:
+        """Accept ids this service returned from an encode with ``vouch=True``, without
+        checking each id again; the length rule of ``options`` still applies.
+
+        Each vouching encode is good for one call. The ids must be the very tuple the encode
+        returned: an equal tuple built elsewhere was not checked here.
+
+        Returns:
+            The ids, cut to fit if ``options`` asks for truncation; ``None`` if this service did
+            not vouch for them (or no longer remembers it), and the caller checks them itself.
+
+        Raises:
+            ContextLengthError: If the prompt and the output reservation exceed the context.
+            ValueError: As the length rule of :meth:`submit`.
+        """
+        if not self._vouched.take(ids):
+            return None
+        if options.max_output_tokens >= self.max_model_len:
+            raise ValueError("output reservation leaves no room for a prompt")
+        return self._fit(ids, options)
 
     # -- decoding --------------------------------------------------------------
 
@@ -603,6 +671,7 @@ class TokenizerService:
         with self._adapter_lock:
             self._cache.clear()
             self._cache_bytes = 0
+        self._vouched.clear()
 
     def __enter__(self) -> Self:
         return self

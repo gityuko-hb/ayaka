@@ -11,7 +11,11 @@ prompt and sampling parameters the engine can honour, and every way it can fail 
 * ``OverloadedError``: the tokenizer queue is full; try again later.
 
 Tokenizing runs in the :class:`~ayaka.tokenizers.service.TokenizerService`; this class only decides
-what to ask it and translates what comes back.
+what to ask it and translates what comes back. A token prompt the service itself encoded with
+``vouch=True`` (the server's path) is taken as checked: only its length is looked at again.
+
+Nothing here touches engine state, so :class:`InputProcessor` may run on any thread; the engine
+prepares requests away from the thread that runs its steps.
 """
 
 from __future__ import annotations
@@ -119,11 +123,7 @@ class InputProcessor:
             OverloadedError: If the tokenizer queue is full.
         """
         require_supported(request.sampling, can_decode_text=self._service.tokenizer is not None)
-        prompt: EncodeInput = (
-            TokenIdsInput(request.prompt)
-            if isinstance(request.prompt, tuple)
-            else TextInput(request.prompt)
-        )
+        prompt = request.prompt if isinstance(request.prompt, tuple) else TextInput(request.prompt)
         tokenized = self._tokenize(
             prompt,
             request_id=request.request_id,
@@ -173,7 +173,7 @@ class InputProcessor:
 
     def _tokenize(
         self,
-        prompt: EncodeInput,
+        prompt: EncodeInput | tuple[int, ...],
         *,
         request_id: RequestId,
         sampling: SamplingParams,
@@ -188,8 +188,14 @@ class InputProcessor:
             raise InvalidRequestError(
                 f"max_tokens ({wanted}) must be below the model context of {limit} tokens"
             )
+        options = EncodeOptions(max_output_tokens=wanted)
         try:
-            encoded = self._service.encode(prompt, EncodeOptions(max_output_tokens=wanted))
+            token_ids = (
+                self._service.take_vouched(prompt, options) if isinstance(prompt, tuple) else None
+            )
+            if token_ids is None:
+                value = TokenIdsInput(prompt) if isinstance(prompt, tuple) else prompt
+                token_ids = self._service.encode(value, options).token_ids
         except TokenizerOverloaded as exc:
             raise OverloadedError(f"the tokenizer is busy: {exc}") from exc
         except ContextLengthError:
@@ -198,13 +204,13 @@ class InputProcessor:
             raise InvalidRequestError(f"cannot use this prompt: {exc}") from exc
         sampling.validate_for_model(
             vocab_size=self._vocab_size,
-            prompt_tokens=len(encoded.token_ids),
+            prompt_tokens=len(token_ids),
             max_model_len=limit,
             max_logprobs=MAX_LOGPROBS,
         )
         return TokenizedRequest(
             request_id=request_id,
-            prompt_token_ids=encoded.token_ids,
+            prompt_token_ids=token_ids,
             sampling=sampling,
             client_request_id=client_request_id,
             priority=priority,

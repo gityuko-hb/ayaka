@@ -25,6 +25,7 @@ import gc
 import logging
 import os
 import signal
+from functools import partial
 from typing import TYPE_CHECKING, Final
 
 from aiohttp import web
@@ -90,7 +91,7 @@ class _Signals:
 async def _warm_up(llm: AsyncLLM, service: TokenizerService) -> None:
     """Generate one token, so the first client does not pay for the first step."""
     encoded = await asyncio.to_thread(
-        service.encode, TextInput("Hello"), EncodeOptions(max_output_tokens=1)
+        partial(service.encode, vouch=True), TextInput("Hello"), EncodeOptions(max_output_tokens=1)
     )
     request = GenerateRequest(
         request_id=RequestId("ayaka-warmup"),

@@ -407,3 +407,78 @@ class TestDetokenizer:
 
         with pytest.raises(RuntimeError, match="closed"):
             service.new_detokenizer(DetokenizeParams())
+
+
+@pytest.mark.unit
+class TestVouching:
+    def test_a_vouched_tuple_is_taken_back_once_without_another_check(
+        self, make_service: Make
+    ) -> None:
+        service = make_service()
+        ids = service.encode(TextInput("hi"), OPTIONS, vouch=True).token_ids
+
+        assert service.take_vouched(ids, OPTIONS) is ids
+        assert service.take_vouched(ids, OPTIONS) is None
+
+    def test_an_equal_tuple_built_elsewhere_is_not_vouched_for(self, make_service: Make) -> None:
+        service = make_service()
+        ids = service.encode(TextInput("hi"), OPTIONS, vouch=True).token_ids
+
+        assert service.take_vouched((*ids,), OPTIONS) is None
+
+    def test_an_encode_without_vouch_is_not_remembered(self, make_service: Make) -> None:
+        service = make_service()
+        ids = service.encode(TextInput("hi"), OPTIONS).token_ids
+
+        assert service.take_vouched(ids, OPTIONS) is None
+
+    def test_another_service_does_not_vouch_for_ids_it_did_not_check(
+        self, make_service: Make
+    ) -> None:
+        ids = make_service().encode(TextInput("hi"), OPTIONS, vouch=True).token_ids
+
+        assert make_service().take_vouched(ids, OPTIONS) is None
+
+    def test_the_length_rule_still_applies(self, make_service: Make) -> None:
+        service = make_service(max_model_len=16)
+        ids = service.encode(
+            TokenIdsInput(tuple(range(1, 11))), EncodeOptions(max_output_tokens=1), vouch=True
+        ).token_ids
+
+        with pytest.raises(ContextLengthError):
+            service.take_vouched(ids, EncodeOptions(max_output_tokens=8))
+
+    def test_a_cached_prompt_encoded_twice_is_good_for_two_takes(self, make_service: Make) -> None:
+        service = make_service(enable_session_cache=True)
+        first = service.encode(TextInput("hi"), OPTIONS, vouch=True).token_ids
+        second = service.encode(TextInput("hi"), OPTIONS, vouch=True).token_ids
+        assert first is second  # the cache hands out the same tuple
+
+        assert service.take_vouched(first, OPTIONS) is first
+        assert service.take_vouched(second, OPTIONS) is second
+        assert service.take_vouched(first, OPTIONS) is None
+
+    def test_the_memory_is_bounded_by_the_pending_count(self, make_service: Make) -> None:
+        service = make_service(encode_max_pending=2)
+        kept = [
+            service.encode(TokenIdsInput((1, n)), OPTIONS, vouch=True).token_ids
+            for n in range(2, 5)
+        ]
+
+        assert service.take_vouched(kept[0], OPTIONS) is None  # forgotten: the oldest
+        assert service.take_vouched(kept[2], OPTIONS) is kept[2]
+
+    def test_close_forgets_everything(self, make_service: Make) -> None:
+        service = make_service()
+        ids = service.encode(TextInput("hi"), OPTIONS, vouch=True).token_ids
+        service.close()
+
+        assert service.take_vouched(ids, OPTIONS) is None
+
+    def test_a_long_valid_prompt_takes_the_fast_check(self, make_service: Make) -> None:
+        service = make_service(max_model_len=100_000)
+        ids = tuple(range(1, 250)) * 300
+
+        assert service.encode(TokenIdsInput(ids), OPTIONS).token_ids == ids
+        with pytest.raises(ValueError, match="not supported by model/tokenizer: 299"):
+            service.encode(TokenIdsInput((*ids, 299)), OPTIONS)
