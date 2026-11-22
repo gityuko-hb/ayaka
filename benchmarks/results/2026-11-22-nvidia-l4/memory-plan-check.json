@@ -1,0 +1,219 @@
+{
+  "benchmark": "memory_plan_check",
+  "model": "/root/.cache/huggingface/hub/models--unsloth--Llama-3.2-1B-Instruct/snapshots/5a8abab4a5d6f164389b1079fb721cfab8d7126c",
+  "cache_dir": "/tmp/l4-mem-check-cache",
+  "saved_profiles_after_run_1": [
+    "/tmp/l4-mem-check-cache/profiles/dd13461ba1a9e8e25a166a9e.json"
+  ],
+  "machine": {
+    "date": "2026-11-22T20:04:53+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "07a85e3f65af181060fe9c976f6e49ef20d7e5ca"
+  },
+  "run_1_cold": {
+    "plan_engine": {
+      "profiled": false,
+      "crosscheck": {
+        "nvml_baseline_bytes": 23659151360,
+        "cuda_free_after_backend_bytes": 23455727616,
+        "message": "device free cross-check: NVML 23659151360 bytes before the backend, CUDA 23455727616 bytes after it"
+      },
+      "baseline_bytes": 23659151360,
+      "weights_bytes": 2471628800,
+      "kv_blocks": 35899,
+      "kv_bytes": 18821414912,
+      "max_context_tokens": 131072,
+      "max_running": 17,
+      "chunk_tokens": 2048,
+      "budget": {
+        "usable_bytes": 21293236224,
+        "headroom_bytes": 2365915136,
+        "kv_blocks": [
+          35899
+        ],
+        "kv_tokens": 574368,
+        "kv_bytes": 18821414912,
+        "max_chunk_tokens": 574368,
+        "max_running": 17,
+        "graph_bytes": 0,
+        "skipped": []
+      }
+    },
+    "build_engine": {
+      "crosscheck": {
+        "nvml_baseline_bytes": 23455727616,
+        "cuda_free_after_backend_bytes": 23455727616,
+        "message": "device free cross-check: NVML 23455727616 bytes before the backend, CUDA 23455727616 bytes after it"
+      },
+      "plan": {
+        "usable_bytes": 21110154854,
+        "headroom_bytes": 2345572762,
+        "kv_blocks": [
+          35550
+        ],
+        "kv_tokens": 568784,
+        "kv_bytes": 18638438400,
+        "max_chunk_tokens": 568784,
+        "max_running": 17,
+        "graph_bytes": 0,
+        "skipped": []
+      },
+      "startup_report": {
+        "weights_bytes": 2471628800,
+        "kv_bytes": 18638438400,
+        "runtime_bytes": 48234496,
+        "workspace_bytes": 645787648,
+        "activation_tokens": 2048,
+        "activation_peak_bytes": 394317824,
+        "reused_bytes": 0,
+        "graph_bytes": 364904448,
+        "budget_snapshot": {
+          "weights": 2471628800,
+          "kv": 18638438400,
+          "expert_cache": 0,
+          "workspace": 645787648,
+          "graph": 364904448,
+          "draft": 0,
+          "runtime": 48234496,
+          "reserve": 0
+        },
+        "graphs": [
+          {
+            "bucket": 1,
+            "bytes": 85983232
+          },
+          {
+            "bucket": 2,
+            "bytes": 90177536
+          },
+          {
+            "bucket": 4,
+            "bytes": 85983232
+          },
+          {
+            "bucket": 8,
+            "bytes": 102760448
+          }
+        ],
+        "reconciliation": {
+          "ledger_bytes": 22168993792,
+          "measured_bytes": 22168993792,
+          "difference_bytes": 0,
+          "tolerance_bytes": 1108449689,
+          "device_bytes": 22345154560,
+          "device_difference_bytes": 176160768,
+          "matches": true
+        }
+      }
+    }
+  },
+  "run_2_warm": {
+    "plan_engine": {
+      "profiled": true,
+      "crosscheck": {
+        "nvml_baseline_bytes": 23659151360,
+        "cuda_free_after_backend_bytes": 23455727616,
+        "message": "device free cross-check: NVML 23659151360 bytes before the backend, CUDA 23455727616 bytes after it"
+      },
+      "baseline_bytes": 23659151360,
+      "weights_bytes": 2471628800,
+      "kv_blocks": 35807,
+      "kv_bytes": 18773180416,
+      "max_context_tokens": 131072,
+      "max_running": 17,
+      "chunk_tokens": 2048,
+      "budget": {
+        "usable_bytes": 21293236224,
+        "headroom_bytes": 2365915136,
+        "kv_blocks": [
+          35807
+        ],
+        "kv_tokens": 572896,
+        "kv_bytes": 18773180416,
+        "max_chunk_tokens": 9086,
+        "max_running": 17,
+        "graph_bytes": 364904448,
+        "skipped": []
+      }
+    },
+    "build_engine": {
+      "crosscheck": {
+        "nvml_baseline_bytes": 23455727616,
+        "cuda_free_after_backend_bytes": 23455727616,
+        "message": "device free cross-check: NVML 23455727616 bytes before the backend, CUDA 23455727616 bytes after it"
+      },
+      "plan": {
+        "usable_bytes": 21110154854,
+        "headroom_bytes": 2345572762,
+        "kv_blocks": [
+          35458
+        ],
+        "kv_tokens": 567312,
+        "kv_bytes": 18590203904,
+        "max_chunk_tokens": 8981,
+        "max_running": 17,
+        "graph_bytes": 364904448,
+        "skipped": []
+      },
+      "startup_report": {
+        "weights_bytes": 2471628800,
+        "kv_bytes": 18590203904,
+        "runtime_bytes": 48234496,
+        "workspace_bytes": 647884800,
+        "activation_tokens": 2048,
+        "activation_peak_bytes": 394317824,
+        "reused_bytes": 0,
+        "graph_bytes": 364904448,
+        "budget_snapshot": {
+          "weights": 2471628800,
+          "kv": 18590203904,
+          "expert_cache": 0,
+          "workspace": 647884800,
+          "graph": 364904448,
+          "draft": 0,
+          "runtime": 48234496,
+          "reserve": 0
+        },
+        "graphs": [
+          {
+            "bucket": 1,
+            "bytes": 85983232
+          },
+          {
+            "bucket": 2,
+            "bytes": 90177536
+          },
+          {
+            "bucket": 4,
+            "bytes": 85983232
+          },
+          {
+            "bucket": 8,
+            "bytes": 102760448
+          }
+        ],
+        "reconciliation": {
+          "ledger_bytes": 22122856448,
+          "measured_bytes": 22122856448,
+          "difference_bytes": 0,
+          "tolerance_bytes": 1106142822,
+          "device_bytes": 22299017216,
+          "device_difference_bytes": 176160768,
+          "matches": true
+        }
+      }
+    }
+  }
+}
