@@ -698,3 +698,33 @@ pointing at that side's `python/`; harness scripts from B's checkout.
    rounds, per pair the mean of each side's two slots) is at most **1.05**.
 
 The linear merge is checked by tests (a backlog of 1,000 outputs read in order), not timed.
+
+### Result
+
+Raw files: `benchmarks/results/2026-11-22-tesla-t4/stream-watchdog/` (`slow-B.json`, `slow-A.json`, and
+`fake-<pair>-<slot>.json`).
+
+**1. The slow-client clock.** With B, the ten stuck phases were cancelled 10.60, 11.04, 10.22, 10.98, 11.03, 11.07,
+10.20, 11.00, 10.22 and 11.04 s after the stuck client opened (median 10.99 s; threshold ≤ 12 s: **passed**). Ratio of
+the readers' median gap beside the stuck client over alone, per pair: 1.029, 1.038, 1.065, 1.052, 1.025, median
+**1.038** (threshold ≤ 1.25: **passed**); the control phase with a third reader that keeps up: 1.011, 1.063, 1.034,
+1.067, 1.010, median 1.034. The harness judged every phase valid. For comparison (A, `--settle 40`, one pair, not a
+gate): cancelled 44.59 and 44.54 s after opening, of which the 10 s of `--slow-client-timeout` started only once the
+kernel's send buffer was full (about 34.5 s); ratio 1.076.
+
+**2. No cost per frame** (`--mode fake`, server CPU per frame in µs, median over 5 rounds; slots A1 B1 B2 A2):
+
+| Pair | A1 | B1 | B2 | A2 | B/A |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 191.6 | 163.7 | 143.1 | 187.8 | 0.809 |
+| 2 | 189.5 | 162.0 | 148.5 | 190.5 | 0.817 |
+| 3 | 188.3 | 157.1 | 142.6 | 194.4 | 0.783 |
+| 4 | 195.6 | 166.5 | 150.7 | 192.7 | 0.817 |
+| 5 | 180.6 | 164.7 | 143.4 | 189.8 | 0.832 |
+
+Median B/A **0.817** (threshold ≤ 1.05: **passed**). The fake engine makes no model calls, so this is the share of the
+server's own work per frame; it says nothing about a GPU step.
+
+**Verdict:** a client that stops reading is cancelled `slow_client_seconds` plus at most one watchdog tick after it
+stopped, instead of after the kernel's send buffer filled (about 34.5 s here), the other streams are not slowed past
+the threshold of #50, and the server spends less CPU per frame.
