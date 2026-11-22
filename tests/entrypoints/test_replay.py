@@ -249,6 +249,22 @@ class TestReplay:
         assert "ignoring unknown fields" in caplog.text
         assert field in caplog.text
 
+    def test_claude_code_tool_result_round_trip_parses_with_matching_tool_name(self) -> None:
+        from ayaka.entrypoints.anthropic.protocol import parse_messages_request
+        from ayaka.entrypoints.wire.reader import JsonObject
+
+        recording = _load(FIXTURES / "claude-code-2.1.330" / "002-anthropic.json")
+        parsed = parse_messages_request(JsonObject(recording["body"]))
+
+        assistant_turns = [turn for turn in parsed.conversation.turns if turn.tool_calls]
+        tool_turns = [turn for turn in parsed.conversation.turns if turn.role == "tool"]
+        assert len(assistant_turns) == 1
+        assert assistant_turns[0].tool_calls[0].name == "Read"
+        assert assistant_turns[0].tool_calls[0].id == "fixture-id"
+        assert len(tool_turns) == 1
+        assert tool_turns[0].tool_call_id == "fixture-id"
+        assert tool_turns[0].name == "Read"
+
 
 class TestFixtureHygiene:
     """A fixture may be committed only when no private marker survives in it."""
@@ -304,3 +320,43 @@ class TestFixtureHygiene:
         assert tool["function"]["name"] == "read"
         assert tool["function"]["description"].startswith("<redacted")
         assert tool["function"]["parameters"]["properties"] == {"path": {"type": "string"}}
+
+    def test_the_sanitizer_redacts_tool_call_reference_ids(self) -> None:
+        from sanitize_recording import REDACTED_ID, sanitize
+
+        recording = {
+            "path": "/v1/messages",
+            "headers": {"user-agent": "claude-cli/2.1.330"},
+            "body": {
+                "model": "m",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "call_secret_1",
+                                "name": "Read",
+                                "input": {"file_path": "/home/me/secret.txt"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "call_secret_1",
+                                "content": "secret output",
+                            }
+                        ],
+                    },
+                ],
+            },
+        }
+
+        clean = cast("dict[str, Any]", sanitize(recording))
+        messages = clean["body"]["messages"]
+
+        assert messages[0]["content"][0]["id"] == REDACTED_ID
+        assert messages[1]["content"][0]["tool_use_id"] == REDACTED_ID

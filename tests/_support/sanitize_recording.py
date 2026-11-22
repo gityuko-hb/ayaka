@@ -131,8 +131,9 @@ def _part(part: object) -> object:
             clean[key] = REDACTED_TEXT
         elif isinstance(value, Mapping):  # a tool call's arguments are an object of values
             clean[key] = {"redacted": True}
-    if isinstance(clean.get("id"), str):
-        clean["id"] = REDACTED_ID
+    for key in ("id", "tool_use_id", "tool_call_id", "call_id"):
+        if isinstance(clean.get(key), str):
+            clean[key] = REDACTED_ID
     return clean
 
 
@@ -142,8 +143,9 @@ def _item(item: Mapping[str, object]) -> dict[str, object]:
     The content keeps its own shape: a string stays a string, a block list stays a list.
     """
     clean = dict(item)
-    if isinstance(clean.get("id"), str):
-        clean["id"] = REDACTED_ID
+    for key in ("id", "tool_use_id", "tool_call_id", "call_id"):
+        if isinstance(clean.get(key), str):
+            clean[key] = REDACTED_ID
     content = clean.get("content")
     if isinstance(content, str):
         clean["content"] = REDACTED_TEXT
