@@ -728,3 +728,28 @@ server's own work per frame; it says nothing about a GPU step.
 **Verdict:** a client that stops reading is cancelled `slow_client_seconds` plus at most one watchdog tick after it
 stopped, instead of after the kernel's send buffer filled (about 34.5 s here), the other streams are not slowed past
 the threshold of #50, and the server spends less CPU per frame.
+
+## Rendering without a JSON round trip, on one preprocess thread (#77, 2026-11-22)
+
+### Setup and thresholds, written before the run
+
+Not posted to #77 (the work was done locally); committed before any run reported here. A is the stream-watchdog
+change of the section above (`3e5cf60`), B is `dd44f6b` (the conversation's values rendered as `TemplateData`,
+building, rendering and encoding on one `ayaka-preprocess` thread). Same Tesla T4 machine, CPU only.
+
+`benchmarks/serving/loop_delay.py --tokenizer unsloth/Llama-3.2-1B-Instruct --body-kb 200 --requests 20`: an
+in-process server with the real tokenizer and an engine that makes no model calls answers 20 Anthropic Messages
+requests of 219,983 bytes (the recorded Claude Code session repeated; 29,531 prompt tokens), one at a time; a probe
+on the loop sleeps 1 ms over and over and records each overrun. Per slot the median over requests of the largest
+overrun and of the total overrun while a request runs; A B B A, 5 pairs; per pair the mean of each side's two slots.
+
+A trial before these thresholds (8 requests per side, not kept) gave A: largest overrun 6.09 ms, total 21.8 ms; B:
+5.54 ms and 23.1 ms. Timed on their own, on the loop: `json.loads` of the body 2.1 ms, parsing it into a conversation
+5.7 ms more, `template_input()` 2.3 ms (A only); rendering takes 12.5–13.1 ms and encoding 127 ms on the other thread.
+The thresholds are kept at the level of the other burst items of #77 rather than fitted to that trial:
+
+1. median over pairs of B/A of the largest overrun at most **0.5**;
+2. median over pairs of B/A of the total overrun at most **0.5**;
+3. no regression: median over pairs of B/A of the client's round-trip time at most **1.05**.
+
+Rendering from the values equals rendering from the JSON on every recorded request (tests, not timed).
