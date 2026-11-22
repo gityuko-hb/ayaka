@@ -579,3 +579,36 @@ re-validation). Steady-phase ITL p99 is unchanged (21.3–23.8 ms against 22.1�
 
 **Verdict:** the detokenizer part passes its own gates by three to four orders of magnitude; the end-to-end
 no-regression gate is missed. Per the rule written in #77, the change is not merged as a speed-up on this evidence.
+
+## Admission without re-validating the prompt (#77, 2026-11-22)
+
+### Setup and thresholds, written before the run
+
+Not posted to #77 (the work was done locally); this section was committed before any A or B run whose numbers
+are reported here. A trial of B alone (3 and 5 repetitions of gate 1, not kept) was run while the change was
+written, before these thresholds: it gave about 0.1 ms per admission at every length.
+
+A is `main` at `ca9b06c`; B is `002bf86` (requests prepared on a worker thread, vouched ids taken back without a
+second check, id checks at C speed, the KV capacity check without walking the free queue). A B B A order, 5 pairs,
+each slot a fresh process with `PYTHONPATH` pointing at that side's `python/`; the harness scripts come from B's
+checkout for both sides. Machine: the Tesla T4 of the section above (15 GiB, `sm_75`), driver 580.82.07, CUDA 13.0,
+`torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, 2 CPU cores.
+
+1. **Engine-thread admission** (`benchmarks/engine/admission.py --model unsloth/Llama-3.2-1B-Instruct --reps 20`):
+   the time the engine thread spends admitting a prompt the server already encoded, at 4,096, 16,384 and 50,000
+   tokens. With B, the median at 50,000 is at most **1 ms** and at most **2×** B's median at 4,096; B/A at 50,000 is
+   at most **0.1** in every pair.
+2. **One long prompt during decoding** (the workload of the section above): `ayaka serve
+   unsloth/Llama-3.2-1B-Instruct --device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio
+   0.8 --max-running 6`, harness `serving_overhead.py --mode server --streams 4 --tokens 128 --rounds 3 --burst
+   --burst-requests 1 --burst-prompt-chars 400000`. Per slot the median over rounds; per pair the mean of each
+   side's two slots. The median over pairs of B/A burst step-gap p99 is at most **0.5**. No regression: the median
+   over pairs of B/A burst ITL p99 and of B/A steady ITL p99 are each at most **1.10** (not 1.0: the section above
+   found the burst ITL p99 bimodal, with per-pair ratios from 0.83 to 1.67 between two builds).
+3. **A burst of short prompts** (the workload of #90): `ayaka serve HuggingFaceTB/SmolLM2-135M --device cuda
+   --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio 0.75`, harness `--streams 4 --tokens 64
+   --rounds 5 --burst --burst-requests 20 --burst-prompt-chars 4000`. With B, the median over B's slots of burst
+   step-gap p99 divided by steady step-gap p99 (same slot) is at most **1.5** (the threshold the roadmap proposed);
+   the median over pairs of B/A burst step-gap p99 is at most **0.5**.
+
+A missed threshold is reported as missed; the change is then not described as a speed-up for that workload.
