@@ -499,9 +499,11 @@ class TestAnthropicSdk:
 _FIXTURES = Path(__file__).parent.parent / "entrypoints" / "fixtures"
 _RECORDED = (
     ("anthropic", _FIXTURES / "claude-code-2.1.327" / "001-anthropic.json"),
+    ("anthropic", _FIXTURES / "claude-code-2.1.330" / "002-anthropic.json"),
     ("openai-responses", _FIXTURES / "codex-0.163.0" / "001-openai-responses.json"),
     ("openai-chat", _FIXTURES / "opencode-2.3.2" / "001-openai-chat.json"),
 )
+_RECORDED_IDS = [f"{protocol}:{path.parent.name}/{path.stem}" for protocol, path in _RECORDED]
 
 
 class TestRecordedRequests:
@@ -518,9 +520,7 @@ class TestRecordedRequests:
     def long_checkpoint(cls, tmp_path_factory: pytest.TempPathFactory) -> Any:
         return write_long_gpt2(tmp_path_factory.mktemp("recorded-gpt2"), positions=65536)
 
-    @pytest.mark.parametrize(
-        ("protocol", "fixture_path"), _RECORDED, ids=[protocol for protocol, _ in _RECORDED]
-    )
+    @pytest.mark.parametrize(("protocol", "fixture_path"), _RECORDED, ids=_RECORDED_IDS)
     def test_the_recorded_request_is_answered_and_the_sdk_parses_it(
         self, long_checkpoint: Any, protocol: str, fixture_path: Path
     ) -> None:
@@ -567,9 +567,7 @@ class TestRecordedRequests:
 
         asyncio.run(main())
 
-    @pytest.mark.parametrize(
-        ("protocol", "fixture_path"), _RECORDED, ids=[protocol for protocol, _ in _RECORDED]
-    )
+    @pytest.mark.parametrize(("protocol", "fixture_path"), _RECORDED, ids=_RECORDED_IDS)
     def test_the_recorded_request_streams_and_the_sdk_reads_the_stream(
         self, long_checkpoint: Any, protocol: str, fixture_path: Path
     ) -> None:

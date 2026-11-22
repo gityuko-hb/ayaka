@@ -27,6 +27,7 @@ from `PRIVATE_MARKERS` survives; `TestReplay::TestFixtureHygiene` re-checks ever
 | `claude-code-2.1.327/001` | Claude Code 2.1.327 (Messages) | the first request of a session: `thinking` adaptive with `display`, `context_management`, `metadata`, `output_config`, 14 tools |
 | `claude-code-2.1.327/003` | Claude Code 2.1.327 (Messages) | the same request with `thinking` without `display` |
 | `claude-code-2.1.327/004` | Claude Code 2.1.327 (Messages) | a later session with 23 tools |
+| `claude-code-2.1.330/002` | Claude Code 2.1.330 (Messages) | a tool round trip after executing `Read`: assistant `tool_use` and user `tool_result` turns, recorded live against `unsloth/Llama-3.1-8B-Instruct` with `--tool-call-parser llama3_json` |
 | `codex-0.163.0/001` | Codex CLI 0.163.0 (Responses) | the first request of a session: `reasoning`, `include`, `client_metadata`, `prompt_cache_key`, a `namespace` tool and a `web_search` tool among the function tools |
 | `opencode-2.3.2/001` | OpenCode 2.3.2 (Chat Completions) | an agent-shaped request: the tool's full system prompt, `max_completion_tokens`, `stream_options` and 13 tools |
 | `opencode-2.3.2/002` | OpenCode 2.3.2 (Chat Completions) | the session-title request that opens a run |
