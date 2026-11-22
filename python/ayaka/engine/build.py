@@ -53,8 +53,10 @@ from ayaka.engine.profile import (
     StartupReport,
     load_profile,
     measure_startup,
+    profile_save_issues,
     reconcile,
     save_profile,
+    should_save_profile,
 )
 from ayaka.kvcache.manager import KVCacheManager
 from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
@@ -188,17 +190,21 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     ops = load_backend(
         device.backends, device=device.device_type, dtype=device.dtype, cuda_graph=device.cuda_graph
     )
+    initial_runtime_bytes = 0
     if device.device_type == "cuda":
         # Cross-check the pre-start-up NVML baseline against CUDA's first reading. The difference
         # is the CUDA context, backend allocations and, under WSL2, the gap between the two
-        # reporters; logging it keeps an over-report visible instead of silently planning with it.
+        # reporters; carry it into the cold plan so the first start does not over-commit VRAM.
         from ayaka.device.context import Device
 
         cuda_free = Device(device.device).memory().free
+        initial_runtime_bytes = max(baseline - cuda_free, 0)
         logger.info(
-            "device free cross-check: NVML %d bytes before the backend, CUDA %d bytes after it",
+            "device free cross-check: NVML %d bytes before the backend, CUDA %d bytes after it "
+            "(%d bytes runtime gap)",
             baseline,
             cuda_free,
+            initial_runtime_bytes,
         )
     directory, model = describe_model(config.source, device, ops=ops)
     model_config = model.config
@@ -230,6 +236,14 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     )
     previous = load_profile(key) if device.device_type == "cuda" else None
     if previous is not None:
+        if initial_runtime_bytes > previous.runtime_bytes:
+            logger.warning(
+                "saved startup profile measured %d bytes of runtime memory, below the %d-byte "
+                "NVML/CUDA gap observed now; planning with %d bytes",
+                previous.runtime_bytes,
+                initial_runtime_bytes,
+                initial_runtime_bytes,
+            )
         logger.info(
             "planning with the startup profile measured before: %d bytes of runtime memory, "
             "%d activation bytes per token, %d bytes of graphs",
@@ -239,7 +253,15 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         )
     weights = _weights_bytes(model)
     try:
-        budget = _budget(config, group, weights, baseline, reserve_tokens, previous)
+        budget = _budget(
+            config,
+            group,
+            weights,
+            baseline,
+            reserve_tokens,
+            previous,
+            initial_runtime_bytes=initial_runtime_bytes,
+        )
     except CapacityError as exc:
         # The facts a reader needs to choose a fix: what one token of KV and the weights cost.
         raise CapacityError(
@@ -287,9 +309,16 @@ def _budget(
     baseline: int,
     reserve_tokens: int,
     previous: StartupProfile | None,
+    *,
+    initial_runtime_bytes: int = 0,
 ) -> BudgetPlan:
     """The memory plan of the engine, from the free memory, the weights and the KV geometry."""
     spec = group.spec
+    late_alloc_bytes = (
+        max(previous.runtime_bytes, initial_runtime_bytes)
+        if previous is not None
+        else initial_runtime_bytes
+    )
     return plan_budget(
         BudgetInputs(
             baseline_bytes=baseline,
@@ -304,7 +333,7 @@ def _budget(
             ),
             kv_reserve_tokens=reserve_tokens,
             kv_blocks_override=config.cache.num_blocks,
-            late_alloc_bytes=previous.runtime_bytes if previous else 0,
+            late_alloc_bytes=late_alloc_bytes,
             activation_bytes_per_token=previous.activation_bytes_per_token if previous else 0,
             activation_fixed_bytes=(
                 max(previous.workspace_bytes - previous.activation_peak_bytes, 0) if previous else 0
@@ -511,7 +540,11 @@ def _startup_run(
         plan.usable_bytes,
         plan.headroom_bytes,
     )
-    save_profile(profile)
+    if should_save_profile(reconciliation, reading):
+        save_profile(profile)
+    else:
+        issues = "; ".join(profile_save_issues(reconciliation, reading))
+        logger.warning("skipping saving startup profile %s: %s", key.digest(), issues)
     return StartupReport(
         profile=profile, budget=budget, reconciliation=reconciliation, graphs=captured
     )

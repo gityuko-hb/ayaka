@@ -13,13 +13,21 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from ayaka.configs.cache import CacheConfig
+from ayaka.configs.device import DeviceConfig
 from ayaka.core.errors import CapacityError
+from ayaka.device.info import DeviceInfo
+from ayaka.engine.profile import StartupProfile, save_profile
 from ayaka.entrypoints.cli import main
 from ayaka.entrypoints.console import EXIT_LOAD, EXIT_MEMORY, EXIT_OK
 from ayaka.entrypoints.plan import shortfall_lines, shortfall_of
+from ayaka.memory.budget import BudgetInputs, KVCost, plan_budget
+from ayaka.utils.dtypes import DType
 
 torch: Any = pytest.importorskip("torch")
 
+import ayaka.device.context as device_context  # noqa: E402
+import ayaka.device.info as device_info  # noqa: E402
+from ayaka.device.context import MemoryReading  # noqa: E402
 from ayaka.engine.build import build_engine, plan_engine  # noqa: E402
 from ayaka.model_loader import loader  # noqa: E402
 from tiny_model import (  # noqa: E402  # needs the importorskip above
@@ -191,3 +199,160 @@ class TestShortfall:
 
         with pytest.raises(Exception, match="exceeds the model context"):
             plan_engine(config)
+
+
+class TestColdCudaRuntimeGap:
+    _MIB = 2**20
+
+    @staticmethod
+    def _mock_cuda(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        nvml_free: int,
+        cuda_free: int,
+        total: int = 16 * 2**20,
+        baseline_reserved: int = 0,
+    ) -> None:
+        fake_info = DeviceInfo(
+            kind="cuda",
+            index=0,
+            name="Mock GPU",
+            total_bytes=total,
+            free_bytes=nvml_free,
+            compute_capability=(8, 6),
+            num_sms=20,
+        )
+        monkeypatch.setattr(device_info, "probe_devices", lambda: (fake_info,))
+
+        class _FakeDevice:
+            def __init__(self, spec: object) -> None:
+                self.spec = spec
+
+            def memory(self) -> MemoryReading:
+                return MemoryReading(
+                    free=cuda_free,
+                    total=total,
+                    allocated=baseline_reserved,
+                    reserved=baseline_reserved,
+                    peak_allocated=baseline_reserved,
+                )
+
+        monkeypatch.setattr(device_context, "Device", _FakeDevice)
+        if baseline_reserved:
+            monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+            monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+            monkeypatch.setattr(torch.cuda, "memory_reserved", lambda _index=0: baseline_reserved)
+        else:
+            monkeypatch.setattr(torch.cuda, "is_initialized", lambda: False)
+
+    @staticmethod
+    def _cuda_config(checkpoint: TinyCheckpoint) -> Any:
+        base = tiny_engine_config(
+            checkpoint.directory, block_size=4, num_blocks=None, max_running=None
+        )
+        return dataclasses.replace(
+            base,
+            device=DeviceConfig(
+                device="cuda", dtype=DType.FP16, backends=("torch",), cuda_graph=True
+            ),
+            cache=CacheConfig(
+                block_size=4, num_blocks=None, kv_reserve_tokens=32, memory_ratio=0.9
+            ),
+        )
+
+    @staticmethod
+    def _expected_budget(plan: Any, *, baseline: int, late_alloc_bytes: int) -> Any:
+        return plan_budget(
+            BudgetInputs(
+                baseline_bytes=baseline,
+                memory_ratio=0.9,
+                weights_bytes=plan.weights_bytes,
+                kv=(
+                    KVCost(
+                        bytes_per_block=plan.group.spec.bytes_per_block(),
+                        fixed_bytes=plan.group.spec.fixed_bytes(),
+                        block_size=plan.block_size,
+                    ),
+                ),
+                kv_reserve_tokens=32,
+                late_alloc_bytes=late_alloc_bytes,
+            )
+        )
+
+    def test_cold_cuda_plan_accounts_for_nvml_to_cuda_gap(
+        self, checkpoint: TinyCheckpoint, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = self._cuda_config(checkpoint)
+        nvml_free = 10 * self._MIB
+        cuda_free = 6 * self._MIB
+
+        self._mock_cuda(monkeypatch, nvml_free=nvml_free, cuda_free=nvml_free)
+        no_gap_plan = plan_engine(config)
+
+        self._mock_cuda(monkeypatch, nvml_free=nvml_free, cuda_free=cuda_free)
+        cold_plan = plan_engine(config)
+
+        expected = self._expected_budget(
+            cold_plan, baseline=nvml_free, late_alloc_bytes=nvml_free - cuda_free
+        )
+        assert not cold_plan.profiled
+        assert cold_plan.budget == expected
+        assert cold_plan.budget.kv_blocks[0] < no_gap_plan.budget.kv_blocks[0]
+
+    def test_cold_cuda_plan_does_not_double_count_pre_existing_reservations(
+        self, checkpoint: TinyCheckpoint, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = self._cuda_config(checkpoint)
+        nvml_free = 10 * self._MIB
+        cuda_free = 6 * self._MIB
+
+        self._mock_cuda(
+            monkeypatch, nvml_free=nvml_free, cuda_free=cuda_free, baseline_reserved=3 * self._MIB
+        )
+        shared_plan = plan_engine(config)
+
+        expected = self._expected_budget(
+            shared_plan, baseline=nvml_free, late_alloc_bytes=nvml_free - cuda_free
+        )
+        assert shared_plan.budget == expected
+
+    def test_cold_cuda_plan_rejects_when_gap_exceeds_usable_memory(
+        self, checkpoint: TinyCheckpoint, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = self._cuda_config(checkpoint)
+        self._mock_cuda(monkeypatch, nvml_free=10 * self._MIB, cuda_free=512 * 1024)
+
+        with pytest.raises(CapacityError):
+            plan_engine(config)
+
+    def test_warm_cuda_plan_never_drops_below_observed_nvml_to_cuda_gap(
+        self, checkpoint: TinyCheckpoint, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = self._cuda_config(checkpoint)
+        nvml_free = 10 * self._MIB
+        cuda_free = 6 * self._MIB
+        self._mock_cuda(monkeypatch, nvml_free=nvml_free, cuda_free=cuda_free)
+        cold_plan = plan_engine(config)
+
+        stale = StartupProfile(
+            key=cold_plan.profile_key,
+            weights_bytes=cold_plan.weights_bytes,
+            kv_bytes=cold_plan.kv_bytes,
+            runtime_bytes=1 * self._MIB,
+            activation_tokens=16,
+            activation_peak_bytes=0,
+        )
+        save_profile(stale)
+        stale_plan = plan_engine(config)
+        assert stale_plan.profiled
+        assert stale_plan.budget == self._expected_budget(
+            cold_plan, baseline=nvml_free, late_alloc_bytes=nvml_free - cuda_free
+        )
+
+        honest = dataclasses.replace(stale, runtime_bytes=5 * self._MIB)
+        save_profile(honest)
+        honest_plan = plan_engine(config)
+        assert honest_plan.profiled
+        assert honest_plan.budget == self._expected_budget(
+            cold_plan, baseline=nvml_free, late_alloc_bytes=5 * self._MIB
+        )

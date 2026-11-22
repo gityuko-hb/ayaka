@@ -69,8 +69,10 @@ __all__ = [
     "load_profile",
     "measure_startup",
     "profile_directory",
+    "profile_save_issues",
     "reconcile",
     "save_profile",
+    "should_save_profile",
 ]
 
 logger = logging.getLogger(__name__)
@@ -333,6 +335,41 @@ def reconcile(
         tolerance_bytes=tolerance,
         device_bytes=max(baseline_bytes - reading.free, 0),
     )
+
+
+def profile_save_issues(
+    reconciliation: Reconciliation,
+    reading: MemoryReading,
+) -> tuple[str, ...]:
+    """Reasons a start-up measurement is not trustworthy enough to save for future plans.
+
+    Returns an empty tuple when the measurement reflects a clean fit on the device:
+
+    * ``reconciliation.matches``: the allocator and runtime bytes agree with the ledger;
+    * ``reading.free > 0``: the device was not exhausted or paged out (for example under WDDM,
+      where ``cudaMemGetInfo`` reads ``0`` free and clamps ``runtime_bytes`` below reality).
+
+    Pre-baseline allocator reuse (``StartupProfile.reused_bytes > 0``) is intentionally allowed:
+    :func:`measure_startup` and :func:`reconcile` already account for it, and shared processes
+    (such as sequential engines or tests) routinely retain pre-baseline segments.
+    """
+    issues: list[str] = []
+    if not reconciliation.matches:
+        issues.append(
+            f"memory reconciliation mismatch of {reconciliation.difference_bytes} bytes "
+            f"(tolerance {reconciliation.tolerance_bytes})"
+        )
+    if reading.free <= 0:
+        issues.append(f"device reports {reading.free} free bytes after startup")
+    return tuple(issues)
+
+
+def should_save_profile(
+    reconciliation: Reconciliation,
+    reading: MemoryReading,
+) -> bool:
+    """Whether the start-up measurement is clean enough to save for future plans."""
+    return not profile_save_issues(reconciliation, reading)
 
 
 def measure_startup(
