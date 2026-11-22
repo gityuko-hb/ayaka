@@ -9,6 +9,11 @@ The helpers deliberately preserve the project's established exception types:
 bad primitive types raise ``TypeError``, bad values raise ``ValueError``. Core
 DTOs raise :class:`ayaka.core.errors.InvalidRequestError` (a ``ValueError``) for
 semantic request failures such as conflicting limits.
+
+Token ids are checked at C speed: a prompt of tens of thousands of ids goes through these checks
+on every request, and a Python loop over it holds the GIL for tens of milliseconds. The fast check
+only accepts; anything it does not accept goes through the item-by-item loop, which raises the
+same error it always did.
 """
 
 from __future__ import annotations
@@ -17,9 +22,11 @@ import math
 from collections.abc import Iterable
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from typing import cast
+from types import NoneType
+from typing import Final, cast
 
 __all__ = [
+    "plain_token_ids",
     "require_bool",
     "require_float",
     "require_frozen",
@@ -30,6 +37,9 @@ __all__ = [
     "require_token_set",
     "require_token_tuple",
 ]
+
+#: Exact types :func:`require_frozen` accepts in a tuple without looking at each item again.
+_FROZEN_SCALARS: Final = frozenset({NoneType, str, int, float, bool})
 
 
 def require_bool(value: object, name: str) -> bool:
@@ -103,7 +113,10 @@ def require_frozen(value: object, name: str) -> None:
     if value is None or isinstance(value, (str, int, float, bool, Enum)):
         return
     if isinstance(value, tuple):
-        for index, item in enumerate(cast("tuple[object, ...]", value)):
+        items = cast("tuple[object, ...]", value)
+        if _FROZEN_SCALARS.issuperset(map(type, items)):
+            return
+        for index, item in enumerate(items):
             require_frozen(item, f"{name}[{index}]")
         return
     if (
@@ -115,14 +128,29 @@ def require_frozen(value: object, name: str) -> None:
     raise TypeError(f"{name} must contain only immutable host values")
 
 
+def plain_token_ids(items: tuple[object, ...]) -> bool:
+    """Whether every item is exactly an ``int`` and none is negative, checked at C speed.
+
+    ``True`` means :func:`require_token_tuple` accepts ``items``; ``False`` means only that the
+    item-by-item check has to decide.
+    """
+
+    if not items:
+        return True
+    if not {int}.issuperset(map(type, items)):
+        return False
+    return min(cast("tuple[int, ...]", items)) >= 0
+
+
 def require_token_tuple(value: object, name: str) -> tuple[int, ...]:
     """Require an immutable tuple of non-negative token ids."""
 
     if not isinstance(value, tuple):
         raise ValueError(f"{name} must be a tuple of token ids")
     items = cast("tuple[object, ...]", value)
-    for item in items:
-        require_int(item, name, minimum=0)
+    if not plain_token_ids(items):
+        for item in items:
+            require_int(item, name, minimum=0)
     return cast("tuple[int, ...]", items)
 
 

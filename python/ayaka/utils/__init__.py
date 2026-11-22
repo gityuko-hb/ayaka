@@ -106,6 +106,7 @@ if TYPE_CHECKING:
         validate_output_dtype,
     )
     from ayaka.utils.validation import (
+        plain_token_ids,
         require_bool,
         require_float,
         require_frozen,
@@ -186,6 +187,7 @@ __all__ = [
     "pci_numa_node",
     "peak_memory_bytes",
     "percentiles",
+    "plain_token_ids",
     "probe_device",
     "probe_nvlink_matrix",
     "read_json",
@@ -311,6 +313,7 @@ _EXPORTS = {
         "validate_output_dtype",
     ),
     "validation": (
+        "plain_token_ids",
         "require_bool",
         "require_float",
         "require_frozen",

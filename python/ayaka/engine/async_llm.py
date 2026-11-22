@@ -11,7 +11,10 @@
 :class:`EngineCore` is not thread safe and is driven from exactly one thread. :class:`AsyncLLM`
 owns that thread. Callers on the event loop never touch the engine: they send commands (add,
 abort, stop) through a queue, and the engine thread hands the outputs of each step back to the
-loop in one batch. Each request reads its outputs from its own :class:`RequestStream`.
+loop in one batch. A request is validated and tokenized on a worker thread
+(:meth:`EngineCore.prepare`) before its add command is sent, so the engine thread only queues it
+and the time between two steps does not grow with the length of a prompt that arrives. Each
+request reads its outputs from its own :class:`RequestStream`.
 :class:`AsyncLLM` implements :class:`~ayaka.engine.seam.EngineClient`, the only face of the engine
 the server uses; the guarantees of that contract are kept here.
 
@@ -61,7 +64,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
     from ayaka.configs.engine import EngineConfig
-    from ayaka.core.request import GenerateRequest
+    from ayaka.core.request import GenerateRequest, TokenizedRequest
     from ayaka.core.types import RequestId
     from ayaka.engine.core import EngineCore
     from ayaka.engine.seam import EngineInfo
@@ -200,7 +203,7 @@ class RequestStream:
 
 @dataclass(frozen=True, slots=True)
 class _Add:
-    request: GenerateRequest
+    request: TokenizedRequest
     future: Future[None]
 
 
@@ -392,12 +395,20 @@ class AsyncLLM:
             raise EngineError(f"request {request_id!r} is already running")
         stream = RequestStream(request_id, max_pending=self._max_pending)
         self._streams[request_id] = stream
+        try:
+            prepared = await asyncio.to_thread(self._engine.prepare, request)
+            # Shutdown may have begun while the request was prepared: checked again, in the same
+            # turn of the loop as the send, so the add never lands after the stop command.
+            self._require_accepting()
+        except BaseException:
+            self._streams.pop(request_id, None)
+            raise
         future: Future[None] = Future()
         with self._idle_lock:
             if self._idle.is_set():
                 self._busy_since = time.monotonic()
             self._idle.clear()
-            self._send(_Add(request, future))
+            self._send(_Add(prepared, future))
         try:
             await asyncio.wrap_future(future)
         except asyncio.CancelledError:
@@ -545,7 +556,7 @@ class AsyncLLM:
                     if not future.set_running_or_notify_cancel():
                         continue
                     try:
-                        engine.add_request(request, stream=True)
+                        engine.admit(request, stream=True)
                     except EngineDeadError:
                         future.set_exception(EngineDeadError("the engine died"))
                         raise

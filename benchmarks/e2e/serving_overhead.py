@@ -365,11 +365,17 @@ class _FakeCore:
     def has_unfinished(self) -> bool:
         return bool(self._active)
 
-    def add_request(self, request: GenerateRequest, *, stream: bool = False) -> None:
+    def prepare(self, request: GenerateRequest) -> GenerateRequest:
+        return request
+
+    def admit(self, request: GenerateRequest, *, stream: bool = False) -> None:
         del stream
         limit = request.sampling.max_tokens if request.sampling.max_tokens is not None else 16
         prompt_len = len(request.prompt) if isinstance(request.prompt, tuple) else 8
         self._active.append(_FakeRequest(request.request_id, max(1, limit), prompt_len))
+
+    def add_request(self, request: GenerateRequest, *, stream: bool = False) -> None:
+        self.admit(request, stream=stream)
 
     def abort(self, request_id: RequestId) -> bool:
         before = len(self._active)

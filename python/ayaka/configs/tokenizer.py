@@ -32,7 +32,13 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from ayaka.configs.base import ConfigMixin
 from ayaka.core.errors import ConfigError
-from ayaka.utils.validation import require_bool, require_frozen, require_int, require_text
+from ayaka.utils.validation import (
+    require_bool,
+    require_frozen,
+    require_int,
+    require_text,
+    require_token_tuple,
+)
 
 if TYPE_CHECKING:
     from ayaka.configs.model_source import ModelSourceConfig
@@ -300,8 +306,7 @@ class EncodeResult:
         require_frozen(self, "encode result")
         if type(self.token_ids) is not tuple or type(self.extra) is not tuple:
             raise TypeError("token_ids and extra must be tuples")
-        for token in self.token_ids:
-            require_int(token, "token id")
+        require_token_tuple(self.token_ids, "token id")
         require_int(self.reused_prefix_len, "reused_prefix_len")
         if self.reused_prefix_len > len(self.token_ids):
             raise ValueError("reused prefix exceeds encoded length")

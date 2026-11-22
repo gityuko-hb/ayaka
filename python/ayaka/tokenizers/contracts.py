@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
-from ayaka.utils.validation import require_bool, require_frozen, require_int
+from ayaka.utils.validation import require_bool, require_frozen, require_int, require_token_tuple
 
 if TYPE_CHECKING:
     from ayaka.tokenizers.ports import TokenizerLike
@@ -161,8 +161,7 @@ class TokenIdsInput:
     def __post_init__(self) -> None:
         if type(self.token_ids) is not tuple:
             raise TypeError("token_ids must be an immutable tuple")
-        for token in self.token_ids:
-            require_int(token, "token id")
+        require_token_tuple(self.token_ids, "token id")
 
 
 @dataclass(frozen=True, slots=True)

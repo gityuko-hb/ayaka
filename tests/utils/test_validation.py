@@ -8,6 +8,7 @@ import pytest
 
 from ayaka.utils import validation
 from ayaka.utils.validation import (
+    plain_token_ids,
     require_bool,
     require_float,
     require_frozen,
@@ -49,6 +50,7 @@ class HoldsMutableRecord:
 
 def test_module_exports_every_helper() -> None:
     assert set(validation.__all__) == {
+        "plain_token_ids",
         "require_bool",
         "require_float",
         "require_frozen",
@@ -189,6 +191,14 @@ class TestRequireFrozen:
     def test_accepts_immutable_values(self, value: object) -> None:
         require_frozen(value, "v")
 
+    def test_a_tuple_of_scalars_is_accepted_without_recursion(self) -> None:
+        require_frozen((1, "a", 2.0, None, True) * 10_000, "v")
+
+    def test_an_enum_or_a_dataclass_in_a_tuple_still_gets_the_full_check(self) -> None:
+        require_frozen((1, Color.RED), "v")
+        with pytest.raises(TypeError, match=r"v\[1\]"):
+            require_frozen((1, MutableRecord(1)), "v")
+
     def test_accepts_frozen_dataclass(self) -> None:
         require_frozen(FrozenRecord(1, (2, 3)), "v")
 
@@ -243,6 +253,29 @@ class TestRequireTokenTuple:
     def test_rejects_non_integer_ids(self, value: tuple[object, ...]) -> None:
         with pytest.raises(TypeError, match="token_ids must be an integer"):
             require_token_tuple(value, "token_ids")
+
+    def test_the_first_bad_id_decides_the_error_as_before(self) -> None:
+        # The fast check only accepts; the item-by-item loop still finds the first bad id.
+        with pytest.raises(ValueError, match="must be >= 0"):
+            require_token_tuple((1, -1, True), "token_ids")
+        with pytest.raises(TypeError, match="must be an integer"):
+            require_token_tuple((1, True, -1), "token_ids")
+
+
+class TestPlainTokenIds:
+    @pytest.mark.parametrize("value", [(), (0,), (5, 0, 7), tuple(range(100_000))])
+    def test_plain_non_negative_ints_pass(self, value: tuple[int, ...]) -> None:
+        assert plain_token_ids(value)
+
+    @pytest.mark.parametrize("value", [(1, -1), (True,), (0, False), (1, 2.0), (1, "2"), (None,)])
+    def test_anything_else_is_left_to_the_loop(self, value: tuple[object, ...]) -> None:
+        assert not plain_token_ids(value)
+
+    def test_an_int_subclass_is_not_plain(self) -> None:
+        class Id(int):
+            pass
+
+        assert not plain_token_ids((Id(3),))
 
 
 class TestRequireTokenSet:

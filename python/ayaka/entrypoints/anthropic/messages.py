@@ -292,7 +292,8 @@ async def count_tokens(request: web.Request) -> web.Response:
     model, conversation = parse_count_tokens_request(await read_body(request))
     serving.check_model(model)
     prompt = await serving.tokenize_chat(
-        serving.normalized(conversation, request.headers, request_id=request[REQUEST_ID])
+        serving.normalized(conversation, request.headers, request_id=request[REQUEST_ID]),
+        vouch=False,
     )
     return web.json_response({"input_tokens": len(prompt)})
 
