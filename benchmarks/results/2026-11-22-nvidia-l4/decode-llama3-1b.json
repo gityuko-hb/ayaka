@@ -1,0 +1,184 @@
+{
+  "benchmark": "e2e/decode",
+  "model": "/root/.cache/huggingface/hub/models--unsloth--Llama-3.2-1B-Instruct/snapshots/5a8abab4a5d6f164389b1079fb721cfab8d7126c",
+  "tokens": 129,
+  "machine": {
+    "date": "2026-11-22T20:09:55+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "07a85e3f65af181060fe9c976f6e49ef20d7e5ca"
+  },
+  "results": [
+    {
+      "backends": [
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 1,
+      "decode_ms_per_step": [
+        163.34,
+        163.768,
+        163.447
+      ],
+      "median_ms": 163.447,
+      "tokens_per_s": 6.1
+    },
+    {
+      "backends": [
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 4,
+      "error": "EngineDeadError: the engine stopped after an unexpected error: CUDA out of memory. Tried to allocate 1024.00 MiB. GPU 0 has a total capacity of 22.03 GiB of which 981.12 MiB is free. Including non-PyTorch memory, this process has 21.07 GiB memory in use. Of the allocated memory 20.34 GiB is allocated by PyTorch, and 510.49 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
+    },
+    {
+      "backends": [
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": true,
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1024.00 MiB. GPU 0 has a total capacity of 22.03 GiB of which 343.12 MiB is free. Including non-PyTorch memory, this process has 21.69 GiB memory in use. Of the allocated memory 20.48 GiB is allocated by PyTorch, and 991.86 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 1,
+      "decode_ms_per_step": [
+        27.972,
+        27.422,
+        27.579
+      ],
+      "median_ms": 27.579,
+      "tokens_per_s": 36.3
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 4,
+      "decode_ms_per_step": [
+        28.587,
+        28.716,
+        28.599
+      ],
+      "median_ms": 28.599,
+      "tokens_per_s": 139.9
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": true,
+      "batch": 1,
+      "decode_ms_per_step": [
+        12.869,
+        12.966,
+        12.994
+      ],
+      "median_ms": 12.966,
+      "tokens_per_s": 77.1
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": true,
+      "batch": 4,
+      "decode_ms_per_step": [
+        13.569,
+        13.464,
+        13.349
+      ],
+      "median_ms": 13.464,
+      "tokens_per_s": 297.1
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": false,
+      "batch": 1,
+      "decode_ms_per_step": [
+        27.507,
+        27.33,
+        27.59
+      ],
+      "median_ms": 27.507,
+      "tokens_per_s": 36.4
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": false,
+      "batch": 4,
+      "decode_ms_per_step": [
+        28.988,
+        28.815,
+        28.988
+      ],
+      "median_ms": 28.988,
+      "tokens_per_s": 138.0
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": true,
+      "batch": 1,
+      "decode_ms_per_step": [
+        12.727,
+        12.629,
+        12.703
+      ],
+      "median_ms": 12.703,
+      "tokens_per_s": 78.7
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": true,
+      "batch": 4,
+      "decode_ms_per_step": [
+        13.447,
+        13.434,
+        13.405
+      ],
+      "median_ms": 13.434,
+      "tokens_per_s": 297.8
+    }
+  ]
+}

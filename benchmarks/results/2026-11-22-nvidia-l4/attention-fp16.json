@@ -1,0 +1,249 @@
+{
+  "benchmark": "ops/attention",
+  "dtype": "fp16",
+  "machine": {
+    "date": "2026-11-22T19:53:30+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "07a85e3f65af181060fe9c976f6e49ef20d7e5ca"
+  },
+  "warmup": 5,
+  "repeat": 50,
+  "results": [
+    {
+      "backend": "torch",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 1,
+      "context": 512,
+      "ms": 0.7501
+    },
+    {
+      "backend": "torch",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 1,
+      "context": 2048,
+      "ms": 0.7639
+    },
+    {
+      "backend": "torch",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 1,
+      "context": 8192,
+      "ms": 0.7398
+    },
+    {
+      "backend": "torch",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 4,
+      "context": 2048,
+      "ms": 0.767
+    },
+    {
+      "backend": "torch",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 8,
+      "context": 2048,
+      "ms": 0.7639
+    },
+    {
+      "backend": "torch",
+      "shape": "tinyllama",
+      "kind": "prefill",
+      "rows": 512,
+      "context": 512,
+      "ms": 0.704
+    },
+    {
+      "backend": "torch",
+      "shape": "tinyllama",
+      "kind": "prefill",
+      "rows": 256,
+      "context": 2048,
+      "ms": 1.1305
+    },
+    {
+      "backend": "torch",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 1,
+      "context": 512,
+      "ms": 0.746
+    },
+    {
+      "backend": "torch",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 1,
+      "context": 2048,
+      "ms": 0.7363
+    },
+    {
+      "backend": "torch",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 1,
+      "context": 8192,
+      "ms": 0.7398
+    },
+    {
+      "backend": "torch",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 4,
+      "context": 2048,
+      "ms": 0.7736
+    },
+    {
+      "backend": "torch",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 8,
+      "context": 2048,
+      "ms": 0.7747
+    },
+    {
+      "backend": "torch",
+      "shape": "smollm2-135m",
+      "kind": "prefill",
+      "rows": 512,
+      "context": 512,
+      "ms": 0.5212
+    },
+    {
+      "backend": "torch",
+      "shape": "smollm2-135m",
+      "kind": "prefill",
+      "rows": 256,
+      "context": 2048,
+      "ms": 0.7127
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 1,
+      "context": 512,
+      "ms": 0.1408
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 1,
+      "context": 2048,
+      "ms": 0.1433
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 1,
+      "context": 8192,
+      "ms": 0.1423
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 4,
+      "context": 2048,
+      "ms": 0.1408
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "tinyllama",
+      "kind": "decode",
+      "batch": 8,
+      "context": 2048,
+      "ms": 0.1424
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "tinyllama",
+      "kind": "prefill",
+      "rows": 512,
+      "context": 512,
+      "ms": 0.1357
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "tinyllama",
+      "kind": "prefill",
+      "rows": 256,
+      "context": 2048,
+      "ms": 0.1628
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 1,
+      "context": 512,
+      "ms": 0.1429
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 1,
+      "context": 2048,
+      "ms": 0.1398
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 1,
+      "context": 8192,
+      "ms": 0.1408
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 4,
+      "context": 2048,
+      "ms": 0.1444
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "smollm2-135m",
+      "kind": "decode",
+      "batch": 8,
+      "context": 2048,
+      "ms": 0.1423
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "smollm2-135m",
+      "kind": "prefill",
+      "rows": 512,
+      "context": 512,
+      "ms": 0.1459
+    },
+    {
+      "backend": "flashinfer",
+      "shape": "smollm2-135m",
+      "kind": "prefill",
+      "rows": 256,
+      "context": 2048,
+      "ms": 0.1434
+    }
+  ]
+}

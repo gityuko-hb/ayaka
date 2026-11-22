@@ -1,0 +1,212 @@
+{
+  "benchmark": "e2e/decode",
+  "model": "/root/.cache/huggingface/hub/models--HuggingFaceTB--SmolLM2-135M/snapshots/93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+  "tokens": 129,
+  "machine": {
+    "date": "2026-11-22T19:58:12+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.0.1",
+    "commit": "07a85e3f65af181060fe9c976f6e49ef20d7e5ca"
+  },
+  "results": [
+    {
+      "backends": [
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 1,
+      "decode_ms_per_step": [
+        60.486,
+        60.342,
+        58.764
+      ],
+      "median_ms": 60.342,
+      "tokens_per_s": 16.6
+    },
+    {
+      "backends": [
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 4,
+      "decode_ms_per_step": [
+        65.473,
+        64.458,
+        63.349
+      ],
+      "median_ms": 64.458,
+      "tokens_per_s": 62.1
+    },
+    {
+      "backends": [
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": true,
+      "batch": 1,
+      "decode_ms_per_step": [
+        8.948,
+        9.063,
+        8.844
+      ],
+      "median_ms": 8.948,
+      "tokens_per_s": 111.8
+    },
+    {
+      "backends": [
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": true,
+      "batch": 4,
+      "decode_ms_per_step": [
+        31.022,
+        31.087,
+        31.317
+      ],
+      "median_ms": 31.087,
+      "tokens_per_s": 128.7
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 1,
+      "decode_ms_per_step": [
+        46.104,
+        44.976,
+        45.354
+      ],
+      "median_ms": 45.354,
+      "tokens_per_s": 22.0
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": false,
+      "batch": 4,
+      "decode_ms_per_step": [
+        47.716,
+        47.63,
+        46.963
+      ],
+      "median_ms": 47.63,
+      "tokens_per_s": 84.0
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": true,
+      "batch": 1,
+      "decode_ms_per_step": [
+        4.969,
+        4.99,
+        4.993
+      ],
+      "median_ms": 4.99,
+      "tokens_per_s": 200.4
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "fp16",
+      "graphs": true,
+      "batch": 4,
+      "decode_ms_per_step": [
+        5.668,
+        5.677,
+        5.657
+      ],
+      "median_ms": 5.668,
+      "tokens_per_s": 705.7
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": false,
+      "batch": 1,
+      "decode_ms_per_step": [
+        43.855,
+        44.564,
+        43.747
+      ],
+      "median_ms": 43.855,
+      "tokens_per_s": 22.8
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": false,
+      "batch": 4,
+      "decode_ms_per_step": [
+        47.436,
+        47.081,
+        47.662
+      ],
+      "median_ms": 47.436,
+      "tokens_per_s": 84.3
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": true,
+      "batch": 1,
+      "decode_ms_per_step": [
+        4.981,
+        4.972,
+        5.018
+      ],
+      "median_ms": 4.981,
+      "tokens_per_s": 200.7
+    },
+    {
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "dtype": "bf16",
+      "graphs": true,
+      "batch": 4,
+      "decode_ms_per_step": [
+        5.733,
+        5.724,
+        5.702
+      ],
+      "median_ms": 5.724,
+      "tokens_per_s": 698.8
+    }
+  ]
+}

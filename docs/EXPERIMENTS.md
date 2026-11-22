@@ -785,3 +785,137 @@ path on every recording.
 The raw files of the three sections above record the revisions they ran by the hashes those commits had before the
 branches were rewritten to correct the commit author (same trees): `c6259e7` is `002bf86`, `4906553` is `e3ac2fc`,
 `ac99081` is `264e068`, `25b195c` is `3e5cf60`, `745760b` is `dd44f6b`.
+
+## M1 decision gates and FP8 KV check on NVIDIA L4 24 GB (`sm_89`, native Linux) (#62)
+
+### Setup and thresholds, written before the run
+
+Machine: native Linux (Ubuntu 24.04.4 LTS, kernel `6.6.159+`, `wsl2 = false`), **NVIDIA L4**
+(`23,034 MiB`, `sm_89`), driver `580.82.07`, CUDA `13.0`, `nvcc 13.0.88`, Python `3.13.16`,
+`torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, 12 CPU cores, 52 GiB RAM. Revision: `main` at
+`6c0eb45`. Raw JSON outputs are saved under `benchmarks/results/2026-11-22-nvidia-l4/`. Product
+defaults are **not** changed by this run; each gate records what its measurement implies for
+defaults and for the 0.2 release statement.
+
+| Gate | Setup | Threshold, written before the run | Implication |
+| --- | --- | --- | --- |
+| `OPS-B2` #1 (sampling RNG) | Inspect `flashinfer.sampling` (`sampling_from_probs`, `top_k_top_p_sampling_from_logits`) on `flashinfer-python 0.7.4` | Keep sampling on `torch` unless an API accepts external uniform draws `u` matching Ayaka's counter-based inverse-CDF contract | `ops/sampling.py` stays on `torch` |
+| `OPS-B2` #2 (decode CUDA graph on `sm_89`) | `BatchDecodeWithPagedKVCacheWrapper(use_cuda_graph=True, use_tensor_cores=True)`, capture once, 100 replays with random lengths (re-planned outside graph), `fp16` and `bf16` | Max absolute error vs `torch` reference ≤ `4 * eps * max(|y|)` on all 100 replays | Decode CUDA graphs stay on `flashinfer` on `sm_89` |
+| `OPS-B2` #3 (multi-row ragged causal prefill) | `BatchPrefillWithPagedKVCacheWrapper(causal=True)`, 5 mixed requests `(rows/len: 7/7, 1/9, 4/16, 3/20, 16/40)`, NHD and HND, `fp16` and `bf16` | Max absolute error vs `torch` reference ≤ `4 * eps * max(|y|)` | Chunked prefill and verify windows stay on `flashinfer` on `sm_89` |
+| `OPS-B2` #4 (FP8 KV cache on `sm_89`) | `BatchDecodeWithPagedKVCacheWrapper` and `BatchPrefillWithPagedKVCacheWrapper` with `kv_data_type=torch.float8_e4m3fn` (`k_scale`, `v_scale`), head dim 64 and 128 (`Llama-3.2-1B` / `TinyLlama` geometry), context 2048 and 8192 | Runs without error or NaN/Inf on both decode and prefill; relative L2 error vs `fp64` oracle ≤ `5%`; decode latency at batch 1 ctx 8192 ≤ `1.10×` `fp16` | Decides whether an 8-bit KV path is viable on `sm_89` before `kops` (0.2 release statement) |
+| Attention per op (`OPS-11`) | `benchmarks/ops/attention.py --dtype fp16` and `--dtype bf16`, warmup 5, repeat 50 | `flashinfer` faster than `torch` on decode and prefill shapes | Confirms `backends=("flashinfer", "torch")` on `sm_89` |
+| `fp16` vs `bf16` (`EXE-10`) | `benchmarks/e2e/decode.py` on `HuggingFaceTB/SmolLM2-135M` and `unsloth/Llama-3.2-1B-Instruct`, `--tokens 129 --batch 1 4 --repeat 3` | Keep `fp16` default unless `bf16` with `flashinfer+torch` + CUDA graph is faster by ≥ `5%` at batch 1 and 4 (parity already green in `test_real_llama.py`) | Default compute dtype on `sm_89` |
+| `graph` vs `eager` batch 1 (`EXE-3`) | Same `benchmarks/e2e/decode.py` runs, `flashinfer+torch` `fp16` batch 1 | CUDA graph speeds up batch-1 decode by ≥ `1.5×` over eager on both models | Implication for enabling `cuda_graph=True` by default on CUDA |
+| `memory_ratio` & `plan_budget` vs ledger (`MEM-2`, `MEM-16`) | Fresh-process `plan_engine` vs `build_engine` (`StartupReport`) on `unsloth/Llama-3.2-1B-Instruct` (`fp16`, `flashinfer+torch`, `--cuda-graph`, default `memory_ratio=0.90`, `kv_reserve_tokens=32768`), cold (no profile) and warm (saved profile) | `reconciliation.matches` is `True` (within 5% / 64 MiB floor) at `memory_ratio=0.90` on native Linux; report NVML vs CUDA free gap and cold-vs-warm KV block delta | Confirms default `memory_ratio=0.90` on native Linux and quantifies first-start plan drift |
+
+### Result
+
+Pre-registration commit: `07a85e3` (before any run below). Raw JSON files:
+`benchmarks/results/2026-11-22-nvidia-l4/` (`ops-b2-fp8-kv.json`, `attention-fp16.json`,
+`attention-bf16.json`, `decode-smollm2.json`, `decode-llama3-1b.json`, `memory-plan-check.json`).
+
+**1. `OPS-B2` #1–#4 (`ops-b2-fp8-kv.json`):**
+
+- **#1 (sampling external RNG):** `flashinfer.sampling.sampling_from_probs` and
+  `top_k_top_p_sampling_from_logits` take `seed`/`offset`/`generator` and do not accept external
+  uniform draws `u`. **Decision:** keep sampling on `torch`.
+- **#2 (decode CUDA graph on `sm_89`, 100 random-length replays vs `torch`):**
+  `fp16` 100/100 passed (worst `max_abs_err = 0.001953`, threshold `0.011833`, ratio `0.243`);
+  `bf16` 100/100 passed (worst `max_abs_err = 0.007813`, threshold `0.053467`, ratio `0.235`).
+  **Passed.**
+- **#3 (multi-row ragged causal prefill on `sm_89`, 5 mixed requests):**
+  all 4 cases passed (`NHD fp16`: `0.001953` vs `0.012650`; `NHD bf16`: `0.015625` vs `0.116699`;
+  `HND fp16`: `0.001953` vs `0.012924`; `HND bf16`: `0.015625` vs `0.103516`). **Passed.**
+- **#4 (FP8 E4M3 KV cache on `sm_89`, `float8_e4m3fn`, per-tensor `absmax/448.0`, `q_heads=32, kv_heads=8`):**
+  every case ran without error, NaN or Inf, and stayed below the `5%` relative L2 accuracy
+  threshold (`3.81%–4.04%` vs `fp64` oracle, compared with `0.028%–0.039%` for `fp16` KV), **but
+  missed the latency threshold (`≤ 1.10×` `fp16`)** on batch-1 decode at context 8192 (`1.28×–1.50×`
+  slower than `fp16` KV):
+
+| Kind | `head_dim` | `q_rows` / `ctx` | FP16 rel L2 vs fp64 | FP8 rel L2 vs fp64 | FP16 med (ms) | FP8 med (ms) | FP8 / FP16 time |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| decode (TC=True) | 64 | 1 / 2048 | 3.24e-4 | 0.04038 | 0.0543 | 0.0788 | 1.45× |
+| decode (TC=False) | 64 | 1 / 2048 | 3.24e-4 | 0.04039 | 0.0543 | 0.0727 | 1.34× |
+| decode (TC=True) | 64 | 1 / 8192 | 3.32e-4 | 0.03886 | 0.0533 | 0.0800 | 1.50× |
+| decode (TC=False) | 64 | 1 / 8192 | 3.32e-4 | 0.03884 | 0.0533 | 0.0717 | 1.35× |
+| decode (TC=True) | 128 | 1 / 2048 | 3.65e-4 | 0.03813 | 0.0532 | 0.0799 | 1.50× |
+| decode (TC=False) | 128 | 1 / 2048 | 3.65e-4 | 0.03813 | 0.0532 | 0.0737 | 1.39× |
+| decode (TC=True) | 128 | 1 / 8192 | 3.86e-4 | 0.03872 | 0.0614 | 0.0820 | 1.34× |
+| decode (TC=False) | 128 | 1 / 8192 | 3.86e-4 | 0.03873 | 0.0614 | 0.0788 | 1.28× |
+| prefill | 64 | 256 / 2048 | 2.79e-4 | 0.03889 | 0.1336 | 0.1679 | 1.26× |
+| prefill | 128 | 256 / 2048 | 2.80e-4 | 0.03830 | 0.2125 | 0.2109 | 0.99× |
+
+  **Implication for 0.2 / M3:** FlashInfer `0.7.4` on `sm_89` can read `e4m3fn` KV for capacity
+  (halving KV memory, opt-in with quality gating in M6), but it is slower than `fp16` KV at batch 1
+  up to 8K context, so the 0.2 release statement keeps the host-tier conversation-switching claim
+  rather than promising an 8-bit KV speedup before `kops`.
+
+**2. Attention per op (`attention-fp16.json`, `attention-bf16.json`, warmup 5, repeat 50, ms):**
+
+| Shape | Step | `torch` fp16 | `flashinfer` fp16 | `torch` bf16 | `flashinfer` bf16 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `tinyllama` (32/4/64) | decode b1 ctx 512 | 0.7501 | 0.1408 | 0.7255 | 0.1388 |
+| `tinyllama` | decode b1 ctx 2048 | 0.7639 | 0.1433 | 0.7183 | 0.1382 |
+| `tinyllama` | decode b1 ctx 8192 | 0.7398 | 0.1423 | 0.7183 | 0.1326 |
+| `tinyllama` | decode b4 ctx 2048 | 0.7670 | 0.1408 | 0.7511 | 0.1352 |
+| `tinyllama` | decode b8 ctx 2048 | 0.7639 | 0.1424 | 0.7583 | 0.1357 |
+| `tinyllama` | prefill 512/512 | 0.7040 | 0.1357 | 0.6979 | 0.1321 |
+| `tinyllama` | prefill 256/2048 | 1.1305 | 0.1628 | 1.1284 | 0.1587 |
+| `smollm2-135m` (9/3/64) | decode b1 ctx 512 | 0.7460 | 0.1429 | 0.7301 | 0.1347 |
+| `smollm2-135m` | decode b1 ctx 2048 | 0.7363 | 0.1398 | 0.7332 | 0.1659 |
+| `smollm2-135m` | decode b1 ctx 8192 | 0.7398 | 0.1408 | 0.7204 | 0.1367 |
+| `smollm2-135m` | decode b4 ctx 2048 | 0.7736 | 0.1444 | 0.7552 | 0.1423 |
+| `smollm2-135m` | decode b8 ctx 2048 | 0.7747 | 0.1423 | 0.7598 | 0.1372 |
+| `smollm2-135m` | prefill 512/512 | 0.5212 | 0.1459 | 0.5181 | 0.1428 |
+| `smollm2-135m` | prefill 256/2048 | 0.7127 | 0.1434 | 0.7050 | 0.1505 |
+
+**Passed:** `flashinfer` is `3.6×–6.9×` faster than `torch` across every shape and both dtypes.
+
+**3. End-to-end decode: `fp16` vs `bf16` and `graph` vs `eager` (`decode-smollm2.json`, `decode-llama3-1b.json`, 129 tokens, 3 repeats):**
+
+| Model | Backends | Dtype | Graph | Batch | ms/step (3 runs) | Median ms | tok/s |
+| --- | --- | --- | --- | ---: | --- | ---: | ---: |
+| `SmolLM2-135M` | `torch` | fp16 | no | 1 | 60.486 / 60.342 / 58.764 | 60.342 | 16.6 |
+| `SmolLM2-135M` | `torch` | fp16 | yes | 1 | 8.948 / 9.063 / 8.844 | 8.948 | 111.8 |
+| `SmolLM2-135M` | `flashinfer, torch` | fp16 | no | 1 | 46.104 / 44.976 / 45.354 | 45.354 | 22.0 |
+| `SmolLM2-135M` | `flashinfer, torch` | fp16 | yes | 1 | 4.969 / 4.990 / 4.993 | 4.990 | 200.4 |
+| `SmolLM2-135M` | `flashinfer, torch` | bf16 | yes | 1 | 4.981 / 4.972 / 5.018 | 4.981 | 200.7 |
+| `SmolLM2-135M` | `flashinfer, torch` | fp16 | yes | 4 | 5.668 / 5.677 / 5.657 | 5.668 | 705.7 |
+| `SmolLM2-135M` | `flashinfer, torch` | bf16 | yes | 4 | 5.733 / 5.724 / 5.702 | 5.724 | 698.8 |
+| `Llama-3.2-1B` | `torch` | fp16 | no | 1 | 163.340 / 163.768 / 163.447 | 163.447 | 6.1 |
+| `Llama-3.2-1B` | `torch` | fp16 | no / yes | 4 / 1,4 | OOM (`1024 MiB` padded 131K block table) | — | — |
+| `Llama-3.2-1B` | `flashinfer, torch` | fp16 | no | 1 | 27.972 / 27.422 / 27.579 | 27.579 | 36.3 |
+| `Llama-3.2-1B` | `flashinfer, torch` | fp16 | yes | 1 | 12.869 / 12.966 / 12.994 | 12.966 | 77.1 |
+| `Llama-3.2-1B` | `flashinfer, torch` | bf16 | yes | 1 | 12.727 / 12.629 / 12.703 | 12.703 | 78.7 |
+| `Llama-3.2-1B` | `flashinfer, torch` | fp16 | yes | 4 | 13.569 / 13.464 / 13.349 | 13.464 | 297.1 |
+| `Llama-3.2-1B` | `flashinfer, torch` | bf16 | yes | 4 | 13.447 / 13.434 / 13.405 | 13.434 | 297.8 |
+
+*(The standalone `benchmarks/e2e/decode.py` run on `Llama-3.2-1B` aborted on the first `torch`-only
+batch-4 arm because `torch`'s decode attention materializes the full 131,072-token padded block
+table in float32 (`1024 MiB` per tensor); `decode-llama3-1b.json` was recorded with per-arm error
+capture using the same `_measure` loop so every `flashinfer, torch` arm ran cleanly.)*
+
+- **`fp16` vs `bf16` implication:** `bf16` with graphs is `+0.2%` faster on `SmolLM2-135M` batch 1
+  (`-1.0%` at batch 4) and `+2.0%` faster on `Llama-3.2-1B` batch 1 (`+0.2%` at batch 4), well below
+  the `5%` switch threshold. **Keep `fp16` default** (no code default changed).
+- **`graph` vs `eager` batch-1 implication:** CUDA graphs speed up `flashinfer, torch` `fp16`
+  batch-1 decode by **`9.09×`** on `SmolLM2-135M` (`45.354 → 4.990 ms`) and **`2.13×`** on
+  `Llama-3.2-1B` (`27.579 → 12.966 ms`), both well above `1.5×`. Supports enabling `cuda_graph=True`
+  by default on CUDA in a dedicated default-change PR (not changed here).
+
+**4. `memory_ratio` and `plan_budget` vs actual ledger (`memory-plan-check.json`, `Llama-3.2-1B`, `fp16`, `flashinfer+torch`, `cuda_graph=True`, `memory_ratio=0.90`):**
+
+| Metric | Run 1 (Cold, no profile) | Run 2 (Warm, saved profile) |
+| --- | ---: | ---: |
+| `plan_engine` NVML baseline / CUDA free after backend | 23,659,151,360 / 23,455,727,616 B | 23,659,151,360 / 23,455,727,616 B |
+| Observed NVML-to-CUDA context gap | 203,423,744 B (194.0 MiB) | 203,423,744 B (194.0 MiB) |
+| `plan_engine` KV blocks (`max_context_tokens`) | 35,899 (131,072) | 35,807 (131,072) |
+| `build_engine` KV blocks (same process, post-init) | 35,550 | 35,458 |
+| `weights` / `kv` / `runtime` / `workspace` / `graph` (MiB) | 2,357 / 17,775 / 46 / 616 / 348 | 2,357 / 17,729 / 46 / 618 / 348 |
+| `reconciliation`: `difference_bytes` / `tolerance_bytes` / `matches` | `0` / `1,108,449,689` / **`true`** | `0` / `1,106,142,822` / **`true`** |
+
+**Implication:** on native Linux L4, the NVML-to-CUDA gap is only `194 MiB` (the CUDA context, vs
+`~594–700 MiB` under WSL2), so default `memory_ratio=0.90` (`2,256 MiB` headroom) reconciles with
+`0`-byte ledger difference on both cold and warm starts. The `194 MiB` cold gap still causes a
+`349`-block (`~183 MiB`) drift between a cold `plan_engine` and a post-CUDA-init `build_engine`,
+which motivates carrying the observed NVML/CUDA gap into the cold plan in a separate bug-fix PR.
