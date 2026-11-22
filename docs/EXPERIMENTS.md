@@ -676,3 +676,25 @@ one slot of ten above the flatness bound), and the step gap of a burst drops by 
 and 3); gate 2's no-regression bounds on ITL pass. On workload 3, where ITL has no gate, the median over pairs of
 B/A steady ITL p99 is 1.053 and of B/A burst ITL p99 0.979. The roadmap's proposed bound of a burst gap within 1.5× of the steady one is missed
 (2.85).
+
+## Stream watchdog, linear merge and the slow-client clock (#77, 2026-11-22)
+
+### Setup and thresholds, written before the run
+
+Not posted to #77 (the work was done locally); committed before any run reported here. A is the admission change
+of the section above (`e3ac2fc`), B is `264e068` (one watchdog for every stream, the oldest untaken byte as the
+slow-client clock, overflow kept in a list). Same Tesla T4 machine; each slot a fresh server with `PYTHONPATH`
+pointing at that side's `python/`; harness scripts from B's checkout.
+
+1. **The slow-client clock** (`benchmarks/e2e/slow_client.py`, B only, as the roadmap asks): `ayaka serve
+   HuggingFaceTB/SmolLM2-135M --device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph --memory-ratio 0.75
+   --slow-client-timeout 10`, harness `--server-timeout 10 --settle 3 --fast 2 --tokens 128 --pairs 5
+   --control-reader --threshold 1.25`. The stuck client never reads, so its cancellation delay is measured from when
+   it stopped reading. Every stuck phase is cancelled within **12 s** (`slow_client_seconds + 2 s`), and the median
+   ratio of the readers' gaps beside the stuck client over alone is at most **1.25** (the threshold of #50). For
+   comparison only, not a gate: the same server and harness with A and `--settle 40`, 1 pair.
+2. **No cost per frame** (`benchmarks/e2e/serving_overhead.py --mode fake --streams 4 --tokens 64 --rounds 5`, no
+   burst, CPU only, A B B A, 5 pairs): the median over pairs of B/A server CPU per frame (per slot the median over
+   rounds, per pair the mean of each side's two slots) is at most **1.05**.
+
+The linear merge is checked by tests (a backlog of 1,000 outputs read in order), not timed.
