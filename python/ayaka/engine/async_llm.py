@@ -19,8 +19,9 @@ request reads its outputs from its own :class:`RequestStream`.
 the server uses; the guarantees of that contract are kept here.
 
 The engine never waits for a caller. A stream holds at most ``max_pending`` undelivered outputs;
-when a caller falls behind, a new output is merged into the newest one instead of queued, so a
-slow reader costs memory in proportion to its own text, never a stalled step. Deciding that a
+when a caller falls behind, the outputs after those are kept as a list and merged into one when
+it is read, so a slow reader costs memory and time in proportion to its own text, never a stalled
+step. Deciding that a
 reader is too slow, and cancelling it, belongs to whoever writes to the client.
 
 Failure and life cycle:
@@ -56,7 +57,7 @@ from typing import TYPE_CHECKING, Final, Self
 from prometheus_client import CollectorRegistry, Histogram
 
 from ayaka.core.errors import EngineDeadError, EngineError, ErrorInfo
-from ayaka.core.outputs import CompletionOutput, RequestOutput
+from ayaka.core.outputs import CompletionOutput, RequestOutput, TokenLogprob
 from ayaka.core.types import FinishReason
 from ayaka.engine.seam import EngineHealth, EngineState
 
@@ -78,34 +79,43 @@ _LOG = logging.getLogger("ayaka.engine.async")
 DEFAULT_MAX_PENDING: Final = 64
 
 
-def merge_outputs(first: RequestOutput, second: RequestOutput) -> RequestOutput:
-    """One streaming fragment that says what ``first`` then ``second`` said.
+def merge_outputs(first: RequestOutput, *more: RequestOutput) -> RequestOutput:
+    """One streaming fragment that says what ``first`` then each of ``more`` said, in order.
 
     The text and token ids of each sequence are concatenated, sequence by sequence (a request
-    with ``n > 1`` has fragments of several); a sequence's finish reason comes from its newer
+    with ``n > 1`` has fragments of several); a sequence's finish reason comes from its newest
     fragment, and everything that describes the end of the request (finished, usage, metrics,
-    error) comes from ``second``.
+    error) comes from the last output. The pieces are joined once, so merging ``k`` fragments
+    costs time in proportion to their total length, not ``k`` times it.
     """
-    merged: dict[int, CompletionOutput] = {piece.index: piece for piece in first.outputs}
-    for piece in second.outputs:
-        earlier = merged.get(piece.index)
-        merged[piece.index] = (
-            piece
-            if earlier is None
-            else replace(
-                piece,
-                token_ids=earlier.token_ids + piece.token_ids,
-                text=earlier.text + piece.text,
-                logprobs=(
-                    (earlier.logprobs or ()) + (piece.logprobs or ())
-                    if earlier.logprobs or piece.logprobs
-                    else None
-                ),
+    if not more:
+        return first
+    newest: dict[int, CompletionOutput] = {}
+    token_ids: dict[int, list[int]] = {}
+    texts: dict[int, list[str]] = {}
+    logprobs: dict[int, list[TokenLogprob]] = {}
+    for output in (first, *more):
+        for piece in output.outputs:
+            index = piece.index
+            newest[index] = piece
+            token_ids.setdefault(index, []).extend(piece.token_ids)
+            texts.setdefault(index, []).append(piece.text)
+            if piece.logprobs:
+                logprobs.setdefault(index, []).extend(piece.logprobs)
+    if not newest:
+        return replace(more[-1], outputs=(CompletionOutput(index=0),))
+    return replace(
+        more[-1],
+        outputs=tuple(
+            replace(
+                newest[index],
+                token_ids=tuple(token_ids[index]),
+                text="".join(texts[index]),
+                logprobs=tuple(logprobs[index]) if index in logprobs else None,
             )
-        )
-    if not merged:
-        merged[0] = CompletionOutput(index=0)
-    return replace(second, outputs=tuple(merged[index] for index in sorted(merged)))
+            for index in sorted(newest)
+        ),
+    )
 
 
 class RequestStream:
@@ -125,6 +135,9 @@ class RequestStream:
         self.request_id = request_id
         self._max_pending = max_pending
         self._pending: deque[RequestOutput] = deque()
+        # The newest output and what arrived after it while the queue was full, in order: one
+        # output in waiting, merged when it is read.
+        self._overflow: list[RequestOutput] = []
         self._ready = asyncio.Event()
         self._finished = False
         self._closed = False
@@ -139,18 +152,22 @@ class RequestStream:
 
     @property
     def pending(self) -> int:
-        """Outputs that arrived and have not been read."""
-        return len(self._pending)
+        """Outputs waiting to be read (what overflowed counts as the one it will be merged into)."""
+        return len(self._pending) + (1 if self._overflow else 0)
 
     def put(self, output: RequestOutput) -> None:
         """Queue an output; merge it into the newest one when the stream is full.
 
-        Nothing is queued after the final output or after :meth:`close`.
+        The merge is deferred: the pieces are kept in a list and joined once, when read. Nothing
+        is queued after the final output or after :meth:`close`.
         """
         if self._finished or self._closed:
             return
-        if len(self._pending) >= self._max_pending:
-            self._pending[-1] = merge_outputs(self._pending[-1], output)
+        if self._overflow:
+            self._overflow.append(output)
+            self.merged += 1
+        elif len(self._pending) >= self._max_pending:
+            self._overflow = [self._pending.pop(), output]
             self.merged += 1
         else:
             self._pending.append(output)
@@ -161,14 +178,25 @@ class RequestStream:
         """End the stream with no final output: what is waiting is dropped, nothing more arrives."""
         self._closed = True
         self._pending.clear()
+        self._overflow.clear()
         self._ready.clear()
+
+    def wake(self) -> None:
+        """Make :meth:`wait` return without an output, so the reader can check on something else.
+
+        The writer to the client uses it to send a keepalive or to give up on a slow client.
+        """
+        self._ready.set()
 
     def get_nowait(self) -> RequestOutput | None:
         """The next output if one is waiting; ``None`` otherwise."""
         if not self._pending:
-            return None
+            if not self._overflow:
+                return None
+            self._pending.append(merge_outputs(*self._overflow))
+            self._overflow.clear()
         output = self._pending.popleft()
-        if not self._pending:
+        if not self._pending and not self._overflow:
             self._ready.clear()
         if output.finished:
             self._delivered_final = True
@@ -176,17 +204,22 @@ class RequestStream:
 
     def drain_nowait(self) -> RequestOutput | None:
         """Every waiting output merged into one; ``None`` if nothing is waiting."""
-        output = self.get_nowait()
-        while output is not None and not output.finished:
-            more = self.get_nowait()
-            if more is None:
-                break
-            output = merge_outputs(output, more)
+        if not self._pending and not self._overflow:
+            return None
+        waiting = [*self._pending, *self._overflow]
+        self._pending.clear()
+        self._overflow.clear()
+        self._ready.clear()
+        output = merge_outputs(*waiting)
+        if output.finished:
+            self._delivered_final = True
         return output
 
     async def wait(self) -> None:
-        """Return once an output is waiting."""
+        """Return once an output is waiting, or after :meth:`wake`."""
         await self._ready.wait()
+        if not self._pending and not self._overflow:
+            self._ready.clear()  # a wake is used up; it is not an output
 
     def __aiter__(self) -> Self:
         return self
@@ -194,8 +227,11 @@ class RequestStream:
     async def __anext__(self) -> RequestOutput:
         if self._delivered_final or self._closed:
             raise StopAsyncIteration
-        while not self._pending:
+        while not self._pending and not self._overflow:
+            self._ready.clear()  # a wake with nothing waiting is not an output
             await self._ready.wait()
+            if self._closed:
+                raise StopAsyncIteration
         output = self.get_nowait()
         assert output is not None  # noqa: S101  # the loop above waited for one
         return output

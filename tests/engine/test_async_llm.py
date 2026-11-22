@@ -18,7 +18,7 @@ from ayaka.core.errors import (
     InvalidRequestError,
     UnsupportedFeatureError,
 )
-from ayaka.core.outputs import CompletionOutput, RequestOutput, Usage
+from ayaka.core.outputs import CompletionOutput, RequestOutput, TokenLogprob, Usage
 from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest, TokenizedRequest
 from ayaka.core.types import FinishReason, RequestId
@@ -403,6 +403,64 @@ class TestMerge:
             assert output.outputs[0].text == "abcde"
             assert output.finished
             assert [o async for o in stream] == []
+
+        asyncio.run(main())
+
+    def test_a_merge_of_many_fragments_keeps_every_sequence_and_logprob(self) -> None:
+        def piece(index: int, token: int, logprob: float | None = None) -> CompletionOutput:
+            logprobs = (TokenLogprob(token, logprob),) if logprob is not None else None
+            return CompletionOutput(
+                index=index, token_ids=(token,), text=chr(97 + token), logprobs=logprobs
+            )
+
+        outputs = [
+            RequestOutput(request_id=RequestId("r"), outputs=(piece(0, 0, -0.5), piece(1, 1))),
+            RequestOutput(request_id=RequestId("r"), outputs=(piece(1, 2),)),
+            RequestOutput(request_id=RequestId("r"), outputs=(piece(0, 3, -1.5),), finished=True),
+        ]
+
+        merged = merge_outputs(*outputs)
+
+        first, second = merged.outputs
+        assert (first.token_ids, first.text) == ((0, 3), "ad")
+        assert first.logprobs is not None
+        assert [entry.logprob for entry in first.logprobs] == [-0.5, -1.5]
+        assert (second.token_ids, second.text, second.logprobs) == ((1, 2), "bc", None)
+        assert merged.finished
+        assert merge_outputs(outputs[0]) is outputs[0]
+
+    def test_a_reader_far_behind_reads_its_backlog_in_order_one_by_one(self) -> None:
+        async def main() -> None:
+            stream = RequestStream(RequestId("r"), max_pending=3)
+            for i in range(1000):
+                stream.put(
+                    RequestOutput(
+                        request_id=RequestId("r"),
+                        outputs=(CompletionOutput(index=0, token_ids=(i,), text=f"{i},"),),
+                        finished=i == 999,
+                    )
+                )
+            assert stream.pending == 3
+            assert stream.merged == 997
+            read = [output async for output in stream]
+            assert len(read) == 3
+            assert "".join(o.outputs[0].text for o in read) == "".join(f"{i}," for i in range(1000))
+            assert read[-1].outputs[0].token_ids == tuple(range(2, 1000))
+            assert read[-1].finished
+
+        asyncio.run(main())
+
+    def test_a_wake_returns_from_wait_without_an_output_and_is_used_up(self) -> None:
+        async def main() -> None:
+            stream = RequestStream(RequestId("r"))
+            stream.wake()
+            await asyncio.wait_for(stream.wait(), 1.0)
+            assert stream.get_nowait() is None
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(stream.wait(), 0.05)  # the wake was used up
+            stream.wake()
+            stream.put(RequestOutput(request_id=RequestId("r"), finished=True))
+            assert [o.finished async for o in stream] == [True]
 
         asyncio.run(main())
 
