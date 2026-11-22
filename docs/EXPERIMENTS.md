@@ -785,3 +785,29 @@ path on every recording.
 The raw files of the three sections above record the revisions they ran by the hashes those commits had before the
 branches were rewritten to correct the commit author (same trees): `c6259e7` is `002bf86`, `4906553` is `e3ac2fc`,
 `ac99081` is `264e068`, `25b195c` is `3e5cf60`, `745760b` is `dd44f6b`.
+
+## M1 decision gates and FP8 KV check on NVIDIA L4 24 GB (`sm_89`, native Linux) (#62)
+
+### Setup and thresholds, written before the run
+
+Machine: native Linux (Ubuntu 24.04.4 LTS, kernel `6.6.159+`, `wsl2 = false`), **NVIDIA L4**
+(`23,034 MiB`, `sm_89`), driver `580.82.07`, CUDA `13.0`, `nvcc 13.0.88`, Python `3.13.16`,
+`torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, 12 CPU cores, 52 GiB RAM. Revision: `main` at
+`6c0eb45`. Raw JSON outputs are saved under `benchmarks/results/2026-11-22-nvidia-l4/`. Product
+defaults are **not** changed by this run; each gate records what its measurement implies for
+defaults and for the 0.2 release statement.
+
+| Gate | Setup | Threshold, written before the run | Implication |
+| --- | --- | --- | --- |
+| `OPS-B2` #1 (sampling RNG) | Inspect `flashinfer.sampling` (`sampling_from_probs`, `top_k_top_p_sampling_from_logits`) on `flashinfer-python 0.7.4` | Keep sampling on `torch` unless an API accepts external uniform draws `u` matching Ayaka's counter-based inverse-CDF contract | `ops/sampling.py` stays on `torch` |
+| `OPS-B2` #2 (decode CUDA graph on `sm_89`) | `BatchDecodeWithPagedKVCacheWrapper(use_cuda_graph=True, use_tensor_cores=True)`, capture once, 100 replays with random lengths (re-planned outside graph), `fp16` and `bf16` | Max absolute error vs `torch` reference ≤ `4 * eps * max(|y|)` on all 100 replays | Decode CUDA graphs stay on `flashinfer` on `sm_89` |
+| `OPS-B2` #3 (multi-row ragged causal prefill) | `BatchPrefillWithPagedKVCacheWrapper(causal=True)`, 5 mixed requests `(rows/len: 7/7, 1/9, 4/16, 3/20, 16/40)`, NHD and HND, `fp16` and `bf16` | Max absolute error vs `torch` reference ≤ `4 * eps * max(|y|)` | Chunked prefill and verify windows stay on `flashinfer` on `sm_89` |
+| `OPS-B2` #4 (FP8 KV cache on `sm_89`) | `BatchDecodeWithPagedKVCacheWrapper` and `BatchPrefillWithPagedKVCacheWrapper` with `kv_data_type=torch.float8_e4m3fn` (`k_scale`, `v_scale`), head dim 64 and 128 (`Llama-3.2-1B` / `TinyLlama` geometry), context 2048 and 8192 | Runs without error or NaN/Inf on both decode and prefill; relative L2 error vs `fp64` oracle ≤ `5%`; decode latency at batch 1 ctx 8192 ≤ `1.10×` `fp16` | Decides whether an 8-bit KV path is viable on `sm_89` before `kops` (0.2 release statement) |
+| Attention per op (`OPS-11`) | `benchmarks/ops/attention.py --dtype fp16` and `--dtype bf16`, warmup 5, repeat 50 | `flashinfer` faster than `torch` on decode and prefill shapes | Confirms `backends=("flashinfer", "torch")` on `sm_89` |
+| `fp16` vs `bf16` (`EXE-10`) | `benchmarks/e2e/decode.py` on `HuggingFaceTB/SmolLM2-135M` and `unsloth/Llama-3.2-1B-Instruct`, `--tokens 129 --batch 1 4 --repeat 3` | Keep `fp16` default unless `bf16` with `flashinfer+torch` + CUDA graph is faster by ≥ `5%` at batch 1 and 4 (parity already green in `test_real_llama.py`) | Default compute dtype on `sm_89` |
+| `graph` vs `eager` batch 1 (`EXE-3`) | Same `benchmarks/e2e/decode.py` runs, `flashinfer+torch` `fp16` batch 1 | CUDA graph speeds up batch-1 decode by ≥ `1.5×` over eager on both models | Implication for enabling `cuda_graph=True` by default on CUDA |
+| `memory_ratio` & `plan_budget` vs ledger (`MEM-2`, `MEM-16`) | Fresh-process `plan_engine` vs `build_engine` (`StartupReport`) on `unsloth/Llama-3.2-1B-Instruct` (`fp16`, `flashinfer+torch`, `--cuda-graph`, default `memory_ratio=0.90`, `kv_reserve_tokens=32768`), cold (no profile) and warm (saved profile) | `reconciliation.matches` is `True` (within 5% / 64 MiB floor) at `memory_ratio=0.90` on native Linux; report NVML vs CUDA free gap and cold-vs-warm KV block delta | Confirms default `memory_ratio=0.90` on native Linux and quantifies first-start plan drift |
+
+### Result
+
+*(Pending run on `m1-l4-gates`.)*
