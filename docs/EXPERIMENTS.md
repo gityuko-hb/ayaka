@@ -728,3 +728,60 @@ server's own work per frame; it says nothing about a GPU step.
 **Verdict:** a client that stops reading is cancelled `slow_client_seconds` plus at most one watchdog tick after it
 stopped, instead of after the kernel's send buffer filled (about 34.5 s here), the other streams are not slowed past
 the threshold of #50, and the server spends less CPU per frame.
+
+## Rendering without a JSON round trip, on one preprocess thread (#77, 2026-11-22)
+
+### Setup and thresholds, written before the run
+
+Not posted to #77 (the work was done locally); committed before any run reported here. A is the stream-watchdog
+change of the section above (`3e5cf60`), B is `dd44f6b` (the conversation's values rendered as `TemplateData`,
+building, rendering and encoding on one `ayaka-preprocess` thread). Same Tesla T4 machine, CPU only.
+
+`benchmarks/serving/loop_delay.py --tokenizer unsloth/Llama-3.2-1B-Instruct --body-kb 200 --requests 20`: an
+in-process server with the real tokenizer and an engine that makes no model calls answers 20 Anthropic Messages
+requests of 219,983 bytes (the recorded Claude Code session repeated; 29,531 prompt tokens), one at a time; a probe
+on the loop sleeps 1 ms over and over and records each overrun. Per slot the median over requests of the largest
+overrun and of the total overrun while a request runs; A B B A, 5 pairs; per pair the mean of each side's two slots.
+
+A trial before these thresholds (8 requests per side, not kept) gave A: largest overrun 6.09 ms, total 21.8 ms; B:
+5.54 ms and 23.1 ms. Timed on their own, on the loop: `json.loads` of the body 2.1 ms, parsing it into a conversation
+5.7 ms more, `template_input()` 2.3 ms (A only); rendering takes 12.5–13.1 ms and encoding 127 ms on the other thread.
+The thresholds are kept at the level of the other burst items of #77 rather than fitted to that trial:
+
+1. median over pairs of B/A of the largest overrun at most **0.5**;
+2. median over pairs of B/A of the total overrun at most **0.5**;
+3. no regression: median over pairs of B/A of the client's round-trip time at most **1.05**.
+
+Rendering from the values equals rendering from the JSON on every recorded request (tests, not timed).
+
+### Result
+
+Raw files: `benchmarks/results/2026-11-22-tesla-t4/loop-delay/` (one JSON per slot). Per-slot medians over the 20
+requests, slots A1 B1 B2 A2:
+
+| Pair | largest overrun (ms) | B/A | total overrun (ms) | B/A | round trip (ms) | B/A |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 6.38, 6.02, 5.77, 5.75 | 0.972 | 30.83, 25.44, 24.33, 23.02 | 0.924 | 130.3, 97.8, 97.1, 97.8 | 0.854 |
+| 2 | 6.62, 6.78, 5.93, 5.84 | 1.020 | 35.54, 35.87, 25.42, 23.62 | 1.036 | 167.7, 153.9, 99.4, 99.4 | 0.948 |
+| 3 | 5.63, 6.75, 6.90, 6.17 | 1.157 | 24.09, 41.10, 45.42, 24.42 | 1.784 | 102.8, 156.0, 163.0, 101.9 | 1.558 |
+| 4 | 5.76, 5.69, 6.76, 6.74 | 0.996 | 23.28, 25.73, 32.81, 38.82 | 0.943 | 99.8, 98.7, 157.7, 159.5 | 0.989 |
+| 5 | 6.01, 5.92, 5.67, 6.22 | 0.948 | 25.10, 24.23, 24.07, 27.00 | 0.927 | 107.2, 96.5, 97.9, 129.6 | 0.821 |
+
+Medians over pairs: largest overrun B/A **0.996** (threshold ≤ 0.5: **missed**), total overrun B/A **0.943**
+(threshold ≤ 0.5: **missed**), round trip B/A **0.948** (threshold ≤ 1.05: **passed**). Whole slots on both sides
+sit either near 100 ms or near 155 ms of round trip, and the total overrun moves with them; that machine state, not
+the build, decides those pairs.
+
+**Verdict and the decision on the render thread:** removing the JSON round trip and rendering on one fixed thread
+does not shorten the time a 200 KB request holds up the event loop. The largest overrun stays at 5.6–6.9 ms on both
+sides: what is left on the loop is reading the body and parsing it into a conversation (about 8 ms in all, timed
+above), and while the preprocess thread runs Python (the template takes about 13 ms) the loop waits for the GIL in
+slices of the 5 ms switch interval, wherever that work runs. Going further would mean parsing the body off the loop
+and still leaves the switch interval, which #77 put out of scope, or rendering in another process. The change is
+therefore not a measured speed-up of the loop. What it does keep: one render instead of a serialize-and-parse-twice
+round trip, render work serialized on one thread in arrival order, and a render that tests show equal to the JSON
+path on every recording.
+
+The raw files of the three sections above record the revisions they ran by the hashes those commits had before the
+branches were rewritten to correct the commit author (same trees): `c6259e7` is `002bf86`, `4906553` is `e3ac2fc`,
+`ac99081` is `264e068`, `25b195c` is `3e5cf60`, `745760b` is `dd44f6b`.

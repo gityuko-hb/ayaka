@@ -56,6 +56,7 @@ from ayaka.tokenizers.contracts import (
     EncodeOptions,
     LoadedTokenizer,
     RenderedInput,
+    TemplateData,
     TemplateInput,
     TextInput,
     TokenIdsInput,
@@ -65,7 +66,7 @@ from ayaka.tokenizers.decoding.incremental import IncrementalDetokenizer
 from ayaka.tokenizers.errors import TokenizerOverloaded
 from ayaka.tokenizers.factory import DefaultTokenizerFactory, validate_loading_config
 from ayaka.tokenizers.ports import RenderedEncoderLike, TokenizerLike
-from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy
+from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy, plain_json
 from ayaka.tokenizers.vouched import VouchedIds
 from ayaka.utils.cancellation import CancellationToken
 from ayaka.utils.validation import plain_token_ids, require_int
@@ -274,7 +275,7 @@ class TokenizerService:
             raise ValueError("tokenizer disabled: only token-ID input is available")
         if not isinstance(value, TokenIdsInput) and not caps.text_encode:
             raise ValueError("loaded tokenizer does not support text encoding")
-        if isinstance(value, ChatInput | TemplateInput) and not caps.chat:
+        if isinstance(value, ChatInput | TemplateInput | TemplateData) and not caps.chat:
             raise ValueError("loaded tokenizer does not support chat templates")
         if options.max_output_tokens >= self.max_model_len:
             raise ValueError("output reservation leaves no room for a prompt")
@@ -341,7 +342,7 @@ class TokenizerService:
             token.cancel("async encode cancelled")
             raise
 
-    def render_chat(self, value: ChatInput | TemplateInput) -> str:
+    def render_chat(self, value: ChatInput | TemplateInput | TemplateData) -> str:
         """Render a chat input to its prompt text without tokenizing it.
 
         Serialized with encoding, so it is safe to call from any thread.
@@ -419,7 +420,7 @@ class TokenizerService:
             self._local.in_worker = previous
 
     def _render(
-        self, value: TextInput | RenderedInput | ChatInput | TemplateInput
+        self, value: TextInput | RenderedInput | ChatInput | TemplateInput | TemplateData
     ) -> tuple[str, bool, bool]:
         """Return ``(text, add_special_tokens, rendered)`` for a text-bearing input."""
         if isinstance(value, TextInput):
@@ -427,7 +428,11 @@ class TokenizerService:
         if isinstance(value, RenderedInput):
             return value.text, False, True
         tokenizer = self._require_tokenizer()
-        if isinstance(value, TemplateInput):
+        if isinstance(value, TemplateData):
+            # One walk checks every string and gives the values json.loads would; no round trip.
+            plain = plain_json if self._guard is None else self._guard.sanitize_json
+            text = tokenizer.apply_chat_template(plain(value.messages), tools=plain(value.tools))
+        elif isinstance(value, TemplateInput):
             # Every string in the history and tool definitions is client-supplied, role included.
             text = tokenizer.apply_chat_template(
                 self._sanitize(json.loads(value.messages_json)),

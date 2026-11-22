@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         EncodeOptions,
         LoadedTokenizer,
         RenderedInput,
+        TemplateData,
         TemplateInput,
         TextInput,
         TokenIdsInput,
@@ -75,7 +76,7 @@ if TYPE_CHECKING:
         TokenizerLike,
     )
     from ayaka.tokenizers.process_pool import ProcessDetokenizer, ProcessTokenizerPool
-    from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy
+    from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy, plain_json
     from ayaka.tokenizers.service import TokenizerService
     from ayaka.tokenizers.vouched import VouchedIds
 
@@ -103,6 +104,7 @@ __all__ = [
     "SpecialTokenInContent",
     "SpecialTokenPolicy",
     "StopChecker",
+    "TemplateData",
     "TemplateInput",
     "TextInput",
     "TokenIdsInput",
@@ -115,6 +117,7 @@ __all__ = [
     "encode_chunked",
     "encode_input_weight",
     "encode_media_chat",
+    "plain_json",
     "safe_split_points",
     "split_into_chunks",
     "validate_loading_config",
@@ -130,6 +133,7 @@ _EXPORTS = {
         "EncodeOptions",
         "LoadedTokenizer",
         "RenderedInput",
+        "TemplateData",
         "TemplateInput",
         "TextInput",
         "TokenIdsInput",
@@ -157,7 +161,7 @@ _EXPORTS = {
         "TokenizerLike",
     ),
     "process_pool": ("ProcessDetokenizer", "ProcessTokenizerPool"),
-    "security": ("SpecialTokenGuard", "SpecialTokenPolicy"),
+    "security": ("SpecialTokenGuard", "SpecialTokenPolicy", "plain_json"),
     "service": ("TokenizerService",),
     "vouched": ("VouchedIds",),
 }

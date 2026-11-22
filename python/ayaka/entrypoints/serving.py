@@ -25,9 +25,9 @@ import asyncio
 import contextlib
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
-from functools import partial
 from typing import TYPE_CHECKING, Final
 
 from aiohttp import web
@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from ayaka.configs.server import ServerConfig
+    from ayaka.configs.tokenizer import EncodeResult
     from ayaka.core.params import SamplingParams
     from ayaka.engine.async_llm import RequestStream
     from ayaka.engine.seam import EngineClient
@@ -166,6 +167,10 @@ class Serving:
         self._no_streams = asyncio.Event()
         self._no_streams.set()
         # One timer for every event stream; it ticks at least twice per keepalive interval.
+        # Rendering and encoding run on this one thread, in arrival order: threads of their own
+        # would only take turns at the GIL (and the tokenizer's lock) with each other and with
+        # the event loop.
+        self._preprocess = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ayaka-preprocess")
         self.watchdog = StreamWatchdog(
             tick=max(0.01, min(1.0, config.keepalive_seconds / 2, config.slow_client_seconds / 4))
         )
@@ -245,6 +250,7 @@ class Serving:
         self.begin_draining()
         if self.llm is not None:
             await self.llm.shutdown(grace)
+        self._preprocess.shutdown(wait=False, cancel_futures=True)
         return await self._cut_stuck_streams(flush)
 
     async def _cut_stuck_streams(self, within: float) -> int:
@@ -307,27 +313,31 @@ class Serving:
             InvalidRequestError: If it cannot be rendered.
             OverloadedError: If the tokenizer is busy.
         """
-        return await self._encode(conversation.template_input(), max_tokens, vouch=vouch)
+        return await self._encode(conversation.template_data, max_tokens, vouch=vouch)
 
     async def tokenize_text(
         self, prompt: str | tuple[int, ...], *, max_tokens: int | None = None
     ) -> tuple[int, ...]:
         """Tokenize a raw completion prompt (text, or ids to validate); as :meth:`tokenize_chat`."""
-        value: EncodeInput = (
-            TokenIdsInput(prompt) if isinstance(prompt, tuple) else TextInput(prompt)
-        )
+
+        def value() -> EncodeInput:
+            return TokenIdsInput(prompt) if isinstance(prompt, tuple) else TextInput(prompt)
+
         return await self._encode(value, max_tokens, vouch=True)
 
     async def _encode(
-        self, value: EncodeInput, max_tokens: int | None, *, vouch: bool
+        self, make: Callable[[], EncodeInput], max_tokens: int | None, *, vouch: bool
     ) -> tuple[int, ...]:
+        """Build the input with ``make`` and encode it, both on the preprocess thread."""
         self.require_ready()
         service = self.tokenizer
         assert service is not None  # noqa: S101  # attach() sets it with the engine
+
+        def run() -> EncodeResult:
+            return service.encode(make(), EncodeOptions(max_output_tokens=1), vouch=vouch)
+
         try:
-            result = await asyncio.to_thread(
-                partial(service.encode, vouch=vouch), value, EncodeOptions(max_output_tokens=1)
-            )
+            result = await asyncio.get_running_loop().run_in_executor(self._preprocess, run)
         except ContextLengthError as exc:
             raise ContextLengthError(
                 prompt_tokens=exc.prompt_tokens,
