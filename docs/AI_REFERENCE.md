@@ -238,10 +238,12 @@ ignored with a debug log line. The tables below are generated from the table the
 - `llama3_json` reads the Llama 3.x layout: a bare JSON object `{"name": ..., "parameters": {...}}` at the start of
   the answer, and more calls separated by `;`. A string `function` next to `"type": "function"` counts as the name,
   because Llama-3.2-1B writes that when the tools are shown wrapped that way. With no marker to wait for, a forced
-  call (`tool_choice`) is constrained from the first token of the answer; strict arguments of an optional call
-  cannot be constrained and are refused with 400. It has been checked
-  against recorded answers of Llama-3.2-1B-Instruct (`tests/entrypoints/parsers/fixtures/`), written outside
-  `ayaka serve`; no Llama model has driven a coding tool through this parser yet.
+  call (`tool_choice`) is constrained from the first token of the answer. With the `structured` extra, an optional
+  call is constrained from the `{` that opens the answer (blank and special tokens such as `<|python_tag|>` before
+  it are skipped), and its arguments follow each tool's schema even when the request is not strict; an answer
+  that starts with anything else stays free text. A tool schema the grammar cannot build leaves a non-strict
+  request unconstrained, and fails a strict one. Checked against recorded answers of Llama-3.2-1B-Instruct
+  (`tests/entrypoints/parsers/fixtures/`), and with Llama-3.1-8B-Instruct driving Claude Code, Codex and OpenCode.
 - With the `structured` extra: JSON answers (`response_format`, `text.format`, `output_format`), forced tool calls
   (`tool_choice`) and strict arguments are enforced by a grammar; a request that offers tools gets its calls checked
   while the rest of the answer stays free. Without the extra, a request that needs a grammar is refused.

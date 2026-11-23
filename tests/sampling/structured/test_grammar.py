@@ -7,7 +7,6 @@ import json
 import pytest
 
 from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolCallSyntax, ToolSchema
-from ayaka.core.errors import InvalidRequestError
 from ayaka.sampling.structured.grammar import call_schema, grammar_text
 
 pytestmark = pytest.mark.unit
@@ -109,6 +108,30 @@ def test_a_call_without_markers_is_the_whole_answer_with_its_format_keys(paralle
     assert '"required":["name","parameters"]' in call
 
 
-def test_an_optional_call_without_markers_cannot_be_constrained() -> None:
-    with pytest.raises(InvalidRequestError, match="forced"):
-        StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(ToolSchema("f"),), syntax=_BARE)
+@pytest.mark.parametrize("strict", [False, True])
+def test_an_optional_call_without_markers_follows_the_tool_schemas(strict: bool) -> None:
+    """It starts on the answer's `{` (the matcher decides), blanks allowed in that first token;
+    the arguments are typed even when the request is not strict, leniently then."""
+    params = StructuredParams(
+        kind=ConstraintKind.TOOL_CALL, tools=(_WEATHER,), syntax=_BARE, strict=strict
+    )
+
+    first, call, blank = grammar_text(params).splitlines()
+
+    assert first == 'start: BLANK? call ("; " call)*'
+    assert blank == r"BLANK: /[ \t\r\n]+/"
+    schema = json.loads(call.removeprefix("call: %json "))
+    assert schema["properties"]["parameters"]["properties"] == {"city": {"type": "string"}}
+    assert schema["x-guidance"] == (
+        {"whitespace_flexible": False}
+        if strict
+        else {"whitespace_flexible": False, "lenient": True}
+    )
+
+
+def test_an_optional_call_with_markers_keeps_loose_arguments_unless_strict() -> None:
+    params = StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(_WEATHER,), syntax=_SYNTAX)
+
+    call = grammar_text(params).splitlines()[1]
+
+    assert '"arguments":{"type":"object"}' in call

@@ -37,14 +37,19 @@ def _json(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
-def _compact(schema: Mapping[str, object]) -> Mapping[str, object]:
+def _compact(schema: Mapping[str, object], *, lenient: bool = False) -> Mapping[str, object]:
     """The schema with llguidance's compact JSON layout, unless the request chose its own.
 
     Without layout whitespace inside the JSON, a small model cannot spend its tokens on spaces.
+    ``lenient`` makes llguidance skip the keywords it does not implement (an unknown ``format``)
+    instead of refusing the schema: for a constraint the request did not ask for.
     """
     if "x-guidance" in schema:
         return schema
-    return {**schema, "x-guidance": {"whitespace_flexible": False}}
+    options: dict[str, object] = {"whitespace_flexible": False}
+    if lenient:
+        options["lenient"] = True
+    return {**schema, "x-guidance": options}
 
 
 def call_schema(
@@ -99,15 +104,23 @@ def grammar_text(params: StructuredParams) -> str:
     syntax = params.syntax
     assert syntax is not None  # noqa: S101  # StructuredParams requires it for a tool call
     only = params.tool_choice if params.tool_choice not in ("auto", "required") else None
+    # An optional call in a format without markers starts only when the answer opens with `{`
+    # (the matcher decides): such an answer is nothing but calls, which are useless to a tool
+    # unless their arguments follow its schema, so they do even when the request is not strict.
+    optional_bare = syntax.bare and params.tool_choice == "auto"
     schema = call_schema(
         params.tools,
-        strict=params.strict,
+        strict=params.strict or optional_bare,
         only=only,
         arguments_key=syntax.arguments_key,
     )
     if syntax.bare:
         more = f" ({_json(syntax.separator)} call)*" if params.parallel and syntax.separator else ""
-        return f"start: call{more}\ncall: %json {_json(_compact(schema))}\n"
+        body = _json(_compact(schema, lenient=optional_bare and not params.strict))
+        if optional_bare:
+            # The token that opens the call may carry the whitespace before it (`▁{"`).
+            return f"start: BLANK? call{more}\ncall: %json {body}\nBLANK: /[ \\t\\r\\n]+/\n"
+        return f"start: call{more}\ncall: %json {body}\n"
     # A one-token marker is demanded as that token: the parser matches it by id.
     token = syntax.close_token
     close = f"<[{token}]>" if token is not None else _json(syntax.close)

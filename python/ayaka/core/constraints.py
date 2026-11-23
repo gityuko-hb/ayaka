@@ -115,8 +115,11 @@ class StructuredParams:
         tools: The functions for ``TOOL_CALL``.
         syntax: How the model writes a call, for ``TOOL_CALL``.
         tool_choice: ``"auto"`` (a call is optional: lazy), ``"required"`` (the answer starts
-            with a call to any tool) or the name of the one tool to call.
-        strict: Constrain the arguments to each tool's schema; otherwise any JSON object.
+            with a call to any tool) or the name of the one tool to call. An optional call in a
+            format without markers (``syntax.bare``) starts when the answer opens with ``{``.
+        strict: Constrain the arguments to each tool's schema; otherwise any JSON object. An
+            optional call without markers always follows the schemas (an answer that is only
+            calls is useless to a tool otherwise), leniently unless ``strict``.
         parallel: After a call, let the model write more (more calls); otherwise the answer
             ends after the first call.
         start_after: A token id that switches the constraint on, such as the end of a reasoning
@@ -149,10 +152,6 @@ class StructuredParams:
                 raise InvalidRequestError("a tool-call constraint needs at least one tool")
             if self.syntax is None:
                 raise InvalidRequestError("a tool-call constraint needs the model's call syntax")
-            if self.syntax.bare and self.tool_choice == "auto":
-                raise InvalidRequestError(
-                    "a call written without markers can only be constrained when it is forced"
-                )
             names = [tool.name for tool in self.tools]
             if self.tool_choice not in ("auto", "required") and self.tool_choice not in names:
                 raise InvalidRequestError(
