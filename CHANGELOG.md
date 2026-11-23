@@ -8,6 +8,10 @@
   is served up to the window, because windowed attention is not implemented; `ayaka plan` shows the shorter context.
 - Qwen3 checkpoints (`Qwen3ForCausalLM`), whose `<think>` reasoning and `<tool_call>` calls go through the `think` and
   `hermes` parsers.
+- Phi-3 and Phi-4 checkpoints (`Phi3ForCausalLM`). `longrope` scaling and a partial rotary embedding (Phi-3.5-mini,
+  Phi-4-mini) are refused with the reason. Phi-3-mini-4k is served up to its 2,047-token sliding window.
+- When the first listed backend has no attention kernels for a model's head width (flashinfer: 64, 128 and 256 only),
+  attention comes from the next backend in `--backends`, with a log line, instead of failing on the first request.
 
 ## 0.1.0 (not published on PyPI)
 

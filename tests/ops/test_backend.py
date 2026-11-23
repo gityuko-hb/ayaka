@@ -289,6 +289,35 @@ class TestCapabilities:
 
         assert ops.providers["attention"] == "reference"
 
+    def test_attention_for_a_head_width_without_kernels_comes_from_the_next_backend(
+        self, loaders: _Loaders
+    ) -> None:
+        loaders.add(
+            _caps("fast", families=("attention",), attention_head_dims=frozenset({64, 128}))
+        )
+        loaders.add(_caps("reference"))
+
+        phi = load_backend(["fast", "reference"], device="cpu", dtype=DType.FP32, head_dim=96)
+        llama = load_backend(["fast", "reference"], device="cpu", dtype=DType.FP32, head_dim=128)
+        unknown = load_backend(["fast", "reference"], device="cpu", dtype=DType.FP32)
+
+        assert phi.providers["attention"] == "reference"
+        assert llama.providers["attention"] == "fast"
+        assert unknown.providers["attention"] == "fast"
+
+    def test_a_head_width_no_backend_has_is_named_in_the_error(self, loaders: _Loaders) -> None:
+        loaders.add(_caps("fast", attention_head_dims=frozenset({64, 128})))
+
+        with pytest.raises(
+            ConfigError, match=r"fast has no kernels for heads of 96 \(only \[64, 128\]\)"
+        ):
+            load_backend(["fast"], device="cpu", dtype=DType.FP32, head_dim=96)
+
+    def test_flashinfer_declares_the_head_widths_of_its_kernels(self) -> None:
+        [caps] = [caps for caps in available_backends() if caps.name == "flashinfer"]
+
+        assert caps.attention_head_dims == frozenset({64, 128, 256})
+
     def test_a_decode_only_attention_alone_is_refused(self, loaders: _Loaders) -> None:
         loaders.add(_caps("decode-only", multi_row_attention=False))
 

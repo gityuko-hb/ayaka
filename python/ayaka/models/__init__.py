@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ayaka.models.base import CausalLM
     from ayaka.models.gpt2 import GPT2LMHeadModel
     from ayaka.models.llama import LlamaForCausalLM
+    from ayaka.models.phi3 import Phi3ForCausalLM
     from ayaka.models.qwen2 import Qwen2ForCausalLM
     from ayaka.models.qwen3 import Qwen3ForCausalLM
     from ayaka.models.registry import register_model, resolve_model
@@ -26,6 +27,7 @@ __all__ = [
     "CausalLM",
     "GPT2LMHeadModel",
     "LlamaForCausalLM",
+    "Phi3ForCausalLM",
     "Qwen2ForCausalLM",
     "Qwen3ForCausalLM",
     "register_model",
@@ -36,6 +38,7 @@ _EXPORTS = {
     "base": ("CausalLM",),
     "gpt2": ("GPT2LMHeadModel",),
     "llama": ("LlamaForCausalLM",),
+    "phi3": ("Phi3ForCausalLM",),
     "qwen2": ("Qwen2ForCausalLM",),
     "qwen3": ("Qwen3ForCausalLM",),
     "registry": ("register_model", "resolve_model"),

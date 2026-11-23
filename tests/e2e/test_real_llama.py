@@ -41,10 +41,13 @@ What it needs, and what it does when something is missing (as ``test_gpt2_parity
   270 MB from the Hugging Face Hub into its usual cache.
 
 A missing piece skips with the reason; ``AYAKA_REQUIRE_REAL_MODEL=1`` turns the skip into a failure.
+``AYAKA_REFERENCE_DEVICE=cpu`` runs the float32 reference on the CPU instead of the GPU, for a
+checkpoint whose float32 copy does not fit the card (Phi-3-mini-4k, 3.8B, on the 24 GB L4).
 """
 
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from dataclasses import dataclass
@@ -59,6 +62,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.gpu]
 REPO_ID: Final = "HuggingFaceTB/SmolLM2-135M"
 LOCAL_PATH_VARIABLE: Final = "AYAKA_LLAMA_PATH"
 REQUIRE_VARIABLE: Final = "AYAKA_REQUIRE_REAL_MODEL"
+#: Where the float32 reference runs: ``cuda`` (the default) or ``cpu``, for a checkpoint whose
+#: float32 copy does not fit the card next to nothing else (Phi-3-mini on 24 GB).
+REFERENCE_DEVICE_VARIABLE: Final = "AYAKA_REFERENCE_DEVICE"
 _FILES: Final = [
     "config.json",
     "generation_config.json",
@@ -105,6 +111,7 @@ transformers: Any = _import("transformers", "install it with: uv sync --extra hf
 from ayaka.configs.cache import CacheConfig  # noqa: E402
 from ayaka.configs.device import DeviceConfig  # noqa: E402
 from ayaka.configs.engine import EngineConfig  # noqa: E402
+from ayaka.configs.model import ModelConfig  # noqa: E402
 from ayaka.configs.model_source import ModelSourceConfig  # noqa: E402
 from ayaka.configs.scheduler import SchedulerConfig  # noqa: E402
 from ayaka.core.errors import CapacityError  # noqa: E402
@@ -149,24 +156,23 @@ class Reference:
 
 
 def _make_reference(tokenizer: Any, model: Any, prompt: str) -> Reference:
-    """Generate ``NEW_TOKENS`` greedily, then read the top two logits at every step."""
-    encoded = tokenizer(prompt, return_tensors="pt").to("cuda")
+    """Take the argmax ``NEW_TOKENS`` times, then read the top two logits at every step.
+
+    The loop is greedy decoding and nothing else, as Ayaka runs it here with ``ignore_eos``.
+    ``generate`` would add the logits processors of the checkpoint's ``generation_config.json``
+    even with ``do_sample=False``: a ``repetition_penalty`` (Qwen2.5-Instruct sets 1.05), and,
+    with ``min_new_tokens``, a ban on every end-of-sequence id, which changes the token whenever
+    the argmax is one of them (Phi-3-mini ends "The capital of France is" after 16 tokens).
+    """
+    encoded = tokenizer(prompt, return_tensors="pt").to(model.device)
     prompt_length = int(encoded["input_ids"].shape[1])
     with torch.no_grad():
-        generated = model.generate(
-            **encoded,
-            do_sample=False,
-            num_beams=1,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            # A checkpoint's generation_config.json can set a penalty (Qwen2.5-Instruct: 1.05),
-            # which generate() applies even without sampling; greedy means none.
-            repetition_penalty=1.0,
-            max_new_tokens=NEW_TOKENS,
-            min_new_tokens=NEW_TOKENS,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        generated = encoded["input_ids"]
+        step = model(input_ids=generated, use_cache=True)
+        for _ in range(NEW_TOKENS):
+            token = step.logits[:, -1].argmax(dim=-1, keepdim=True)
+            generated = torch.cat([generated, token], dim=1)
+            step = model(input_ids=token, past_key_values=step.past_key_values, use_cache=True)
         # One teacher-forced pass over the prompt plus the generated tokens. Logits at position
         # j predict token j + 1, so the rows that predict the generated tokens start at the last
         # prompt position and stop before the final row: one row per generated token.
@@ -215,7 +221,7 @@ def expected(llama_dir: Path) -> dict[str, Reference]:
         attn_implementation="eager",
         local_files_only=True,
     )
-    model = model.cuda().eval()
+    model = model.to(_reference_device()).eval()
     found = {prompt: _make_reference(tokenizer, model, prompt) for prompt in PROMPTS}
     del model
     torch.cuda.empty_cache()
@@ -258,6 +264,22 @@ def _open_llm(config: EngineConfig, *, chosen: bool) -> LLM:
         short = _context_bytes(exc, "short")
         _check_shortfall(need, have, short)
         pytest.skip(f"{LOCAL_PATH_VARIABLE} chose a checkpoint that does not fit: {exc.message}")
+
+
+def _reserve_tokens(directory: Path) -> int:
+    """2,048 tokens of KV per request, or the model's whole context when it is shorter.
+
+    Phi-3-mini-4k is served up to its 2,047-token sliding window (``ModelConfig.context_length``).
+    """
+    raw = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    return min(2048, ModelConfig.from_hf_config(raw).context_length)
+
+
+def _reference_device() -> str:
+    device = os.environ.get(REFERENCE_DEVICE_VARIABLE, "cuda")
+    if device not in ("cuda", "cpu"):
+        _unavailable(f"{REFERENCE_DEVICE_VARIABLE}={device!r} is neither 'cuda' nor 'cpu'")
+    return device
 
 
 def _eps(dtype: DType) -> float:
@@ -319,7 +341,7 @@ def test_greedy_tokens_match_transformers_on_the_gpu(
     config = EngineConfig(
         source=ModelSourceConfig(str(llama_dir), offline=True),
         device=DeviceConfig(device="cuda", dtype=dtype, backends=backends, cuda_graph=graphs),
-        cache=CacheConfig(block_size=16, kv_reserve_tokens=2048),
+        cache=CacheConfig(block_size=16, kv_reserve_tokens=_reserve_tokens(llama_dir)),
         scheduler=SchedulerConfig(max_running=4, max_tokens_per_step=256),
     )
     # transformers' reference uses min_new_tokens; ignore_eos gives the same tokens while EOS is
@@ -354,7 +376,7 @@ def long_expected(llama_dir: Path) -> Reference:
         attn_implementation="eager",
         local_files_only=True,
     )
-    model = model.cuda().eval()
+    model = model.to(_reference_device()).eval()
     found = _make_reference(tokenizer, model, LONG_PROMPT)
     del model
     torch.cuda.empty_cache()
@@ -375,7 +397,7 @@ def test_a_warm_prefix_cache_gives_the_reference_tokens_on_the_gpu(
     config = EngineConfig(
         source=ModelSourceConfig(str(llama_dir), offline=True),
         device=DeviceConfig(device="cuda", dtype=dtype, backends=backends, cuda_graph=graphs),
-        cache=CacheConfig(block_size=16, kv_reserve_tokens=2048),
+        cache=CacheConfig(block_size=16, kv_reserve_tokens=_reserve_tokens(llama_dir)),
         scheduler=SchedulerConfig(max_running=4, max_tokens_per_step=256),
     )
     # transformers' reference uses min_new_tokens; ignore_eos gives the same tokens while EOS is

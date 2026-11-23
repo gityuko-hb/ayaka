@@ -176,7 +176,7 @@ def plan_engine(config: EngineConfig) -> EnginePlan:
 
 def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     """The plan, the ops backend it was made for, and the bytes torch held before it."""
-    from ayaka.model_loader.loader import describe_model
+    from ayaka.model_loader.loader import describe_model, read_model_config
     from ayaka.ops.backend import load_backend
 
     device = config.device
@@ -186,7 +186,11 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     capabilities.check(device)
     logger.info("device: %s", capabilities.describe())
     ops = load_backend(
-        device.backends, device=device.device_type, dtype=device.dtype, cuda_graph=device.cuda_graph
+        device.backends,
+        device=device.device_type,
+        dtype=device.dtype,
+        cuda_graph=device.cuda_graph,
+        head_dim=read_model_config(config.source).head_dim,
     )
     initial_runtime_bytes = 0
     if device.device_type == "cuda":

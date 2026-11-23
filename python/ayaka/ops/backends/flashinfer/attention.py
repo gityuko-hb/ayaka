@@ -32,6 +32,7 @@ import torch
 
 from ayaka.core.errors import BackendError
 from ayaka.core.types import ForwardMode, KVLayoutKind
+from ayaka.ops.backends.flashinfer import HEAD_DIMS
 from ayaka.ops.backends.torch import attention as reference
 from ayaka.ops.backends.torch._checks import capturing, require_like
 from ayaka.ops.backends.torch.kvcache import require_buffers
@@ -42,7 +43,6 @@ if TYPE_CHECKING:
     from ayaka.ops.kvcache import KVBuffers
 
 __all__ = [
-    "HEAD_DIMS",
     "WORKSPACE_BYTES",
     "FlashInferPlan",
     "attend",
@@ -52,7 +52,6 @@ __all__ = [
 ]
 
 #: Head widths flashinfer compiles attention for.
-HEAD_DIMS: Final = frozenset({64, 128, 256})
 #: The float scratch buffer every wrapper on one device shares; flashinfer's recommended size.
 WORKSPACE_BYTES: Final = 128 * 2**20
 _DTYPES: Final = (torch.float16, torch.bfloat16)
