@@ -30,6 +30,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Any, cast
 
 from ayaka.core.errors import ModelLoadError
+from ayaka.tokenizers.adapters.sentencepiece import sentencepiece_layout, sentencepiece_table
 from ayaka.tokenizers.decoding.byte import verify_byte_table
 from ayaka.utils.hf_utils import hub_offline, optional_file, parse_eos_token_ids, read_json
 from ayaka.utils.import_utils import require_module
@@ -148,6 +149,7 @@ class HfTokenizer:
         _byte_level: Whether the pre-tokenizer is byte-level BPE.
         _decoded_vocab: Cached ``get_decoded_vocab()``, built lazily.
         _byte_table: Cached ``token_bytes_table()``, built lazily.
+        _grammar_table: Cached ``grammar_token_bytes()``, built lazily.
     """
 
     __slots__ = (
@@ -159,6 +161,7 @@ class HfTokenizer:
         "_eos",
         "_eos_token_ids",
         "_fp",
+        "_grammar_table",
         "_is_fast",
         "_max_chars",
         "_max_token_id",
@@ -311,6 +314,7 @@ class HfTokenizer:
         self._byte_level = self._detect_byte_level()
         self._decoded_vocab: tuple[bytes, ...] | None = None
         self._byte_table: tuple[bytes, ...] | None = None
+        self._grammar_table: tuple[bytes, ...] | None = None
         self.byte_path_verified = False
         self._fp = self._compute_fingerprint()
 
@@ -578,6 +582,47 @@ class HfTokenizer:
         for token, ident in self._added.items():
             if 0 <= ident <= self._max_token_id:
                 table[ident] = token.encode()
+        return tuple(table)
+
+    def grammar_token_bytes(self) -> tuple[bytes, ...]:
+        """The bytes each token adds to the text in context, for a grammar; built once.
+
+        A grammar must know what a token writes *after* other text. ``decode([token])``
+        does not say: a SentencePiece tokenizer drops the space of ``\u2581weather`` at the
+        start of a decode, and a byte-fallback token decodes alone to the replacement
+        character. So this is :meth:`token_bytes_table` for byte-level BPE, and for a
+        SentencePiece vocabulary (a ``Metaspace`` decoder, or ``Replace`` of the marker by a
+        space) each token's string with the marker as a space and ``<0xNN>`` as that byte.
+        The SentencePiece table is returned only when the probes concatenate to ``decode``
+        (up to the one space a decoder strips at the very start); otherwise, and for any
+        other vocabulary, it is empty and the caller keeps its own fallback.
+        """
+        if self._grammar_table is None:
+            if self._byte_level:
+                self._grammar_table = self.token_bytes_table()
+            else:
+                self._grammar_table = self._build_sentencepiece_table()
+        return self._grammar_table
+
+    def _build_sentencepiece_table(self) -> tuple[bytes, ...]:
+        if self._raw is None:
+            return ()
+        try:
+            marker, byte_fallback = sentencepiece_layout(self._raw.to_str())
+        except (AttributeError, TypeError):
+            return ()
+        if not marker:
+            return ()
+        table = sentencepiece_table(
+            self._vocab, self._added, self._max_token_id + 1, byte_fallback=byte_fallback
+        )
+        for sample in _DEFAULT_PROBES:
+            ids = self.encode(sample, add_special_tokens=False)
+            joined = b"".join(table[token] for token in ids).decode("utf-8", errors="replace")
+            expected = self.decode(ids)
+            if joined not in (expected, " " + expected):
+                _LOGGER.debug("SentencePiece byte table of %s does not match decode", self._name)
+                return ()
         return tuple(table)
 
     def verify_byte_path(self, samples: Sequence[str] = ()) -> bool:

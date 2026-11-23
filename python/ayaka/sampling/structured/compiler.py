@@ -33,7 +33,7 @@ from ayaka.sampling.structured.matcher import ConstraintMatcher
 from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Sequence
 
     from ayaka.core.constraints import StructuredParams
     from ayaka.sampling.structured.matcher import GrammarState
@@ -85,9 +85,27 @@ class _Vocabulary:
         self.bos_token_id = None
 
     def __call__(self, text: str | bytes) -> list[int]:
+        """Token ids whose bytes are ``text``: llguidance trusts them for the bytes it forces.
+
+        A SentencePiece tokenizer encodes ``'{"'`` as ``'▁{"'``, a token that writes a space
+        first; llguidance would then allow only that token where the grammar forbids the space.
+        Such a text is encoded after a newline and the newline's tokens are dropped, which
+        leaves the tokens of the text alone.
+        """
         if isinstance(text, bytes):
             text = text.decode("utf-8", errors="replace")
-        return list(self._tokenizer.encode(text, add_special_tokens=False))
+        ids = list(self._tokenizer.encode(text, add_special_tokens=False))
+        wanted = text.encode()
+        if self._spells(ids) == wanted:
+            return ids
+        anchor = list(self._tokenizer.encode("\n", add_special_tokens=False))
+        anchored = list(self._tokenizer.encode("\n" + text, add_special_tokens=False))
+        if anchored[: len(anchor)] == anchor and self._spells(anchored[len(anchor) :]) == wanted:
+            return anchored[len(anchor) :]
+        return ids
+
+    def _spells(self, ids: Sequence[int]) -> bytes:
+        return b"".join(self.tokens[token] for token in ids if 0 <= token < len(self.tokens))
 
 
 def _reserved(params: StructuredParams) -> frozenset[int]:
@@ -99,7 +117,14 @@ def _reserved(params: StructuredParams) -> frozenset[int]:
 
 
 def _byte_table(tokenizer: TokenizerLike) -> tuple[bytes, ...]:
-    table = getattr(tokenizer, "token_bytes_table", None)
+    """Each token's bytes in context: the adapter's grammar table, else its byte-level table.
+
+    An empty result leaves ``decode([token])`` as the fallback, which is right only for
+    tokenizers whose tokens decode alone as they do in context.
+    """
+    table = getattr(tokenizer, "grammar_token_bytes", None) or getattr(
+        tokenizer, "token_bytes_table", None
+    )
     if table is None:
         return ()
     try:
