@@ -501,7 +501,9 @@ _RECORDED = (
     ("anthropic", _FIXTURES / "claude-code-2.1.327" / "001-anthropic.json"),
     ("anthropic", _FIXTURES / "claude-code-2.1.330" / "002-anthropic.json"),
     ("openai-responses", _FIXTURES / "codex-0.163.0" / "001-openai-responses.json"),
+    ("openai-responses", _FIXTURES / "codex-0.171.0" / "002-openai-responses.json"),
     ("openai-chat", _FIXTURES / "opencode-2.3.2" / "001-openai-chat.json"),
+    ("openai-chat", _FIXTURES / "opencode-1.19.6" / "004-openai-chat.json"),
 )
 _RECORDED_IDS = [f"{protocol}:{path.parent.name}/{path.stem}" for protocol, path in _RECORDED]
 

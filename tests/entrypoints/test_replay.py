@@ -249,6 +249,34 @@ class TestReplay:
         assert "ignoring unknown fields" in caplog.text
         assert field in caplog.text
 
+    def test_codex_function_call_output_round_trip_parses_with_matching_call_id(self) -> None:
+        from ayaka.entrypoints.openai.responses import parse_responses_request
+        from ayaka.entrypoints.wire.reader import JsonObject
+
+        recording = _load(FIXTURES / "codex-0.171.0" / "002-openai-responses.json")
+        parsed = parse_responses_request(JsonObject(recording["body"]))
+
+        assistant_turns = [turn for turn in parsed.conversation.turns if turn.tool_calls]
+        tool_turns = [turn for turn in parsed.conversation.turns if turn.role == "tool"]
+        assert len(assistant_turns) == 1
+        assert assistant_turns[0].tool_calls[0].name == "exec_command"
+        assert len(tool_turns) == 1
+        assert tool_turns[0].tool_call_id == assistant_turns[0].tool_calls[0].id
+
+    def test_opencode_tool_round_trips_parse_with_matching_call_ids(self) -> None:
+        from ayaka.entrypoints.openai.protocol import parse_chat_request
+        from ayaka.entrypoints.wire.reader import JsonObject
+
+        recording = _load(FIXTURES / "opencode-1.19.6" / "004-openai-chat.json")
+        parsed = parse_chat_request(JsonObject(recording["body"]))
+
+        assistant_turns = [turn for turn in parsed.conversation.turns if turn.tool_calls]
+        tool_turns = [turn for turn in parsed.conversation.turns if turn.role == "tool"]
+        calls = [turn.tool_calls[0] for turn in assistant_turns]
+        assert [call.name for call in calls] == ["read", "read"]
+        assert [turn.tool_call_id for turn in tool_turns] == [call.id for call in calls]
+        assert calls[0].id != calls[1].id
+
     def test_claude_code_tool_result_round_trip_parses_with_matching_tool_name(self) -> None:
         from ayaka.entrypoints.anthropic.protocol import parse_messages_request
         from ayaka.entrypoints.wire.reader import JsonObject
@@ -360,3 +388,140 @@ class TestFixtureHygiene:
 
         assert messages[0]["content"][0]["id"] == REDACTED_ID
         assert messages[1]["content"][0]["tool_use_id"] == REDACTED_ID
+
+    def test_the_sanitizer_drops_responses_tool_round_trip_text(self) -> None:
+        from sanitize_recording import (
+            REDACTED_ARGUMENTS,
+            REDACTED_ID,
+            REDACTED_TEXT,
+            assert_clean,
+            sanitize,
+        )
+
+        recording = {
+            "path": "/v1/responses",
+            "headers": {"user-agent": "codex_exec/0.171.0"},
+            "body": {
+                "model": "m",
+                "input": [
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "look in /home/me"}],
+                        "encrypted_content": "opaque-secret",
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_secret_1",
+                        "name": "shell",
+                        "arguments": '{"command": ["cat", "/home/me/secret.txt"]}',
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_secret_1",
+                        "output": "secret output from /home/me",
+                    },
+                ],
+            },
+        }
+
+        clean = cast("dict[str, Any]", sanitize(recording))
+        reasoning, call, output = clean["body"]["input"]
+
+        assert assert_clean(clean) == []
+        assert reasoning["summary"] == [{"type": "summary_text", "text": REDACTED_TEXT}]
+        assert reasoning["encrypted_content"] == REDACTED_TEXT
+        assert call == {
+            "type": "function_call",
+            "call_id": REDACTED_ID,
+            "name": "shell",
+            "arguments": REDACTED_ARGUMENTS,
+        }
+        assert output == {
+            "type": "function_call_output",
+            "call_id": REDACTED_ID,
+            "output": REDACTED_TEXT,
+        }
+
+    def test_the_sanitizer_drops_chat_tool_call_text(self) -> None:
+        from sanitize_recording import (
+            REDACTED_ARGUMENTS,
+            REDACTED_ID,
+            REDACTED_TEXT,
+            assert_clean,
+            sanitize,
+        )
+
+        recording = {
+            "path": "/v1/chat/completions",
+            "headers": {"user-agent": "opencode/1.19.6"},
+            "body": {
+                "model": "m",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_secret_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read",
+                                    "arguments": '{"filePath": "/home/me/secret.txt"}',
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_secret_1",
+                        "content": "secret output",
+                    },
+                ],
+            },
+        }
+
+        clean = cast("dict[str, Any]", sanitize(recording))
+        assistant, tool = clean["body"]["messages"]
+
+        assert assert_clean(clean) == []
+        assert assistant["content"] is None
+        assert assistant["tool_calls"] == [
+            {
+                "id": REDACTED_ID,
+                "type": "function",
+                "function": {"name": "read", "arguments": REDACTED_ARGUMENTS},
+            }
+        ]
+        assert tool == {"role": "tool", "tool_call_id": REDACTED_ID, "content": REDACTED_TEXT}
+
+    def test_the_sanitizer_keeps_two_calls_apart_and_each_linked_to_its_result(self) -> None:
+        from sanitize_recording import sanitize
+
+        def call(ident: str) -> dict[str, Any]:
+            function = {"name": "read", "arguments": "{}"}
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": ident, "function": function}],
+            }
+
+        recording = {
+            "path": "/v1/chat/completions",
+            "headers": {},
+            "body": {
+                "model": "m",
+                "messages": [
+                    call("call_a"),
+                    {"role": "tool", "tool_call_id": "call_a", "content": "one"},
+                    call("call_b"),
+                    {"role": "tool", "tool_call_id": "call_b", "content": "two"},
+                ],
+            },
+        }
+
+        messages = cast("dict[str, Any]", sanitize(recording))["body"]["messages"]
+        first, second = messages[0]["tool_calls"][0]["id"], messages[2]["tool_calls"][0]["id"]
+
+        assert first != second
+        assert [messages[1]["tool_call_id"], messages[3]["tool_call_id"]] == [first, second]
+        assert messages[0]["content"] == ""  # an empty answer beside its calls stays empty

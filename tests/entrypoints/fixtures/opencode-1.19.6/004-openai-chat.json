@@ -1,0 +1,375 @@
+{
+  "path": "/v1/chat/completions",
+  "headers": {
+    "Content-Type": "application/json",
+    "User-Agent": "opencode/1.19.6 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4",
+    "Accept": "*/*"
+  },
+  "body": {
+    "model": "local",
+    "max_tokens": 4096,
+    "messages": [
+      {
+        "role": "system",
+        "content": "<redacted: private prompt content>"
+      },
+      {
+        "role": "user",
+        "content": "<redacted: private prompt content>"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "fixture-id",
+            "type": "function",
+            "function": {
+              "name": "read",
+              "arguments": "{\"redacted\": true}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "fixture-id",
+        "content": "<redacted: private prompt content>"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "fixture-id-2",
+            "type": "function",
+            "function": {
+              "name": "read",
+              "arguments": "{\"redacted\": true}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "fixture-id-2",
+        "content": "<redacted: private prompt content>"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "bash",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "timeout": {
+                "minimum": -9007199254740991,
+                "exclusiveMinimum": 0,
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "description": "<redacted: tool description>"
+              },
+              "workdir": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "edit",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "filePath": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "oldString": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "newString": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "replaceAll": {
+                "type": "boolean",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "filePath",
+              "oldString",
+              "newString"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "glob",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "grep",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "path": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "include": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "read",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "filePath": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "offset": {
+                "minimum": 0,
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "description": "<redacted: tool description>"
+              },
+              "limit": {
+                "minimum": 0,
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "filePath"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "skill",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "task",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "description": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "subagent_type": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "task_id": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "command": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "description",
+              "prompt",
+              "subagent_type"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "todowrite",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "todos": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "content": {
+                      "type": "string",
+                      "description": "<redacted: tool description>"
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "<redacted: tool description>"
+                    },
+                    "priority": {
+                      "type": "string",
+                      "description": "<redacted: tool description>"
+                    }
+                  },
+                  "required": [
+                    "content",
+                    "status",
+                    "priority"
+                  ]
+                },
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "todos"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "webfetch",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "format": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "markdown",
+                  "html"
+                ],
+                "description": "<redacted: tool description>",
+                "default": "markdown"
+              },
+              "timeout": {
+                "type": "number",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "url"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "write",
+          "description": "<redacted: tool description>",
+          "parameters": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              },
+              "filePath": {
+                "type": "string",
+                "description": "<redacted: tool description>"
+              }
+            },
+            "required": [
+              "content",
+              "filePath"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

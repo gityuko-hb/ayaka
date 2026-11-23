@@ -19,6 +19,7 @@ them, and the replay test for the fixtures runs it on every file.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import json
 import re
 import sys
@@ -26,7 +27,14 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final, cast
 
-__all__ = ["PRIVATE_MARKERS", "REDACTED_ID", "REDACTED_TEXT", "assert_clean", "sanitize"]
+__all__ = [
+    "PRIVATE_MARKERS",
+    "REDACTED_ARGUMENTS",
+    "REDACTED_ID",
+    "REDACTED_TEXT",
+    "assert_clean",
+    "sanitize",
+]
 
 #: Header names a fixture keeps: the ones that say how the tool talks, none that say who it is.
 _KEEP_HEADERS: Final = frozenset(
@@ -57,7 +65,23 @@ PRIVATE_MARKERS: Final = (
 #: What replaces redacted free text, so a fixture reads as a fixture and not as an accident.
 REDACTED_TEXT: Final = "<redacted: private prompt content>"
 REDACTED_TOOL_TEXT: Final = "<redacted: tool description>"
+REDACTED_ARGUMENTS: Final = json.dumps({"redacted": True})
 REDACTED_ID: Final = "fixture-id"
+
+#: The ids of the recording being sanitized, each original mapped to its placeholder in order of
+#: appearance: the first is ``fixture-id``, then ``fixture-id-2``... A call and its result keep
+#: one shared id, and two calls never share one (the server refuses a repeated call id).
+_IDS: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar("ids")
+
+
+def _redact_id(value: str) -> str:
+    try:
+        ids = _IDS.get()
+    except LookupError:
+        return REDACTED_ID
+    if value not in ids:
+        ids[value] = REDACTED_ID if not ids else f"{REDACTED_ID}-{len(ids) + 1}"
+    return ids[value]
 
 
 def _kept_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -118,6 +142,23 @@ def _blocks(content: object) -> list[object]:
     return []
 
 
+def _arguments(value: object) -> object:
+    """A tool call's arguments with their values dropped, still in the form the server checks.
+
+    Anthropic sends an object; OpenAI sends the object as JSON text, which the server parses, so
+    JSON text stays JSON text (``{"redacted": true}``). Anything else is replaced as free text.
+    """
+    if isinstance(value, Mapping):
+        return {"redacted": True}
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return REDACTED_TEXT
+        return REDACTED_ARGUMENTS if isinstance(parsed, dict) else REDACTED_TEXT
+    return value
+
+
 def _part(part: object) -> object:
     """One content part or text: its ``type`` kept, its free text and ids replaced."""
     if not isinstance(part, Mapping):
@@ -125,37 +166,80 @@ def _part(part: object) -> object:
     clean = dict(part)
     if isinstance(clean.get("text"), str):
         clean["text"] = REDACTED_TEXT
-    for key in ("input", "arguments", "content"):
+    if "arguments" in clean:
+        clean["arguments"] = _arguments(clean["arguments"])
+    for key in ("input", "content"):
         value = clean.get(key)
         if isinstance(value, str):
             clean[key] = REDACTED_TEXT
         elif isinstance(value, Mapping):  # a tool call's arguments are an object of values
             clean[key] = {"redacted": True}
     for key in ("id", "tool_use_id", "tool_call_id", "call_id"):
-        if isinstance(clean.get(key), str):
-            clean[key] = REDACTED_ID
+        value = clean.get(key)
+        if isinstance(value, str):
+            clean[key] = _redact_id(value)
+    return clean
+
+
+def _text_or_parts(value: object) -> object:
+    """A free-text field: a string replaced, a list of parts replaced part by part."""
+    if isinstance(value, str):
+        return REDACTED_TEXT
+    if isinstance(value, list):
+        return [_part(part) for part in cast("list[object]", value)]
+    return value
+
+
+def _chat_tool_call(call: Mapping[str, object]) -> dict[str, object]:
+    """One Chat Completions ``tool_calls`` entry: its id and arguments replaced, the name kept."""
+    clean = cast("dict[str, object]", _part(call))
+    function = clean.get("function")
+    if isinstance(function, Mapping):
+        clean["function"] = _part(cast("Mapping[str, object]", function))
     return clean
 
 
 def _item(item: Mapping[str, object]) -> dict[str, object]:
     """One message or input item: role and type kept, text and ids replaced.
 
-    The content keeps its own shape: a string stays a string, a block list stays a list.
+    The content keeps its own shape: a string stays a string, a block list stays a list. Tool
+    round trips carry private text outside ``content`` too: an assistant message's
+    ``tool_calls`` (Chat Completions), and the ``arguments`` of a ``function_call``, the
+    ``output`` of a ``function_call_output`` and the ``summary`` and ``encrypted_content`` of a
+    ``reasoning`` item (Responses).
     """
     clean = dict(item)
     for key in ("id", "tool_use_id", "tool_call_id", "call_id"):
-        if isinstance(clean.get(key), str):
-            clean[key] = REDACTED_ID
+        value = clean.get(key)
+        if isinstance(value, str):
+            clean[key] = _redact_id(value)
     content = clean.get("content")
-    if isinstance(content, str):
+    if isinstance(content, str) and content:  # an empty answer beside tool calls stays empty
         clean["content"] = REDACTED_TEXT
     elif isinstance(content, list):
         clean["content"] = [_part(part) for part in content]
+    if "arguments" in clean:
+        clean["arguments"] = _arguments(clean["arguments"])
+    for key in ("output", "summary"):
+        if key in clean:
+            clean[key] = _text_or_parts(clean[key])
+    if isinstance(clean.get("encrypted_content"), str):
+        clean["encrypted_content"] = REDACTED_TEXT
+    if isinstance(clean.get("tool_calls"), list):
+        clean["tool_calls"] = [_chat_tool_call(call) for call in _objects(clean["tool_calls"])]
     return clean
 
 
 def sanitize(recording: Mapping[str, object]) -> dict[str, object]:
     """A recorded request with everything private replaced; the shape stays."""
+    token = _IDS.set({})
+    try:
+        return _sanitize(recording)
+    finally:
+        _IDS.reset(token)
+
+
+def _sanitize(recording: Mapping[str, object]) -> dict[str, object]:
     raw_headers = recording.get("headers")
     raw_body = recording.get("body")
     body = dict(cast("Mapping[str, object]", raw_body if isinstance(raw_body, Mapping) else {}))
