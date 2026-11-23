@@ -13,8 +13,8 @@ without loading a tensor.
 
 Fields that only some architectures have are optional and added with the
 milestone that implements them: rotary embeddings (``rope_theta``,
-``rope_scaling``) and the projection biases of the Llama family arrived with the Llama models;
-mixture-of-experts, sliding windows and vision come later.
+``rope_scaling``) and the projection biases of the Llama family arrived with the Llama models,
+the sliding window (``sliding_window``) with Qwen2; mixture-of-experts and vision come later.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ _ROPE_KINDS: Final[tuple[RopeScalingKind, ...]] = ("linear", "llama3", "yarn")
 #: ties by default, but some architectures' own config classes do not, and a checkpoint
 #: written from one of those omits the key. Tying by mistake would silently replace the
 #: stored output head by the embedding, so the default follows the architecture.
-_UNTIED_BY_DEFAULT: Final = frozenset({"LlamaForCausalLM"})
+_UNTIED_BY_DEFAULT: Final = frozenset({"LlamaForCausalLM", "Qwen2ForCausalLM"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +226,10 @@ class ModelConfig(ConfigMixin):
             ``config.json``); GPT-2 always has biases and ignores it.
         mlp_bias: Whether the feed-forward projections have a bias; Llama family
             only, like ``attention_bias``.
+        sliding_window: Tokens a query attends to in the layers that use a sliding
+            window, or ``None`` when every layer attends to the whole context. Ayaka
+            does not implement windowed attention, so :attr:`context_length` stops at
+            the window: up to it, windowed and full causal attention are the same.
 
     Raises:
         TypeError: If a field has the wrong type.
@@ -251,6 +255,7 @@ class ModelConfig(ConfigMixin):
     rope_scaling: RopeScaling | None = None
     attention_bias: bool = False
     mlp_bias: bool = False
+    sliding_window: int | None = None
 
     def __post_init__(self) -> None:
         require_text(self.architecture, "model.architecture")
@@ -273,6 +278,8 @@ class ModelConfig(ConfigMixin):
         object.__setattr__(self, "norm_eps", eps)
         require_bool(self.attention_bias, "model.attention_bias")
         require_bool(self.mlp_bias, "model.mlp_bias")
+        if self.sliding_window is not None:
+            require_int(self.sliding_window, "model.sliding_window", minimum=1)
         if self.rope_theta is not None:
             theta = require_number(self.rope_theta, "model.rope_theta")
             if not math.isfinite(theta) or theta <= 1:
@@ -303,6 +310,17 @@ class ModelConfig(ConfigMixin):
             )
 
     @property
+    def context_length(self) -> int:
+        """The longest sequence this engine serves: the trained context, or the window if shorter.
+
+        Windowed attention is not implemented, so a model whose window is shorter than its
+        trained context is served up to the window, where both attentions agree.
+        """
+        if self.sliding_window is None:
+            return self.max_position_embeddings
+        return min(self.max_position_embeddings, self.sliding_window)
+
+    @property
     def kv_group_size(self) -> int:
         """Query heads that share one key/value head (``1`` for multi-head attention)."""
         return self.num_attention_heads // self.num_kv_heads
@@ -317,6 +335,11 @@ class ModelConfig(ConfigMixin):
         num_attention_heads``, ``tie_word_embeddings`` to ``True`` (``False``
         for Llama, whose config class says so), and a GPT-2 style config
         without ``n_inner`` gets ``4 * n_embd``.
+
+        ``sliding_window`` is kept only when some layer uses it: ``layer_types`` lists a
+        ``sliding_attention`` layer, or (configs written before ``layer_types``) the window
+        is not switched off by ``use_sliding_window: false`` and ``max_window_layers`` leaves
+        at least one layer to it, as Qwen2 reads them.
 
         The rotary embedding is read from ``rope_theta`` and ``rope_scaling``
         (``config.json`` written before transformers 5) or from
@@ -393,12 +416,30 @@ class ModelConfig(ConfigMixin):
             rope_scaling=rope_scaling,
             attention_bias=cast("bool", config.get("attention_bias", False)),
             mlp_bias=cast("bool", config.get("mlp_bias", False)),
+            sliding_window=_hf_sliding_window(config, cast("int", found["num_layers"])),
         )
+
+
+def _hf_sliding_window(config: Mapping[str, object], num_layers: int) -> int | None:
+    """The window of the layers that use one, or ``None`` if no layer does."""
+    window = config.get("sliding_window")
+    if window is None:
+        return None
+    layer_types = config.get("layer_types")
+    if isinstance(layer_types, Sequence) and not isinstance(layer_types, str):
+        kinds = cast("Sequence[object]", layer_types)
+        return cast("int", window) if "sliding_attention" in kinds else None
+    if config.get("use_sliding_window") is False:
+        return None
+    max_window_layers = config.get("max_window_layers")
+    if type(max_window_layers) is int and max_window_layers >= num_layers:
+        return None
+    return cast("int", window)
 
 
 #: Architectures with a rotary embedding, and the ``rope_theta`` their config class
 #: defaults to when ``config.json`` does not give one.
-_ROPE_THETA_DEFAULT: Final = {"LlamaForCausalLM": 10000.0}
+_ROPE_THETA_DEFAULT: Final = {"LlamaForCausalLM": 10000.0, "Qwen2ForCausalLM": 10000.0}
 
 
 def _hf_rope(

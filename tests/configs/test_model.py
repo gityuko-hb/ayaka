@@ -349,3 +349,64 @@ class TestFromHfConfig:
             ModelConfig.from_hf_config({**LLAMA_JSON, "num_key_value_heads": 5})
 
         assert caught.value.code == "KV_HEADS_NOT_DIVISOR"
+
+
+class TestSlidingWindow:
+    def test_no_window_serves_the_trained_context(self) -> None:
+        config = ModelConfig.from_hf_config(LLAMA_JSON)
+
+        assert config.sliding_window is None
+        assert config.context_length == 131072
+
+    def test_a_window_used_by_every_layer_caps_the_context(self) -> None:
+        config = ModelConfig.from_hf_config({**LLAMA_JSON, "sliding_window": 2047})
+
+        assert config.sliding_window == 2047
+        assert config.context_length == 2047
+
+    def test_a_window_longer_than_the_context_changes_nothing(self) -> None:
+        config = ModelConfig.from_hf_config({**LLAMA_JSON, "sliding_window": 262144})
+
+        assert config.context_length == 131072
+
+    @pytest.mark.parametrize(
+        "switch",
+        [
+            {"use_sliding_window": False},
+            {"use_sliding_window": True, "max_window_layers": 16},
+            {"layer_types": ["full_attention"] * 16},
+        ],
+        ids=["switched-off", "no-layer-past-max-window-layers", "layer-types-all-full"],
+    )
+    def test_a_window_no_layer_uses_is_dropped(self, switch: dict[str, object]) -> None:
+        raw = {**LLAMA_JSON, "sliding_window": 4096, **switch}
+
+        assert ModelConfig.from_hf_config(raw).sliding_window is None
+
+    @pytest.mark.parametrize(
+        "switch",
+        [
+            {"use_sliding_window": True, "max_window_layers": 8},
+            {"layer_types": ["full_attention"] * 15 + ["sliding_attention"]},
+        ],
+        ids=["layers-past-max-window-layers", "layer-types-name-one"],
+    )
+    def test_a_window_some_layer_uses_is_kept(self, switch: dict[str, object]) -> None:
+        raw = {**LLAMA_JSON, "sliding_window": 4096, **switch}
+
+        assert ModelConfig.from_hf_config(raw).context_length == 4096
+
+    def test_a_window_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="sliding_window"):
+            make(sliding_window=0)
+
+
+class TestQwen2Defaults:
+    def test_qwen2_without_the_tie_key_or_theta_reads_its_config_class_defaults(self) -> None:
+        raw = {
+            k: v for k, v in LLAMA_JSON.items() if k not in ("tie_word_embeddings", "architectures")
+        }
+        config = ModelConfig.from_hf_config({**raw, "architectures": ["Qwen2ForCausalLM"]})
+
+        assert not config.tie_word_embeddings
+        assert config.rope_theta == 10000.0

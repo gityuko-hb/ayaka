@@ -160,6 +160,9 @@ def _make_reference(tokenizer: Any, model: Any, prompt: str) -> Reference:
             temperature=None,
             top_p=None,
             top_k=None,
+            # A checkpoint's generation_config.json can set a penalty (Qwen2.5-Instruct: 1.05),
+            # which generate() applies even without sampling; greedy means none.
+            repetition_penalty=1.0,
             max_new_tokens=NEW_TOKENS,
             min_new_tokens=NEW_TOKENS,
             pad_token_id=tokenizer.eos_token_id,

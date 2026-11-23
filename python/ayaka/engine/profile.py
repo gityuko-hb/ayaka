@@ -408,9 +408,7 @@ def measure_startup(
     """
     import torch
 
-    chunk = max(
-        1, min(chunk_tokens, usable_blocks * block_size, model.config.max_position_embeddings)
-    )
+    chunk = max(1, min(chunk_tokens, usable_blocks * block_size, model.config.context_length))
     weights = sum(p.numel() * p.element_size() for p in model.parameters())
     target = device.torch_device
     attention = model.ops.attention

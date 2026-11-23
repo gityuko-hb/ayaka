@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Qwen2 and Qwen2.5 checkpoints (`Qwen2ForCausalLM`). A model whose sliding window is shorter than its trained context
+  is served up to the window, because windowed attention is not implemented; `ayaka plan` shows the shorter context.
+
 ## 0.1.0 (not published on PyPI)
 
 On an NVIDIA L4 24 GB, Ayaka reads a 4,096-token prompt of Llama-3.1-8B-Instruct in fp16 at 2,393 tok/s and

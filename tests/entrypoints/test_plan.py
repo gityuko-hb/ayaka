@@ -200,6 +200,20 @@ class TestShortfall:
         with pytest.raises(Exception, match="exceeds the model context"):
             plan_engine(config)
 
+    def test_a_sliding_window_shorter_than_the_context_caps_the_plan(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        windowed = write_tiny_gpt2(tmp_path / "windowed")
+        config_path = windowed.directory / "config.json"
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        config_path.write_text(json.dumps({**raw, "sliding_window": 16}), encoding="utf-8")
+
+        with caplog.at_level("WARNING", logger="ayaka.engine.build"):
+            plan = plan_engine(tiny_engine_config(windowed.directory, num_blocks=None))
+
+        assert plan.max_context_tokens == 16
+        assert "16-token sliding window" in caplog.text
+
 
 class TestColdCudaRuntimeGap:
     _MIB = 2**20

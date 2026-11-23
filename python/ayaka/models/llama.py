@@ -26,7 +26,7 @@ interleaved pairs).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from torch import nn
 
@@ -70,9 +70,9 @@ class _Block(nn.Module):
     def __init__(
         self,
         config: ModelConfig,
-        layer_id: int,
+        attn: Attention,
+        mlp: nn.Module,
         *,
-        rotary: RotaryEmbedding,
         ops: OpsBackend,
         dtype: torch.dtype,
         device: torch.device | str | None,
@@ -82,30 +82,11 @@ class _Block(nn.Module):
         self.input_layernorm = RMSNorm(
             hidden, eps=config.norm_eps, ops=ops, dtype=dtype, device=device
         )
-        self.attn = Attention(
-            hidden,
-            config.num_attention_heads,
-            config.num_kv_heads,
-            config.head_dim,
-            layer_id=layer_id,
-            bias=config.attention_bias,
-            rotary=rotary,
-            ops=ops,
-            dtype=dtype,
-            device=device,
-        )
+        self.attn = attn
         self.post_attention_layernorm = RMSNorm(
             hidden, eps=config.norm_eps, ops=ops, dtype=dtype, device=device
         )
-        self.mlp = GatedMLP(
-            hidden,
-            config.intermediate_size,
-            activation="silu",
-            bias=config.mlp_bias,
-            ops=ops,
-            dtype=dtype,
-            device=device,
-        )
+        self.mlp = mlp
 
     def forward(
         self, x: torch.Tensor, residual: torch.Tensor | None, context: ForwardContext
@@ -130,10 +111,17 @@ class LlamaForCausalLM(CausalLM):
     ``embed_tokens``' table when the config ties them. One
     :class:`~ayaka.layers.rope.RotaryEmbedding`, ``rotary``, serves every layer.
 
+    Architectures that are this block with small changes subclass it and override
+    the hooks: :meth:`projection_biases`, :meth:`build_attention`, :meth:`build_mlp`,
+    :attr:`checkpoint_renames` and :meth:`stored_parts`.
+
     Raises:
         ModelLoadError: If the config is not one this implementation runs: no
             ``rope_theta``, an activation other than ``silu``, or an odd ``head_dim``.
     """
+
+    #: ``(pattern, replacement)`` pairs from Hugging Face names to parameter names.
+    checkpoint_renames: ClassVar[tuple[tuple[str, str], ...]] = _RENAMES
 
     def __init__(
         self,
@@ -162,7 +150,14 @@ class LlamaForCausalLM(CausalLM):
             config.vocab_size, hidden, ops=ops, dtype=torch_dtype, device=device
         )
         self.layers = nn.ModuleList(
-            _Block(config, layer_id, rotary=self.rotary, ops=ops, dtype=torch_dtype, device=device)
+            _Block(
+                config,
+                self.build_attention(layer_id, ops=ops, dtype=torch_dtype, device=device),
+                self.build_mlp(layer_id, ops=ops, dtype=torch_dtype, device=device),
+                ops=ops,
+                dtype=torch_dtype,
+                device=device,
+            )
             for layer_id in range(config.num_layers)
         )
         self.norm = RMSNorm(hidden, eps=config.norm_eps, ops=ops, dtype=torch_dtype, device=device)
@@ -170,14 +165,65 @@ class LlamaForCausalLM(CausalLM):
         self.tie_weights()
 
     @classmethod
+    def projection_biases(cls, config: ModelConfig) -> tuple[bool, bool]:
+        """Whether ``qkv_proj`` and ``o_proj`` have a bias: both follow ``attention_bias``."""
+        return config.attention_bias, config.attention_bias
+
+    def build_attention(
+        self,
+        layer_id: int,
+        *,
+        ops: OpsBackend,
+        dtype: torch.dtype,
+        device: torch.device | str | None,
+    ) -> Attention:
+        """The attention of block ``layer_id``: grouped-query attention with the shared rotary."""
+        config = self.config
+        qkv_bias, out_bias = self.projection_biases(config)
+        return Attention(
+            config.hidden_size,
+            config.num_attention_heads,
+            config.num_kv_heads,
+            config.head_dim,
+            layer_id=layer_id,
+            bias=qkv_bias,
+            out_bias=out_bias,
+            rotary=self.rotary,
+            ops=ops,
+            dtype=dtype,
+            device=device,
+        )
+
+    def build_mlp(
+        self,
+        layer_id: int,
+        *,
+        ops: OpsBackend,
+        dtype: torch.dtype,
+        device: torch.device | str | None,
+    ) -> nn.Module:
+        """The feed-forward block of block ``layer_id``: a SiLU-gated MLP."""
+        del layer_id
+        config = self.config
+        return GatedMLP(
+            config.hidden_size,
+            config.intermediate_size,
+            activation="silu",
+            bias=config.mlp_bias,
+            ops=ops,
+            dtype=dtype,
+            device=device,
+        )
+
+    @classmethod
     def weight_mapping(cls, config: ModelConfig) -> WeightMapping:
-        """Names in a Hugging Face ``LlamaForCausalLM`` checkpoint."""
+        """Names in a Hugging Face checkpoint of this architecture."""
         ignore = (
             (*_ROTARY_BUFFERS, r"lm_head\.weight")
             if config.tie_word_embeddings
             else _ROTARY_BUFFERS
         )
-        return WeightMapping(renames=_RENAMES, ignore=ignore)
+        return WeightMapping(renames=cls.checkpoint_renames, ignore=ignore)
 
     def tie_weights(self) -> None:
         """Share ``embed_tokens``' table with ``lm_head`` when the config ties them."""
