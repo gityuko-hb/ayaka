@@ -919,3 +919,60 @@ capture using the same `_measure` loop so every `flashinfer, torch` arm ran clea
 `0`-byte ledger difference on both cold and warm starts. The `194 MiB` cold gap still causes a
 `349`-block (`~183 MiB`) drift between a cold `plan_engine` and a post-CUDA-init `build_engine`,
 which motivates carrying the observed NVML/CUDA gap into the cold plan in a separate bug-fix PR.
+
+## Llama-3.1-8B end to end, and five Llama-architecture models, on NVIDIA L4 24 GB (2026-11-23) (#62)
+
+A record of runs, not a decision gate: no threshold was written before them and no default changes.
+Machine: native Linux (kernel `6.6.159+`), **NVIDIA L4** (`sm_89`, 22.5 GiB usable), driver
+`580.82.07`, CUDA `13.0`, Python `3.13.16`, `torch 2.14.1+cu130`, `flashinfer-python 0.7.4`,
+`llguidance 1.9.1`, `transformers 5.22.2`. Revision `main` at `46437b4`. Every model in fp16 with
+`--backends flashinfer,torch --cuda-graph --memory-ratio 0.90`; `--kv-reserve-tokens 32768` for the
+Llama 3.x models, and the model's own context for SmolLM2-1.7B (8,192) and TinyLlama (2,048), which
+refuse a larger reserve. Raw results: `benchmarks/results/2026-11-23-nvidia-l4/`. The
+`dirty: true` of some runs in `benchmarks/history/bench.jsonl` is the result files of the earlier
+runs, not code.
+
+**The plan matches the start-up (Llama-3.1-8B-Instruct).** `ayaka plan` before any start: 2,397 KV
+blocks, 38,352 tokens per request. The start-up inside `ayaka bench`: 2,398 blocks (2,397 usable and
+the reserved one, as in #100), 38,352 tokens. A second `ayaka plan` with the saved profile: the same
+2,397 blocks and 38,352 tokens.
+
+**`ayaka bench`** (medians; prompt read is the cold 4K prose prompt, generation is after a 4K context):
+
+| Model | Prompt read 4K | Generation after 4K | Context per request | First token cold / warm | Sanity |
+| --- | --- | --- | --- | --- | --- |
+| Llama-3.1-8B-Instruct | 2,393 tok/s | 15.1 tok/s | 38,352 | 940 / 80 ms | pass, pass |
+| Llama-3.2-3B-Instruct | 5,183 tok/s | 30.8 tok/s | 127,840 | 443 / 58 ms | pass, pass |
+| Llama-3.2-1B-Instruct | 13,363 tok/s | 73.9 tok/s | 131,072 | 180 / 39 ms | pass, pass |
+| SmolLM2-1.7B-Instruct | 8,061 tok/s | 47.0 tok/s | 8,192 | 242 / 48 ms | pass, pass |
+| TinyLlama-1.1B-Chat-v1.0 | 13,337 tok/s (1,776 tokens) | 84.4 tok/s (after 1,776) | 2,048 | 44 / 40 ms | **fail, fail** |
+
+TinyLlama's two sanity answers have spaces inside the JSON (`{"name ":" get_ weather", ...}`). Its
+tokenizer is SentencePiece, and the grammar was told what each token writes by decoding it alone,
+which drops the space of a word-initial token. The result is kept as "does not run" until a fix is
+measured.
+
+**Next to llama.cpp** (`benchmarks/e2e/compare_llama_cpp.py`, Llama-3.1-8B-Instruct, Ayaka fp16
+safetensors against an f16 GGUF converted with llama.cpp `87f816e`, 6 rounds A B / B A, prompts of
+1,024 and 4,096 tokens, 128 tokens out, `--kv-reserve-tokens 8192` against `-c 8192 -np 1`;
+`compare-llama-cpp-f16-llama-3.1-8b.json`, home and checkout prefixes removed from its paths):
+
+| Prompt | Ayaka / llama.cpp, median (range) | Ayaka | llama.cpp |
+| --- | --- | --- | --- |
+| 1,024: generation | 0.930 (0.927–0.933) | 15.46 tok/s | 16.63 tok/s |
+| 1,024: prompt read | 1.269 (1.248–1.401) | 2,479 tok/s | 1,952 tok/s |
+| 1,024: first token, cold | 0.788 (0.714–0.801) | 419 ms | 532 ms |
+| 1,024: first token, warm | 1.265 (1.253–1.298) | 79 ms | 63 ms |
+| 4,096: generation | 0.932 (0.930–0.934) | 15.05 tok/s | 16.15 tok/s |
+| 4,096: prompt read | 1.018 (1.007–1.051) | 2,256 tok/s | 2,221 tok/s |
+| 4,096: first token, cold | 0.982 (0.952–0.994) | 1,822 ms | 1,850 ms |
+| 4,096: first token, warm | 1.320 (1.295–1.349) | 89 ms | 68 ms |
+
+For the first token a ratio below 1 is Ayaka faster; for tok/s a ratio above 1 is.
+
+**The coding tools.** `ayaka serve unsloth/Llama-3.1-8B-Instruct --tool-call-parser llama3_json`:
+`ayaka connect <tool> --check` passed all seven steps for Claude Code 2.1.330, Codex CLI 0.171.0 and
+OpenCode (the check's own requests; OpenCode itself is not installed on this machine). A real
+`codex exec` session got two `exec_command` calls from the model, but Codex ran neither: the model
+wrote `"max_output_tokens": "10000"` and `"tty": "true"`, strings where the schema says number and
+boolean (#103). The request is the fixture `codex-0.171.0/002-openai-responses.json`.
