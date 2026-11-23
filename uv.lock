@@ -1,18 +1,18 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
-    "extra != 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130'",
-    "sys_platform != 'darwin' and extra == 'extra-5-ayaka-cpu' and extra != 'extra-5-ayaka-cu130' and extra != 'extra-5-ayaka-flashinfer'",
-    "sys_platform == 'darwin' and extra == 'extra-5-ayaka-cpu' and extra != 'extra-5-ayaka-cu130' and extra != 'extra-5-ayaka-flashinfer'",
-    "extra != 'extra-5-ayaka-cpu' and extra != 'extra-5-ayaka-cu130'",
+    "extra != 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130'",
+    "sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu' and extra != 'extra-9-ayaka-llm-cu130' and extra != 'extra-9-ayaka-llm-flashinfer'",
+    "sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu' and extra != 'extra-9-ayaka-llm-cu130' and extra != 'extra-9-ayaka-llm-flashinfer'",
+    "extra != 'extra-9-ayaka-llm-cpu' and extra != 'extra-9-ayaka-llm-cu130'",
 ]
 conflicts = [[
-    { package = "ayaka", extra = "cpu" },
-    { package = "ayaka", extra = "cu130" },
+    { package = "ayaka-llm", extra = "cpu" },
+    { package = "ayaka-llm", extra = "cu130" },
 ], [
-    { package = "ayaka", extra = "cpu" },
-    { package = "ayaka", extra = "flashinfer" },
+    { package = "ayaka-llm", extra = "cpu" },
+    { package = "ayaka-llm", extra = "flashinfer" },
 ]]
 
 [[package]]
@@ -202,7 +202,7 @@ version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a1/98/7e457a3b014976887a050561955c0b76e1e7e2d6e27b78ecef2ef80518f2/anyio-4.16.0.tar.gz", hash = "sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb", size = 310971, upload-time = "2026-11-01T11:20:07.282Z" }
 wheels = [
@@ -255,7 +255,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ayaka"
+name = "ayaka-llm"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
@@ -264,8 +264,8 @@ dependencies = [
 
 [package.optional-dependencies]
 cpu = [
-    { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-5-ayaka-cpu') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
-    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-5-ayaka-cpu') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 cu130 = [
     { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
@@ -322,9 +322,9 @@ requires-dist = [
     { name = "prometheus-client", specifier = ">=0.21" },
     { name = "tiktoken", marker = "extra == 'tiktoken'", specifier = ">=0.14.0" },
     { name = "tokenizers", marker = "extra == 'hf'", specifier = ">=0.23.3" },
-    { name = "torch", marker = "sys_platform == 'linux' and extra == 'flashinfer'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "ayaka", extra = "flashinfer" } },
-    { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "ayaka", extra = "cpu" } },
-    { name = "torch", marker = "extra == 'cu130'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "ayaka", extra = "cu130" } },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'flashinfer'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "ayaka-llm", extra = "flashinfer" } },
+    { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "ayaka-llm", extra = "cpu" } },
+    { name = "torch", marker = "extra == 'cu130'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "ayaka-llm", extra = "cu130" } },
     { name = "transformers", marker = "extra == 'hf'", specifier = ">=5.22,<6" },
 ]
 provides-extras = ["cpu", "cu130", "flashinfer", "hf", "serve", "structured", "tiktoken"]
@@ -955,11 +955,11 @@ name = "httpx2"
 version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
-    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
-    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "anyio", marker = "sys_platform != 'emscripten'" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
+    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten'" },
     { name = "idna" },
-    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/73/5ca2cedf5e4e50423d1c258877865a6b62793633b561c58499f8aeb33b7e/httpx2-2.16.0.tar.gz", hash = "sha256:0d54c98128e8f2ff7fbbde0fca8c359e5f032edeaaaac443cdb7f31f685bcd7f", size = 103116, upload-time = "2026-10-21T07:09:46.348Z" }
 wheels = [
@@ -983,7 +983,7 @@ dependencies = [
     { name = "click" },
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
     { name = "httpx2" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -1592,7 +1592,7 @@ version = "1.32.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "apache-tvm-ffi", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
-    { name = "nvidia-cutlass-dsl", extra = ["cu13"], marker = "(platform_machine != 'ARM64' and extra != 'extra-5-ayaka-cpu') or (sys_platform != 'win32' and extra == 'extra-5-ayaka-cu130') or (sys_platform != 'win32' and extra == 'extra-5-ayaka-flashinfer') or (sys_platform != 'win32' and extra != 'extra-5-ayaka-cpu') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "nvidia-cutlass-dsl", extra = ["cu13"], marker = "(platform_machine != 'ARM64' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/89/c1/5612d112af65b624779141ef7275193ab0ca233b563be9454e8328a4ab53/nvidia_cudnn_frontend-1.32.3-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:98aebb66416e39108f98f33b703a24bcb96517429daaad8709fb95f2710f72be", size = 11454046, upload-time = "2026-11-10T17:54:18.903Z" },
@@ -2146,7 +2146,7 @@ name = "pytest"
 version = "9.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -2581,7 +2581,7 @@ version = "2.14.1+cu130"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 dependencies = [
     { name = "cuda-bindings", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
-    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra != 'extra-5-ayaka-cpu') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
     { name = "filelock" },
     { name = "fsspec" },
     { name = "jinja2" },
@@ -2618,7 +2618,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [
@@ -2673,7 +2673,7 @@ version = "0.28.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-cu130') or (extra == 'extra-5-ayaka-cpu' and extra == 'extra-5-ayaka-flashinfer')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "rich" },
     { name = "shellingham" },
 ]

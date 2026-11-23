@@ -37,8 +37,8 @@ body:
     attributes:
       label: '📥 Installation Method'
       options:
-        - 'pip install ayaka-py'
-        - 'uv add ayaka-py'
+        - 'pip install ayaka-llm'
+        - 'uv add ayaka-llm'
         - 'pip install git+https://...'
         - 'uv sync (local clone)'
         - 'Other'

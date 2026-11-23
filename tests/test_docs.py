@@ -16,7 +16,7 @@ from ayaka.entrypoints.cli import _parser  # pyright: ignore[reportPrivateUsage]
 pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = sorted([ROOT / "README.md", *(ROOT / "docs").glob("*.md")])
+PAGES = sorted([ROOT / "README.md", ROOT / "CHANGELOG.md", *(ROOT / "docs").glob("*.md")])
 PUBLIC = ("INSTALL.md", "TROUBLESHOOTING.md", "CAPABILITIES.md", "SAFETY.md", "AI_SETUP.md")
 
 
