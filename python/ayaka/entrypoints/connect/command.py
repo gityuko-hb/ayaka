@@ -124,10 +124,12 @@ def connect_command(args: argparse.Namespace) -> int:
     if args.observe:
         return _observe(args, record, server)
     path = record.config_path()
+    installed = tool_version(record)
     if not args.write:
         # Only what Ayaka adds: the rest of the user's file is theirs and is not printed.
-        print(f"# merge into {path} (ayaka connect {record.name} --write does it)")
-        print(redact(render_config(record, server, ""), server), end="")
+        layout = installed or "not installed, so its default layout"
+        print(f"# merge into {path} (ayaka connect {record.name} --write does it); for {layout}")
+        print(redact(render_config(record, server, "", installed), server), end="")
         print(f"# then: {record.usage}")
         return EXIT_OK
     for name in record.alternates:
@@ -139,7 +141,7 @@ def connect_command(args: argparse.Namespace) -> int:
             )
     current = path.read_text(encoding="utf-8") if path.exists() else ""
     try:
-        content = render_config(record, server, current)
+        content = render_config(record, server, current, installed)
     except ValueError as exc:
         raise InvalidRequestError(
             f"{path} is not a JSON object Ayaka can merge into ({exc}); fix it or move it away"
@@ -199,7 +201,8 @@ def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -
     found: list[ObservedPrompt] = []
     stop = threading.Event()
     keep = recorder(args.record) if args.record is not None else None
-    observe = observer(record, args.tokenizer, count, found, installed=tool_version(record))
+    observe_version = tool_version(record)
+    observe = observer(record, args.tokenizer, count, found, installed=observe_version)
 
     def on_request(path: str, headers: dict[str, str], body: bytes) -> None:
         before = len(found)
@@ -226,7 +229,8 @@ def _observe(args: argparse.Namespace, record: ToolRecord, server: ServerInfo) -
         f"point {record.name} at the proxy with this configuration, then send one prompt "
         f"(the proxy stops after {args.count} model requests, or on Ctrl-C):"
     )
-    print(redact(render_config(record, proxied, ""), server), end="")
+    # Flushed: the proxy then waits, and a redirected stdout would hold the lines until exit.
+    print(redact(render_config(record, proxied, "", observe_version), server), end="", flush=True)
     if args.record is not None:
         say(
             f"warning: the requests are kept in {args.record}, prompts included; "

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,7 +79,9 @@ class ToolRecord:
         config_home_env: The variable the tool reads to move that folder, if any.
         config_name: The file in that folder.
         config_format: ``"json"`` or ``"toml"``.
-        render: Builds the new file content from the server info and the current content.
+        render: Builds the new file content from the server info, the current content and the
+            installed tool's ``--version`` (``None`` when it is not installed); a tool whose
+            file layout changed between versions picks the layout from it.
         min_context_tokens: The tool's fixed prompt (system and tools) in tokens, as measured by
             ``--observe`` on a recorded version; ``None`` until measured, never guessed.
         measured: Which tool version and which tokenizer gave ``min_context_tokens`` (another
@@ -98,7 +101,7 @@ class ToolRecord:
     config_home_env: str | None
     config_name: str
     config_format: Literal["json", "toml"]
-    render: Callable[[ServerInfo, str], str]
+    render: Callable[[ServerInfo, str, str | None], str]
     min_context_tokens: int | None
     measured: str | None
     verified: str
@@ -129,8 +132,9 @@ def _load_json(current: str) -> dict[str, object]:
     return cast("dict[str, object]", value)
 
 
-def _render_claude_code(server: ServerInfo, current: str) -> str:
+def _render_claude_code(server: ServerInfo, current: str, version: str | None) -> str:
     """``~/.claude/settings.json``: the gateway variables in its ``env`` table, merged."""
+    del version  # one layout for every recorded version
     settings = _load_json(current)
     env = settings.get("env")
     merged: dict[str, object] = (
@@ -161,12 +165,12 @@ def _toml_string(value: str) -> str:
     return json.dumps(value)  # a JSON string is a valid TOML basic string
 
 
-def _render_codex(server: ServerInfo, current: str) -> str:
+def _render_codex(server: ServerInfo, current: str, version: str | None) -> str:
     """``~/.codex/ayaka.config.toml``: a profile file (Codex 0.134+), selected with ``--profile``.
 
     The whole file belongs to Ayaka, so it is written whole; ``current`` is only diffed.
     """
-    del current
+    del current, version
     lines = [
         "# Written by `ayaka connect codex`. Use it with: codex --profile ayaka",
         f"model = {_toml_string(server.model)}",
@@ -188,8 +192,62 @@ def _render_codex(server: ServerInfo, current: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _render_opencode(server: ServerInfo, current: str) -> str:
-    """``opencode.json``: an OpenAI-compatible provider ``ayaka`` and the default model, merged."""
+def _major(version: str | None) -> int | None:
+    """The major number of a ``--version`` line such as ``1.19.6`` or ``opencode 2.3.2``."""
+    found = re.search(r"(\d+)\.\d+", version or "")
+    return int(found.group(1)) if found else None
+
+
+def _render_opencode(server: ServerInfo, current: str, version: str | None) -> str:
+    """``opencode.json``: an OpenAI-compatible provider ``ayaka`` and the default model, merged.
+
+    OpenCode 2 reads a ``providers`` table; OpenCode 1 (what ``npm i -g opencode-ai`` installs,
+    1.19.6 on 2026-11-23) drops that table as "cannot be represented in V1" and reads
+    ``provider``. The layout follows the installed major version; without one it is the 1.x
+    layout, the one the npm package installs.
+    """
+    major = _major(version)
+    if major is not None and major >= 2:
+        return _render_opencode_2(server, current)
+    return _render_opencode_1(server, current)
+
+
+def _render_opencode_1(server: ServerInfo, current: str) -> str:
+    """The OpenCode 1.x layout: ``provider.ayaka`` with the AI SDK's OpenAI-compatible package.
+
+    OpenCode 1.19.6 refuses a ``limit`` without ``output``; the output limit is the room Ayaka
+    already counts for a tool's work (:data:`CONTEXT_MARGIN_TOKENS`), within the context.
+    """
+    config = _load_json(current)
+    config.setdefault("$schema", "https://opencode.ai/config.json")
+    providers = config.get("provider")
+    table: dict[str, object] = (
+        dict(cast("dict[str, object]", providers)) if isinstance(providers, dict) else {}
+    )
+    limit: dict[str, object] = {}
+    if server.context_tokens:
+        output = min(CONTEXT_MARGIN_TOKENS, server.context_tokens)
+        limit = {"context": server.context_tokens, "output": output}
+    models: dict[str, object] = {}
+    for name in (server.model, server.small_model):
+        if name and name not in models:
+            models[name] = {"name": name, "tool_call": True, **({"limit": limit} if limit else {})}
+    table["ayaka"] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Ayaka",
+        # opencode substitutes the variable itself, so the key never lands in the file.
+        "options": {"baseURL": server.openai_base, "apiKey": "{env:AYAKA_API_KEY}"},
+        "models": models,
+    }
+    config["provider"] = table
+    config["model"] = f"ayaka/{server.model}"
+    if server.small_model:
+        config["small_model"] = f"ayaka/{server.small_model}"
+    return json.dumps(config, indent=2) + "\n"
+
+
+def _render_opencode_2(server: ServerInfo, current: str) -> str:
+    """The OpenCode 2.x layout: ``providers.ayaka`` (checked against opencode 2.3.2)."""
     config = _load_json(current)
     config.setdefault("$schema", "https://opencode.ai/config.json")
     providers = config.get("providers")
@@ -266,7 +324,8 @@ TOOLS: Final[Mapping[str, ToolRecord]] = {
         min_context_tokens=11260,
         measured="opencode 2.3.2, the largest of 4 recorded requests (13 tools), "
         "SmolLM2-135M tokenizer, 2026-11-18",
-        verified="opencode 2.3.2; opencode.ai/docs providers, config, models",
+        verified="opencode 1.19.6 (provider, loaded by opencode debug config) and 2.3.2 "
+        "(providers); opencode.ai/docs providers, config, models",
         usage="AYAKA_API_KEY=<key> opencode   (or: opencode run --model ayaka/<model> 'prompt')",
         agent="opencode",
         alternates=("opencode.jsonc",),
@@ -279,9 +338,15 @@ def tool_record(name: str) -> ToolRecord | None:
     return TOOLS.get(name)
 
 
-def render_config(record: ToolRecord, server: ServerInfo, current: str = "") -> str:
-    """The tool's configuration file with the server filled in, merged into ``current``."""
-    return record.render(server, current)
+def render_config(
+    record: ToolRecord, server: ServerInfo, current: str = "", version: str | None = None
+) -> str:
+    """The tool's configuration file with the server filled in, merged into ``current``.
+
+    ``version`` is the installed tool's ``--version`` line (:func:`tool_version`), for a tool
+    whose layout depends on it.
+    """
+    return record.render(server, current, version)
 
 
 def generic_setup(server: ServerInfo) -> list[str]:

@@ -272,6 +272,8 @@ every flag with its default.
 
 `ayaka connect` knows `claude-code` (Anthropic Messages), `codex` (OpenAI Responses) and `opencode` (OpenAI Chat
 Completions), each verified against one installed version (in the record's `verified` field). Any other tool gets the
-generic OpenAI and Anthropic settings. Each record carries the tool's measured fixed prompt in tokens, with the
+generic OpenAI and Anthropic settings. OpenCode's file layout depends on its major version: 1.x (what
+`npm i -g opencode-ai` installs) reads `provider`, 2.x reads `providers`; `ayaka connect opencode` writes the layout
+of the installed `opencode --version`, and the 1.x layout when OpenCode is not installed. Each record carries the tool's measured fixed prompt in tokens, with the
 version and tokenizer that measured it; `--check` step 7 and `ayaka plan --for` compare it with the context one
 request can hold.

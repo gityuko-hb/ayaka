@@ -72,7 +72,7 @@ class TestRender:
     def test_opencode_adds_a_provider_and_keeps_the_others(self) -> None:
         current = json.dumps({"providers": {"other": {"name": "x"}}, "theme": "dark"})
 
-        config = json.loads(render_config(TOOLS["opencode"], _SERVER, current))
+        config = json.loads(render_config(TOOLS["opencode"], _SERVER, current, "2.3.2"))
 
         assert config["theme"] == "dark"
         assert config["providers"]["other"] == {"name": "x"}
@@ -81,6 +81,44 @@ class TestRender:
         assert ayaka["env"] == ["AYAKA_API_KEY"]
         assert ayaka["models"]["tiny"]["limit"] == {"context": 1024}
         assert config["model"] == "ayaka/tiny"
+
+    def test_opencode_1_gets_the_provider_layout_it_reads(self) -> None:
+        current = json.dumps({"provider": {"other": {"npm": "x"}}, "theme": "dark"})
+
+        config = json.loads(render_config(TOOLS["opencode"], _SERVER, current, "1.19.6"))
+
+        assert config["theme"] == "dark"
+        assert config["provider"]["other"] == {"npm": "x"}
+        assert "providers" not in config  # opencode 1.19.6 drops this table
+        ayaka = config["provider"]["ayaka"]
+        assert ayaka["npm"] == "@ai-sdk/openai-compatible"
+        assert ayaka["options"] == {
+            "baseURL": "http://127.0.0.1:8000/v1",
+            "apiKey": "{env:AYAKA_API_KEY}",
+        }
+        # opencode 1.19.6 refuses a limit without its output.
+        assert ayaka["models"]["tiny"] == {
+            "name": "tiny",
+            "tool_call": True,
+            "limit": {"context": 1024, "output": 1024},
+        }
+        assert config["model"] == "ayaka/tiny"
+        assert "secret" not in json.dumps(config)
+
+    @pytest.mark.parametrize("version", [None, "opencode 1.2.0", "unknown"])
+    def test_opencode_without_a_2_version_gets_the_1_layout(self, version: str | None) -> None:
+        config = json.loads(render_config(TOOLS["opencode"], _SERVER, "", version))
+
+        assert "provider" in config
+        assert "providers" not in config
+
+    def test_opencode_1_names_the_small_model(self) -> None:
+        server = ServerInfo("http://127.0.0.1:8000", None, "big", small_model="small")
+
+        config = json.loads(render_config(TOOLS["opencode"], server, "", "1.19.6"))
+
+        assert set(config["provider"]["ayaka"]["models"]) == {"big", "small"}
+        assert config["small_model"] == "ayaka/small"
 
     def test_every_record_has_a_home_path(self) -> None:
         for record in TOOLS.values():
