@@ -1,0 +1,533 @@
+{
+  "path": "/v1/responses",
+  "headers": {
+    "x-codex-beta-features": "remote_compaction_v2",
+    "accept": "text/event-stream",
+    "content-type": "application/json",
+    "originator": "codex_exec",
+    "user-agent": "codex_exec/0.171.0 (Ubuntu 24.4.0; x86_64) tmux-256color (codex_exec; 0.171.0)"
+  },
+  "body": {
+    "model": "local",
+    "stream": true,
+    "input": [
+      {
+        "type": "message",
+        "id": "fixture-id",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<redacted: private prompt content>"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "id": "fixture-id",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<redacted: private prompt content>"
+          },
+          {
+            "type": "input_text",
+            "text": "<redacted: private prompt content>"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "id": "fixture-id",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<redacted: private prompt content>"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "id": "fixture-id",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<redacted: private prompt content>"
+          }
+        ]
+      },
+      {
+        "type": "function_call",
+        "status": "completed",
+        "id": "fixture-id",
+        "name": "exec_command",
+        "arguments": "{\"redacted\": true}",
+        "call_id": "fixture-id"
+      },
+      {
+        "type": "function_call_output",
+        "id": "fixture-id",
+        "call_id": "fixture-id",
+        "output": "<redacted: private prompt content>"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "exec_command",
+        "description": "<redacted: tool description>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "cmd": {
+              "type": "string",
+              "description": "<redacted: tool description>"
+            },
+            "justification": {
+              "type": "string",
+              "description": "<redacted: tool description>"
+            },
+            "login": {
+              "type": "boolean",
+              "description": "<redacted: tool description>"
+            },
+            "max_output_tokens": {
+              "type": "number",
+              "description": "<redacted: tool description>"
+            },
+            "prefix_rule": {
+              "type": "array",
+              "description": "<redacted: tool description>",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sandbox_permissions": {
+              "type": "string",
+              "description": "<redacted: tool description>",
+              "enum": [
+                "use_default",
+                "require_escalated"
+              ]
+            },
+            "shell": {
+              "type": "string",
+              "description": "<redacted: tool description>"
+            },
+            "tty": {
+              "type": "boolean",
+              "description": "<redacted: tool description>"
+            },
+            "workdir": {
+              "type": "string",
+              "description": "<redacted: tool description>"
+            },
+            "yield_time_ms": {
+              "type": "number",
+              "description": "<redacted: tool description>"
+            }
+          },
+          "required": [
+            "cmd"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "write_stdin",
+        "description": "<redacted: tool description>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "chars": {
+              "type": "string",
+              "description": "<redacted: tool description>"
+            },
+            "max_output_tokens": {
+              "type": "number",
+              "description": "<redacted: tool description>"
+            },
+            "session_id": {
+              "type": "number",
+              "description": "<redacted: tool description>"
+            },
+            "yield_time_ms": {
+              "type": "number",
+              "description": "<redacted: tool description>"
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "request_user_input",
+        "description": "<redacted: tool description>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "questions": {
+              "type": "array",
+              "description": "<redacted: tool description>",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "header": {
+                    "type": "string",
+                    "description": "<redacted: tool description>"
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "<redacted: tool description>"
+                  },
+                  "options": {
+                    "type": "array",
+                    "description": "<redacted: tool description>",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "description": {
+                          "type": "string",
+                          "description": "<redacted: tool description>"
+                        },
+                        "label": {
+                          "type": "string",
+                          "description": "<redacted: tool description>"
+                        }
+                      },
+                      "required": [
+                        "label",
+                        "description"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "question": {
+                    "type": "string",
+                    "description": "<redacted: tool description>"
+                  }
+                },
+                "required": [
+                  "id",
+                  "header",
+                  "question",
+                  "options"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "questions"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "view_image",
+        "description": "<redacted: tool description>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "<redacted: tool description>"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "description": "<redacted: tool description>",
+        "tools": [
+          {
+            "type": "function",
+            "name": "close_agent",
+            "description": "<redacted: tool description>",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "description": "<redacted: tool description>"
+                }
+              },
+              "required": [
+                "target"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "resume_agent",
+            "description": "<redacted: tool description>",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "<redacted: tool description>"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "send_input",
+            "description": "<redacted: tool description>",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "interrupt": {
+                  "type": "boolean",
+                  "description": "<redacted: tool description>"
+                },
+                "items": {
+                  "type": "array",
+                  "description": "<redacted: tool description>",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "audio_url": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "image_url": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "path": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "text": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "message": {
+                  "type": "string",
+                  "description": "<redacted: tool description>"
+                },
+                "target": {
+                  "type": "string",
+                  "description": "<redacted: tool description>"
+                }
+              },
+              "required": [
+                "target"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "spawn_agent",
+            "description": "<redacted: tool description>",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "fork_context": {
+                  "type": "boolean",
+                  "description": "<redacted: tool description>"
+                },
+                "items": {
+                  "type": "array",
+                  "description": "<redacted: tool description>",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "audio_url": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "image_url": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "path": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "text": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      },
+                      "type": {
+                        "type": "string",
+                        "description": "<redacted: tool description>"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "message": {
+                  "type": "string",
+                  "description": "<redacted: tool description>"
+                },
+                "model": {
+                  "type": "string",
+                  "description": "<redacted: tool description>"
+                },
+                "reasoning_effort": {
+                  "type": "string",
+                  "description": "<redacted: tool description>"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          {
+            "type": "function",
+            "name": "wait_agent",
+            "description": "<redacted: tool description>",
+            "strict": false,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "targets": {
+                  "type": "array",
+                  "description": "<redacted: tool description>",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "timeout_ms": {
+                  "type": "number",
+                  "description": "<redacted: tool description>"
+                }
+              },
+              "required": [
+                "targets"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "function",
+        "name": "get_goal",
+        "description": "<redacted: tool description>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "create_goal",
+        "description": "<redacted: tool description>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "objective": {
+              "type": "string",
+              "description": "<redacted: tool description>"
+            },
+            "token_budget": {
+              "type": "integer",
+              "description": "<redacted: tool description>"
+            }
+          },
+          "required": [
+            "objective"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "update_goal",
+        "description": "<redacted: tool description>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "<redacted: tool description>",
+              "enum": [
+                "complete",
+                "blocked",
+                "paused"
+              ]
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "web_search",
+        "external_web_access": false
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "reasoning": {
+      "summary": "auto"
+    },
+    "store": false,
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "prompt_cache_key": "fixture-id",
+    "client_metadata": {
+      "thread_id": "fixture-id",
+      "root_turn_id": "fixture-id",
+      "x-codex-installation-id": "fixture-id",
+      "session_id": "fixture-id",
+      "x-codex-window-id": "fixture-id",
+      "turn_id": "fixture-id",
+      "x-codex-turn-metadata": "fixture-id"
+    }
+  }
+}

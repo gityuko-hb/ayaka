@@ -13,8 +13,10 @@ the conversation. That is private, so a fixture keeps only the request's *shape*
 - headers: only the ones that say how the tool talks (`user-agent`, the feature flags), never
   the session ids, the credentials or the machine;
 - bodies: every free text (system prompt, instructions, user and developer messages, tool
-  descriptions, including inside the tool schemas) is replaced with a `<redacted: ...>`
-  placeholder; ids of messages and sessions are replaced; field names, roles, block types,
+  descriptions, including inside the tool schemas, tool-call arguments and tool outputs,
+  reasoning summaries) is replaced with a `<redacted: ...>` placeholder; arguments sent as JSON
+  text become `{"redacted": true}`, so the server still parses them; ids of messages, sessions
+  and tool calls are replaced; field names, roles, block types,
   sampling fields and the tool schemas' structure stay as the tool sent them.
 
 `tests/_support/sanitize_recording.py` does this and refuses to write a file in which a marker
@@ -29,6 +31,7 @@ from `PRIVATE_MARKERS` survives; `TestReplay::TestFixtureHygiene` re-checks ever
 | `claude-code-2.1.327/004` | Claude Code 2.1.327 (Messages) | a later session with 23 tools |
 | `claude-code-2.1.330/002` | Claude Code 2.1.330 (Messages) | a tool round trip after executing `Read`: assistant `tool_use` and user `tool_result` turns, recorded live against `unsloth/Llama-3.1-8B-Instruct` with `--tool-call-parser llama3_json` |
 | `codex-0.163.0/001` | Codex CLI 0.163.0 (Responses) | the first request of a session: `reasoning`, `include`, `client_metadata`, `prompt_cache_key`, a `namespace` tool and a `web_search` tool among the function tools |
+| `codex-0.171.0/002` | Codex CLI 0.171.0 (Responses) | a tool round trip: a `function_call` item (`exec_command`) and its `function_call_output`, recorded live against `unsloth/Llama-3.1-8B-Instruct` with `--tool-call-parser llama3_json`. Codex did not run the command: the model wrote numbers and booleans as strings (`"10000"`, `"true"`), and the output Codex sent back is its argument error |
 | `opencode-2.3.2/001` | OpenCode 2.3.2 (Chat Completions) | an agent-shaped request: the tool's full system prompt, `max_completion_tokens`, `stream_options` and 13 tools |
 | `opencode-2.3.2/002` | OpenCode 2.3.2 (Chat Completions) | the session-title request that opens a run |
 
