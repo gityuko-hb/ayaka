@@ -73,6 +73,5 @@ result = "benchmarks/results/2026-11-23-nvidia-l4/smollm2-1.7b-instruct/results.
 model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 precision = "fp16"
 machine = "NVIDIA L4 24 GB, Linux"
-status = "does-not-run"
+status = "runs"
 result = "benchmarks/results/2026-11-23-nvidia-l4/tinyllama-1.1b-chat-v1.0/results.json"
-reason = "both sanity checks fail: constrained output writes spaces inside JSON keys on this SentencePiece tokenizer"

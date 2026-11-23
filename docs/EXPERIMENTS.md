@@ -949,8 +949,13 @@ the reserved one, as in #100), 38,352 tokens. A second `ayaka plan` with the sav
 
 TinyLlama's two sanity answers have spaces inside the JSON (`{"name ":" get_ weather", ...}`). Its
 tokenizer is SentencePiece, and the grammar was told what each token writes by decoding it alone,
-which drops the space of a word-initial token. The result is kept as "does not run" until a fix is
-measured.
+which drops the space of a word-initial token. With that table fixed, a second fault showed: the
+grammar's tokenize function encoded the forced `{"` as `▁{"`, a token the grammar refuses, and the
+answer ended after it. After both fixes (`488b11d`), the same `ayaka bench` run is valid and both
+checks pass (`{"length":100,"unit":"cm"}`, `{"name":"get_weather","arguments":{"city":"Hanoi"}}`);
+its result replaces the failing one. Prompt read 13,656 tok/s at 1,776 tokens, generation 85.1 tok/s
+after it. A `--quick` run of Llama-3.2-1B (byte-level tokenizer) on the same commit still passes
+both checks.
 
 **Next to llama.cpp** (`benchmarks/e2e/compare_llama_cpp.py`, Llama-3.1-8B-Instruct, Ayaka fp16
 safetensors against an f16 GGUF converted with llama.cpp `87f816e`, 6 rounds A B / B A, prompts of
