@@ -24,7 +24,7 @@
       },
       {
         "type": "message",
-        "id": "fixture-id",
+        "id": "fixture-id-2",
         "role": "developer",
         "content": [
           {
@@ -39,7 +39,7 @@
       },
       {
         "type": "message",
-        "id": "fixture-id",
+        "id": "fixture-id-3",
         "role": "user",
         "content": [
           {
@@ -50,7 +50,7 @@
       },
       {
         "type": "message",
-        "id": "fixture-id",
+        "id": "fixture-id-4",
         "role": "user",
         "content": [
           {
@@ -62,15 +62,15 @@
       {
         "type": "function_call",
         "status": "completed",
-        "id": "fixture-id",
+        "id": "fixture-id-5",
         "name": "exec_command",
         "arguments": "{\"redacted\": true}",
-        "call_id": "fixture-id"
+        "call_id": "fixture-id-6"
       },
       {
         "type": "function_call_output",
-        "id": "fixture-id",
-        "call_id": "fixture-id",
+        "id": "fixture-id-7",
+        "call_id": "fixture-id-6",
         "output": "<redacted: private prompt content>"
       }
     ],

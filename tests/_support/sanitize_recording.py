@@ -19,6 +19,7 @@ them, and the replay test for the fixtures runs it on every file.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import json
 import re
 import sys
@@ -66,6 +67,21 @@ REDACTED_TEXT: Final = "<redacted: private prompt content>"
 REDACTED_TOOL_TEXT: Final = "<redacted: tool description>"
 REDACTED_ARGUMENTS: Final = json.dumps({"redacted": True})
 REDACTED_ID: Final = "fixture-id"
+
+#: The ids of the recording being sanitized, each original mapped to its placeholder in order of
+#: appearance: the first is ``fixture-id``, then ``fixture-id-2``... A call and its result keep
+#: one shared id, and two calls never share one (the server refuses a repeated call id).
+_IDS: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar("ids")
+
+
+def _redact_id(value: str) -> str:
+    try:
+        ids = _IDS.get()
+    except LookupError:
+        return REDACTED_ID
+    if value not in ids:
+        ids[value] = REDACTED_ID if not ids else f"{REDACTED_ID}-{len(ids) + 1}"
+    return ids[value]
 
 
 def _kept_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -159,8 +175,9 @@ def _part(part: object) -> object:
         elif isinstance(value, Mapping):  # a tool call's arguments are an object of values
             clean[key] = {"redacted": True}
     for key in ("id", "tool_use_id", "tool_call_id", "call_id"):
-        if isinstance(clean.get(key), str):
-            clean[key] = REDACTED_ID
+        value = clean.get(key)
+        if isinstance(value, str):
+            clean[key] = _redact_id(value)
     return clean
 
 
@@ -193,10 +210,11 @@ def _item(item: Mapping[str, object]) -> dict[str, object]:
     """
     clean = dict(item)
     for key in ("id", "tool_use_id", "tool_call_id", "call_id"):
-        if isinstance(clean.get(key), str):
-            clean[key] = REDACTED_ID
+        value = clean.get(key)
+        if isinstance(value, str):
+            clean[key] = _redact_id(value)
     content = clean.get("content")
-    if isinstance(content, str):
+    if isinstance(content, str) and content:  # an empty answer beside tool calls stays empty
         clean["content"] = REDACTED_TEXT
     elif isinstance(content, list):
         clean["content"] = [_part(part) for part in content]
@@ -214,6 +232,14 @@ def _item(item: Mapping[str, object]) -> dict[str, object]:
 
 def sanitize(recording: Mapping[str, object]) -> dict[str, object]:
     """A recorded request with everything private replaced; the shape stays."""
+    token = _IDS.set({})
+    try:
+        return _sanitize(recording)
+    finally:
+        _IDS.reset(token)
+
+
+def _sanitize(recording: Mapping[str, object]) -> dict[str, object]:
     raw_headers = recording.get("headers")
     raw_body = recording.get("body")
     body = dict(cast("Mapping[str, object]", raw_body if isinstance(raw_body, Mapping) else {}))

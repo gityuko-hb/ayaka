@@ -260,9 +260,22 @@ class TestReplay:
         tool_turns = [turn for turn in parsed.conversation.turns if turn.role == "tool"]
         assert len(assistant_turns) == 1
         assert assistant_turns[0].tool_calls[0].name == "exec_command"
-        assert assistant_turns[0].tool_calls[0].id == "fixture-id"
         assert len(tool_turns) == 1
-        assert tool_turns[0].tool_call_id == "fixture-id"
+        assert tool_turns[0].tool_call_id == assistant_turns[0].tool_calls[0].id
+
+    def test_opencode_tool_round_trips_parse_with_matching_call_ids(self) -> None:
+        from ayaka.entrypoints.openai.protocol import parse_chat_request
+        from ayaka.entrypoints.wire.reader import JsonObject
+
+        recording = _load(FIXTURES / "opencode-1.19.6" / "004-openai-chat.json")
+        parsed = parse_chat_request(JsonObject(recording["body"]))
+
+        assistant_turns = [turn for turn in parsed.conversation.turns if turn.tool_calls]
+        tool_turns = [turn for turn in parsed.conversation.turns if turn.role == "tool"]
+        calls = [turn.tool_calls[0] for turn in assistant_turns]
+        assert [call.name for call in calls] == ["read", "read"]
+        assert [turn.tool_call_id for turn in tool_turns] == [call.id for call in calls]
+        assert calls[0].id != calls[1].id
 
     def test_claude_code_tool_result_round_trip_parses_with_matching_tool_name(self) -> None:
         from ayaka.entrypoints.anthropic.protocol import parse_messages_request
@@ -480,3 +493,35 @@ class TestFixtureHygiene:
             }
         ]
         assert tool == {"role": "tool", "tool_call_id": REDACTED_ID, "content": REDACTED_TEXT}
+
+    def test_the_sanitizer_keeps_two_calls_apart_and_each_linked_to_its_result(self) -> None:
+        from sanitize_recording import sanitize
+
+        def call(ident: str) -> dict[str, Any]:
+            function = {"name": "read", "arguments": "{}"}
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": ident, "function": function}],
+            }
+
+        recording = {
+            "path": "/v1/chat/completions",
+            "headers": {},
+            "body": {
+                "model": "m",
+                "messages": [
+                    call("call_a"),
+                    {"role": "tool", "tool_call_id": "call_a", "content": "one"},
+                    call("call_b"),
+                    {"role": "tool", "tool_call_id": "call_b", "content": "two"},
+                ],
+            },
+        }
+
+        messages = cast("dict[str, Any]", sanitize(recording))["body"]["messages"]
+        first, second = messages[0]["tool_calls"][0]["id"], messages[2]["tool_calls"][0]["id"]
+
+        assert first != second
+        assert [messages[1]["tool_call_id"], messages[3]["tool_call_id"]] == [first, second]
+        assert messages[0]["content"] == ""  # an empty answer beside its calls stays empty
