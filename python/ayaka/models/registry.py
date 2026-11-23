@@ -29,6 +29,7 @@ _BUILTIN: Final = {
     "GPT2LMHeadModel": "ayaka.models.gpt2:GPT2LMHeadModel",
     "LlamaForCausalLM": "ayaka.models.llama:LlamaForCausalLM",
     "Qwen2ForCausalLM": "ayaka.models.qwen2:Qwen2ForCausalLM",
+    "Qwen3ForCausalLM": "ayaka.models.qwen3:Qwen3ForCausalLM",
 }
 
 _registered: dict[str, type[CausalLM]] = {}

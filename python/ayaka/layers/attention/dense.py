@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 from torch import nn
 
 from ayaka.layers.linear import Linear
+from ayaka.layers.norm import RMSNorm
 
 if TYPE_CHECKING:
     from ayaka.layers.context import ForwardContext
     from ayaka.layers.rope import RotaryEmbedding
     from ayaka.ops.backend import OpsBackend
 
-__all__ = ["Attention"]
+__all__ = ["Attention", "QKNorm"]
+
+type QKNorm = Literal["head", "full"]
+"""Where an attention layer normalises its queries and keys before the rotary embedding.
+
+``"head"`` is one RMSNorm of width ``head_dim`` shared by every head (Qwen3); ``"full"`` is
+one RMSNorm over all the query rows and one over all the key rows of a token (OLMoE).
+"""
 
 
 class Attention(nn.Module):
@@ -32,7 +40,8 @@ class Attention(nn.Module):
     requests have cached. A step may carry several rows per request, so
     prefill, decode and verification all go through :meth:`forward`. With a
     rotary embedding, queries and keys are rotated by ``context.positions``
-    before the keys are stored, so the cache holds rotated keys.
+    before the keys are stored, so the cache holds rotated keys. With ``qk_norm``,
+    queries and keys are RMS-normalised (``q_norm``, ``k_norm``) before that rotation.
 
     Args:
         hidden_size: Width of the input and the output.
@@ -44,6 +53,9 @@ class Attention(nn.Module):
         out_bias: Whether ``o_proj`` has a bias; ``None`` follows ``bias``.
         rotary: The model's rotary embedding, the same module in every layer; ``None``
             for a model with learned position embeddings.
+        qk_norm: Normalise queries and keys per head or over the whole projection
+            (:data:`QKNorm`), or ``None`` for neither.
+        norm_eps: Epsilon of those norms; read only with ``qk_norm``.
         ops: The backend whose ``kvcache``, ``attention`` and ``linear`` ops do the work.
         dtype: Compute dtype of the parameters.
         device: Where the parameters live.
@@ -63,6 +75,8 @@ class Attention(nn.Module):
         bias: bool = True,
         out_bias: bool | None = None,
         rotary: RotaryEmbedding | None = None,
+        qk_norm: QKNorm | None = None,
+        norm_eps: float = 1e-6,
         ops: OpsBackend,
         dtype: torch.dtype,
         device: torch.device | str | None = None,
@@ -91,6 +105,17 @@ class Attention(nn.Module):
             dtype=dtype,
             device=device,
         )
+        self.qk_norm = qk_norm
+        self.q_norm: RMSNorm | None = None
+        self.k_norm: RMSNorm | None = None
+        if qk_norm is not None:
+            q_norm_width, k_norm_width = (
+                (head_dim, head_dim)
+                if qk_norm == "head"
+                else (num_heads * head_dim, num_kv_heads * head_dim)
+            )
+            self.q_norm = RMSNorm(q_norm_width, eps=norm_eps, ops=ops, dtype=dtype, device=device)
+            self.k_norm = RMSNorm(k_norm_width, eps=norm_eps, ops=ops, dtype=dtype, device=device)
         # Every layer of a model holds the same module; it has no parameters and its table is
         # a non-persistent buffer, so sharing it adds nothing to a checkpoint.
         self.rotary = rotary
@@ -111,10 +136,14 @@ class Attention(nn.Module):
         rows = hidden.shape[0]
         q_width, kv_width = self.num_heads * self.head_dim, self.num_kv_heads * self.head_dim
         q, k, v = self.qkv_proj(hidden).split([q_width, kv_width, kv_width], dim=-1)
+        if self.q_norm is not None and self.k_norm is not None and self.qk_norm == "full":
+            q, k = self.q_norm(q.contiguous()), self.k_norm(k.contiguous())
         # The ops take dense tensors; ``split`` returns strided views.
         q = q.reshape(rows, self.num_heads, self.head_dim).contiguous()
         k = k.reshape(rows, self.num_kv_heads, self.head_dim).contiguous()
         v = v.reshape(rows, self.num_kv_heads, self.head_dim).contiguous()
+        if self.q_norm is not None and self.k_norm is not None and self.qk_norm == "head":
+            q, k = self.q_norm(q), self.k_norm(k)
         if self.rotary is not None:
             self.rotary(context.positions, q, k)
 

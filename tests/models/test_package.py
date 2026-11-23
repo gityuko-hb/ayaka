@@ -29,6 +29,7 @@ def test_the_public_names_are_the_ones_the_tree_lists() -> None:
         "GPT2LMHeadModel",
         "LlamaForCausalLM",
         "Qwen2ForCausalLM",
+        "Qwen3ForCausalLM",
         "register_model",
         "resolve_model",
     ]

@@ -55,8 +55,14 @@ def llama_config(**overrides: object) -> ModelConfig:
     return ModelConfig(**fields)  # type: ignore[arg-type]  # a dict of the fields, by design
 
 
-def llama_state(config: ModelConfig, *, seed: int = 0) -> dict[str, torch.Tensor]:
-    """Random float32 tensors named and shaped like a Hugging Face ``LlamaForCausalLM``."""
+def llama_state(
+    config: ModelConfig, *, seed: int = 0, qk_norm: str | None = None
+) -> dict[str, torch.Tensor]:
+    """Random float32 tensors named and shaped like a Hugging Face ``LlamaForCausalLM``.
+
+    ``qk_norm`` adds the query and key norms of Qwen3 (``"head"``: ``[head_dim]``) or OLMoE
+    (``"full"``: ``[heads * head_dim]`` and ``[kv_heads * head_dim]``).
+    """
     generator = torch.Generator().manual_seed(seed)
     hidden, inner = config.hidden_size, config.intermediate_size
     q_rows = config.num_attention_heads * config.head_dim
@@ -84,6 +90,14 @@ def llama_state(config: ModelConfig, *, seed: int = 0) -> dict[str, torch.Tensor
             f"{block}mlp.up_proj.weight": rand(inner, hidden),
             f"{block}mlp.down_proj.weight": rand(hidden, inner),
         }
+        if qk_norm is not None:
+            q_width, k_width = (
+                (config.head_dim, config.head_dim) if qk_norm == "head" else (q_rows, kv_rows)
+            )
+            state |= {
+                f"{block}self_attn.q_norm.weight": 1.0 + rand(q_width, scale=0.1),
+                f"{block}self_attn.k_norm.weight": 1.0 + rand(k_width, scale=0.1),
+            }
         if config.attention_bias:
             state |= {
                 f"{block}self_attn.q_proj.bias": rand(q_rows, scale=0.1),
@@ -147,8 +161,14 @@ def llama_reference_hidden(
     for layer in range(config.num_layers):
         block = f"model.layers.{layer}"
         h = rms(x, f"{block}.input_layernorm.weight")
-        q = rotate(proj(h, f"{block}.self_attn.q_proj").reshape(steps, heads, dim))
-        k = rotate(proj(h, f"{block}.self_attn.k_proj").reshape(steps, kv_heads, dim))
+        q, k = proj(h, f"{block}.self_attn.q_proj"), proj(h, f"{block}.self_attn.k_proj")
+        q_norm = f"{block}.self_attn.q_norm.weight"
+        if q_norm in state and state[q_norm].shape[0] != dim:  # one norm over the projection
+            q, k = rms(q, q_norm), rms(k, f"{block}.self_attn.k_norm.weight")
+        q, k = q.reshape(steps, heads, dim), k.reshape(steps, kv_heads, dim)
+        if q_norm in state and state[q_norm].shape[0] == dim:  # one norm per head
+            q, k = rms(q, q_norm), rms(k, f"{block}.self_attn.k_norm.weight")
+        q, k = rotate(q), rotate(k)
         v = proj(h, f"{block}.self_attn.v_proj").reshape(steps, kv_heads, dim)
         k = k.repeat_interleave(heads // kv_heads, dim=1)
         v = v.repeat_interleave(heads // kv_heads, dim=1)
