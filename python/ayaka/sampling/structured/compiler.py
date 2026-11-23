@@ -108,6 +108,27 @@ class _Vocabulary:
         return b"".join(self.tokens[token] for token in ids if 0 <= token < len(self.tokens))
 
 
+def _openers(
+    tokens: Sequence[bytes], specials: Collection[int]
+) -> tuple[frozenset[int], frozenset[int]]:
+    """The tokens whose text opens a JSON object after optional blanks, and those to skip.
+
+    Skipped: the blank tokens, and the special tokens other than an end (``specials``), which
+    decode to no text; Llama 3.1 writes ``<|python_tag|>`` before a call about a third of the time.
+    """
+    brace: set[int] = set()
+    blank: set[int] = set(specials)
+    for token, text in enumerate(tokens):
+        stripped = text.lstrip(b" \t\r\n")
+        if not text:
+            continue
+        if not stripped:
+            blank.add(token)
+        elif stripped.startswith(b"{"):
+            brace.add(token)
+    return frozenset(brace), frozenset(blank)
+
+
 def _reserved(params: StructuredParams) -> frozenset[int]:
     """The tool-call marker tokens, which only the grammar's own references may produce."""
     syntax = params.syntax
@@ -168,6 +189,9 @@ class GrammarCompiler:
         self._cache: OrderedDict[str, _Compiled] = OrderedDict()
         self._lock = threading.Lock()
         self._ll_tokenizers: dict[frozenset[int], Any] = {}
+        # The tokens that open a JSON object and the ones that keep waiting for it (blank or
+        # special), for optional calls without an opening marker; from the first vocabulary built.
+        self._openers: tuple[frozenset[int], frozenset[int]] | None = None
         self._pool: concurrent.futures.ThreadPoolExecutor | None = None
         self.compiles = 0
         """How many grammars were compiled (cache misses)."""
@@ -223,6 +247,10 @@ class GrammarCompiler:
         params = entry.params
         syntax = params.syntax
         is_call = params.kind is ConstraintKind.TOOL_CALL
+        brace: frozenset[int] | None = None
+        skip: frozenset[int] = frozenset()
+        if is_call and syntax is not None and syntax.bare and params.tool_choice == "auto":
+            brace, skip = self._openers or (frozenset(), frozenset())
         return ConstraintMatcher(
             entry.template,
             vocab_size=self._vocab,
@@ -232,6 +260,8 @@ class GrammarCompiler:
             opening=syntax.opening if is_call and syntax is not None else (),
             forced=is_call and params.tool_choice != "auto",
             parallel=params.parallel,
+            brace=brace,
+            skip=skip,
         )
 
     def _compile(self, grammar: str, reserved: frozenset[int]) -> GrammarState:
@@ -283,6 +313,9 @@ class GrammarCompiler:
                 "structured output needs a tokenizer", context={"features": ("structured",)}
             )
         vocabulary = _Vocabulary(self._tokenizer, self._vocab, self._eos, reserved)
+        if self._openers is None:
+            specials = set(vocabulary.special_token_ids) - set(self._eos)
+            self._openers = _openers(vocabulary.tokens, specials)
         wrapper = llguidance.TokenizerWrapper(vocabulary)
         found = llguidance.LLTokenizer(
             wrapper, n_vocab=self._vocab, eos_token=list(self._eos) or None

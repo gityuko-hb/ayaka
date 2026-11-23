@@ -17,7 +17,15 @@ from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolCallSyn
 from ayaka.core.errors import CapabilityError, InvalidRequestError, UnsupportedFeatureError
 from ayaka.sampling.structured import compiler as compiler_module
 from ayaka.sampling.structured.compiler import GrammarCompiler
-from tokenizer_fakes import CLOSE_CALL, EOS, IM_END, MODEL_VOCAB, OPEN_CALL, ToolTokenizer
+from tokenizer_fakes import (
+    CLOSE_CALL,
+    EOS,
+    IM_END,
+    IM_START,
+    MODEL_VOCAB,
+    OPEN_CALL,
+    ToolTokenizer,
+)
 
 pytest.importorskip("llguidance")
 
@@ -318,3 +326,90 @@ class TestCompiler:
 
         with pytest.raises(UnsupportedFeatureError, match="structured extra"):
             _compiler().compile(StructuredParams(kind=ConstraintKind.JSON_OBJECT))
+
+
+class TestOptionalCallWithoutMarkers:
+    """``llama3_json`` with ``tool_choice: "auto"``: free until the answer shows what it is."""
+
+    _BARE = ToolCallSyntax("", "", arguments_key="parameters", separator="; ")
+    _COUNT = ToolSchema(
+        "count",
+        {
+            "type": "object",
+            "properties": {"n": {"type": "integer", "minimum": 0, "maximum": 9}},
+            "required": ["n"],
+            "additionalProperties": False,
+        },
+    )
+
+    def _matcher(self, compiler: GrammarCompiler) -> Any:
+        params = StructuredParams(
+            kind=ConstraintKind.TOOL_CALL, tools=(self._COUNT,), syntax=self._BARE, parallel=False
+        )
+        return compiler.matcher(compiler.compile(params))
+
+    def test_text_is_never_constrained(self) -> None:
+        matcher = self._matcher(_compiler())
+
+        assert matcher.mask() is None
+        matcher.accept([ord(" "), ord("H")])  # a blank waits, a letter decides
+
+        assert matcher.mask() is None
+        matcher.accept([ord("{")])  # a brace later in the text changes nothing
+        assert matcher.mask() is None
+        assert not matcher.active
+
+    @pytest.mark.parametrize("seed", range(6))
+    def test_an_answer_that_opens_with_a_brace_is_a_call_with_typed_arguments(
+        self, seed: int
+    ) -> None:
+        matcher = self._matcher(_compiler())
+        matcher.accept([ord("\n"), ord("{")])  # the blank is the model's; the brace starts it
+
+        tokens = [ord("{"), *_walk(matcher, random.Random(seed))]  # noqa: S311  # a seeded walk
+
+        assert tokens[-1] in _EOS, _text(tokens)
+        call = json.loads(_text(tokens))
+        assert call["name"] == "count"
+        assert isinstance(call["parameters"]["n"], int)  # never the string "3"
+
+    def test_a_special_token_before_the_brace_keeps_waiting(self) -> None:
+        """Llama 3.1 writes ``<|python_tag|>`` before a call about a third of the time."""
+        matcher = self._matcher(_compiler())
+
+        matcher.accept([IM_START])  # special, not an end: decodes to no text
+        assert matcher.mask() is None
+        matcher.accept([ord("{")])
+
+        assert matcher.active
+
+    def test_a_first_token_the_grammar_refuses_leaves_the_answer_free(self) -> None:
+        """A token such as ``{%`` opens no JSON object: the text goes on, never cut to an end."""
+        from ayaka.sampling.structured.matcher import ConstraintMatcher
+
+        class Refuses:
+            def compute_bitmask(self) -> bytes:
+                raise AssertionError("no mask while free")
+
+            def consume_token(self, sampled_token: int) -> bool:
+                return False
+
+            def is_stopped(self) -> bool:
+                return False
+
+            def is_error(self) -> bool:
+                return True
+
+            def get_error(self) -> str:
+                return "refused"
+
+            def deep_copy(self) -> Refuses:
+                return self
+
+        matcher = ConstraintMatcher(
+            Refuses(), vocab_size=64, eos_token_ids={0}, brace={7}, skip={1}
+        )
+        matcher.accept([1, 7])
+
+        assert matcher.state == "FREE"
+        assert matcher.mask() is None

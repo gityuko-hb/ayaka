@@ -26,7 +26,7 @@ import contextlib
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
@@ -389,8 +389,9 @@ class Serving:
         a call it writes is a valid call and free text stays free; a request that forces a
         call or asks for strict arguments needs that constraint and is refused without it. A
         format without markers (``llama3_json``) has no marker a lazy constraint could start on:
-        a forced call is constrained from the first token, strict arguments of an optional call
-        are refused.
+        a forced call is constrained from the first token; an optional call is constrained once
+        the answer opens with ``{`` (the matcher decides on the first token that is not blank),
+        its arguments following each tool's schema, and any other answer stays free text.
 
         Raises:
             UnsupportedFeatureError: If the request needs a constraint this server cannot make.
@@ -413,17 +414,10 @@ class Serving:
         wanted = output.wants_constraint
         spelled: tuple[int, ...] = ()
         if markers is None:
-            # A format without markers (llama3_json) has no token a lazy grammar could start on:
-            # only a forced call can be constrained, from the first token of the answer.
-            if not wanted:
-                return None  # free text; the parser finds the call
-            if output.tool_choice == "auto":
-                raise UnsupportedFeatureError(
-                    f"strict: the tool-call parser {fmt.tool_calls.name!r} writes calls without "
-                    "markers, so the arguments of an optional call cannot be constrained; force "
-                    "the call with tool_choice",
-                    context={"features": ("structured tool calls",), "param": "tools"},
-                )
+            # A format without markers (llama3_json): a forced call is constrained from the first
+            # token of the answer, an optional one from the `{` that opens it.
+            if not wanted and not has_module("llguidance"):
+                return None  # free text, as without the structured extra; the parser finds it
         else:
             opening = markers[0]
             if not wanted and (opening.token_id is None or not has_module("llguidance")):
@@ -433,16 +427,21 @@ class Serving:
             tokenizer = self.tokenizer.tokenizer if self.tokenizer is not None else None
             if opening.token_id is None and tokenizer is not None:
                 spelled = tuple(tokenizer.encode(opening.text, add_special_tokens=False))
-        return StructuredParams(
-            kind=ConstraintKind.TOOL_CALL,
-            tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),
-            syntax=fmt.call_syntax(spelled),
-            tool_choice=output.tool_choice,
-            strict=output.strict,
-            parallel=parallel_tool_calls,
-            start_after=start_after,
-            reasoning_open=reasoning_open,
-        )
+        try:
+            return StructuredParams(
+                kind=ConstraintKind.TOOL_CALL,
+                tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),
+                syntax=fmt.call_syntax(spelled),
+                tool_choice=output.tool_choice,
+                strict=output.strict,
+                parallel=parallel_tool_calls,
+                start_after=start_after,
+                reasoning_open=reasoning_open,
+            )
+        except InvalidRequestError:
+            if markers is None and not wanted:
+                return None  # added by the server, not asked for: schemas too large stay free
+            raise
 
     async def start(
         self,
@@ -473,7 +472,16 @@ class Serving:
             request_id=request_id, prompt=prompt, sampling=sampling, structured=structured
         )
         try:
-            stream = await llm.add(request)
+            try:
+                stream = await llm.add(request)
+            except InvalidRequestError as exc:
+                if structured is None or not _best_effort(structured):
+                    raise
+                # The request did not ask for this constraint: a tool schema the grammar cannot
+                # compile leaves the answer free, as it was before the constraint existed.
+                _LOG.info("request %s: no output constraint: %s", public_id, exc)
+                request = replace(request, structured=None)
+                stream = await llm.add(request)
         except EngineError as exc:
             if self.status is not Readiness.READY or llm.health().state is not EngineState.RUNNING:
                 raise NotReadyError(f"the server is {self.status.value}; retry later") from exc
@@ -617,3 +625,19 @@ SERVING: Final = web.AppKey("ayaka.serving", Serving)
 
 REQUEST_ID: Final = web.RequestKey("ayaka.request_id", str)
 """The key of the request id in an aiohttp request."""
+
+
+def _best_effort(structured: StructuredParams) -> bool:
+    """Whether the server added this constraint on its own: an optional call without markers.
+
+    The request asked for nothing a grammar must guarantee, so a grammar that cannot be built
+    leaves the answer free instead of failing it.
+    """
+    syntax = structured.syntax
+    return (
+        structured.kind is ConstraintKind.TOOL_CALL
+        and syntax is not None
+        and syntax.bare
+        and structured.tool_choice == "auto"
+        and not structured.strict
+    )

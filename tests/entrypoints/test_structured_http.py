@@ -138,7 +138,7 @@ class TestChat:
 
 class TestFormatWithoutMarkers:
     """``llama3_json`` has no marker to start a lazy grammar on: free text, a forced call written
-    from the first token, or a clear refusal for strict arguments of an optional call."""
+    from the first token, or an optional call constrained from the `{` that opens the answer."""
 
     def test_auto_tools_are_accepted_and_free_text_is_not_forced(self, checkpoint: Path) -> None:
         async def body(client: TestClient[Any, Any]) -> None:
@@ -191,18 +191,76 @@ class TestFormatWithoutMarkers:
 
         _run(checkpoint, body, tool_calls="llama3_json")
 
-    def test_strict_arguments_of_an_optional_call_are_refused(self, checkpoint: Path) -> None:
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_an_optional_call_follows_the_tool_schema(self, checkpoint: Path, strict: bool) -> None:
+        """Strict or not, a call the model opens with `{` has the tool's arguments (#103).
+
+        The random model is pushed to open with `{` (byte 123) so the answer is a call; the
+        grammar then decides every token after it.
+        """
+
         async def body(client: TestClient[Any, Any]) -> None:
+            function = {"name": "get_weather", "parameters": _PARAMETERS, "strict": strict}
             request = {
                 "messages": [{"role": "user", "content": "weather?"}],
-                "tools": [_OPENAI_TOOL],  # strict, and the call is optional
-                "max_tokens": 20,
+                "tools": [{"type": "function", "function": function}],
+                "parallel_tool_calls": False,
+                "temperature": 0,
+                "logit_bias": {"123": 100},
+                "max_tokens": 120,
+            }
+            response = await client.post("/v1/chat/completions", json=request)
+
+            assert response.status == 200, await response.text()
+            choice = (await response.json())["choices"][0]
+            assert choice["finish_reason"] == "tool_calls"
+            (call,) = choice["message"]["tool_calls"]
+            assert call["function"]["name"] == "get_weather"
+            arguments = json.loads(call["function"]["arguments"])
+            assert set(arguments) == {"city"}
+            assert isinstance(arguments["city"], str)
+            assert len(arguments["city"]) <= 5
+
+        _run(checkpoint, body, tool_calls="llama3_json")
+
+    def test_a_tool_schema_the_grammar_cannot_build_leaves_an_optional_call_free(
+        self, checkpoint: Path
+    ) -> None:
+        """The request asked for no constraint, so one that cannot be compiled is dropped."""
+
+        async def body(client: TestClient[Any, Any]) -> None:
+            parameters = {
+                "type": "object",
+                "properties": {"x": {"type": "string", "pattern": "(?<=a)b"}},
+            }
+            tool = {"type": "function", "function": {"name": "f", "parameters": parameters}}
+            request = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [tool],
+                "temperature": 0,
+                "max_tokens": 6,
+            }
+            response = await client.post("/v1/chat/completions", json=request)
+
+            assert response.status == 200, await response.text()
+
+        _run(checkpoint, body, tool_calls="llama3_json")
+
+    def test_strict_arguments_the_grammar_cannot_build_are_refused(self, checkpoint: Path) -> None:
+        async def body(client: TestClient[Any, Any]) -> None:
+            parameters = {
+                "type": "object",
+                "properties": {"x": {"type": "string", "pattern": "(?<=a)b"}},
+            }
+            function = {"name": "f", "parameters": parameters, "strict": True}
+            request = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": function}],
+                "max_tokens": 6,
             }
             response = await client.post("/v1/chat/completions", json=request)
 
             assert response.status == 400
-            error = (await response.json())["error"]
-            assert "llama3_json" in error["message"]
 
         _run(checkpoint, body, tool_calls="llama3_json")
 

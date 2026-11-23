@@ -7,6 +7,11 @@
                  anything else is learned by the state after it
     WAIT_START   free; waits for ``start_after`` (the end of a reasoning block)
     WAIT_OPEN    free; waits for the model to open a tool call (a lazy call)
+    WAIT_BRACE   free; an optional call in a format without markers: blank and special tokens
+                 (Llama 3.1's ``<|python_tag|>``) keep waiting,
+                 a token that opens a JSON object starts the grammar with it, any other token
+                 makes the whole answer free text
+    FREE         free to the end
     FORCE        only the opening marker may follow (a call the request forces)
     ON           the grammar decides (JSON, or the body of a call)
     END          only an end-of-sequence token may follow
@@ -57,6 +62,8 @@ class GrammarState(Protocol):
 class _State(Enum):
     WAIT_START = auto()
     WAIT_OPEN = auto()
+    WAIT_BRACE = auto()
+    FREE = auto()
     FORCE = auto()
     ON = auto()
     END = auto()
@@ -78,6 +85,10 @@ class ConstraintMatcher:
             or empty for a JSON constraint.
         forced: Whether the answer must start with a call.
         parallel: Whether the model may write on (more calls) after a call; otherwise ``END``.
+        brace: For an optional call without an opening marker, the tokens whose text opens a
+            JSON object (after optional blanks); ``None`` otherwise.
+        skip: With ``brace``, the tokens that keep waiting: whitespace, and the special tokens a
+            model may write before a call (``<|python_tag|>``), which decode to no text.
     """
 
     def __init__(
@@ -91,6 +102,8 @@ class ConstraintMatcher:
         opening: tuple[int, ...] = (),
         forced: bool = False,
         parallel: bool = True,
+        brace: Collection[int] | None = None,
+        skip: Collection[int] = (),
     ) -> None:
         self._template = template
         self._words = (vocab_size + 31) // 32
@@ -100,6 +113,8 @@ class ConstraintMatcher:
         self._seen: list[int] = []  # the last tokens, to find a lazy opening
         self._forced = forced
         self._parallel = parallel
+        self._brace = brace
+        self._skip = skip
         self._grammar: GrammarState | None = None
         self._state = _State.WAIT_START
         # The first draw may open a reasoning block: the state after it is already set up.
@@ -122,7 +137,9 @@ class ConstraintMatcher:
         return "MAYBE" if self._reasoning_open is not None else self._state.name
 
     def _begin(self) -> None:
-        if not self._opening:
+        if self._brace is not None:
+            self._state = _State.WAIT_BRACE
+        elif not self._opening:
             self._start_grammar()
         else:
             self._seen.clear()
@@ -131,6 +148,23 @@ class ConstraintMatcher:
     def _start_grammar(self) -> None:
         self._grammar = self._template.deep_copy()
         self._state = _State.ON
+
+    def _wait_brace(self, token: int) -> None:
+        if token in self._skip:
+            return
+        grammar = self._template.deep_copy()
+        brace = self._brace
+        if (
+            brace is not None
+            and token in brace
+            and grammar.consume_token(token)
+            and not grammar.is_error()
+        ):
+            self._grammar = grammar
+            self._state = _State.ON
+            return
+        # Text, or a brace the grammar refuses (``{%``): the answer is free, never cut short.
+        self._state = _State.FREE
 
     def mask(self) -> NDArray[np.uint32] | None:
         """The allowed tokens of the next draw as ``uint32`` words, or ``None`` if free."""
@@ -181,6 +215,8 @@ class ConstraintMatcher:
             self._seen.append(token)
             if len(self._seen) == len(self._opening):
                 self._start_grammar()
+        elif state is _State.WAIT_BRACE:
+            self._wait_brace(token)
         elif state is _State.WAIT_OPEN:
             self._seen.append(token)
             del self._seen[: -len(self._opening)]
