@@ -1,7 +1,8 @@
 # Installing Ayaka
 
-Ayaka is in early development and has no release on PyPI yet (the name `ayaka` is taken there), so it is installed
-from a checkout with [uv](https://docs.astral.sh/uv/). Every command below runs from the checkout's root.
+Ayaka is in early development. Its distribution name is `ayaka-llm` (the name `ayaka` is taken on PyPI); the package
+it installs is still imported as `ayaka` and the command is still `ayaka`. Version 0.1.0 is not published on PyPI, so
+it is installed from a checkout with [uv](https://docs.astral.sh/uv/). Every command below runs from the checkout's root.
 
 ## 1. Get the code and uv
 

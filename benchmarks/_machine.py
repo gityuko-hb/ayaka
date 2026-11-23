@@ -61,7 +61,7 @@ def machine() -> dict[str, Any]:
         "torch": torch.__version__,
         "torch_cuda": torch.version.cuda,
         "flashinfer": _version("flashinfer-python"),
-        "ayaka": _version("ayaka"),
+        "ayaka": _version("ayaka-llm"),
         "commit": _commit(),
     }
 

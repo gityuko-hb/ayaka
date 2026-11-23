@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ayaka"
+name = "ayaka-llm"
 dynamic = ["version"]  # single source of truth: python/ayaka/__version__.py
 description = "High-performance LLM inference engine with CUDA/C++ native extensions"
 readme = "README.md"

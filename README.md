@@ -2,7 +2,8 @@
 
 High-performance LLM inference engine with CUDA/C++ native extensions.
 
-> **Status:** early development. The API will change. There is no release on PyPI yet; install from a checkout.
+> **Status:** early development, version 0.1.0. The API will change. The distribution is named `ayaka-llm` (the package
+> is imported as `ayaka`); it is not published on PyPI, so install from a checkout.
 
 ## Quickstart
 

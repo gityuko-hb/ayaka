@@ -1,8 +1,8 @@
 # AGENTS.md
 
 Ayaka is a high-performance LLM inference engine with CUDA/C++ native extensions.
-The Python package is **`ayaka`** (`import ayaka`). That name is already taken on PyPI by another project, so a
-different distribution name is needed before publishing.
+The Python package is **`ayaka`** (`import ayaka`). That name is already taken on PyPI by another project, so the
+distribution is named **`ayaka-llm`** (`pyproject.toml`, `importlib.metadata.version("ayaka-llm")`).
 The project is in early development: do not describe features that are not in the code.
 
 Contribution rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read them before opening an issue or a pull
