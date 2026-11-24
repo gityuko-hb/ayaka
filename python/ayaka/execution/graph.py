@@ -222,7 +222,7 @@ class GraphRunner:
             self._sampler.sample(logits, batch, sampled, controls)
 
         self._reset_inputs(bucket)
-        side = torch.cuda.Stream(self._device)
+        side = _warmup_stream(self._device)
         side.wait_stream(torch.cuda.current_stream(self._device))
         with torch.inference_mode(), torch.cuda.stream(side):
             for _ in range(_WARMUP_RUNS):
@@ -285,3 +285,23 @@ class GraphRunner:
         """
         staged = self.launch(step, masks)
         return self._builder.read_sampled(staged.count)
+
+
+#: The stream the warm-up runs of every capture on a device use, kept for the process.
+_warmup_streams: dict[torch.device, torch.cuda.Stream] = {}
+
+
+def _warmup_stream(device: torch.device) -> torch.cuda.Stream:
+    """The one side stream the warm-up runs before every capture on ``device`` share.
+
+    PyTorch gives every (cuBLAS handle, stream) pair a workspace from the caching allocator
+    (8,519,680 bytes on an L4) and keeps it until the process exits, even after the stream is
+    gone. A new stream per captured graph therefore left about 100 MiB behind every engine that
+    captured graphs; one stream per device, like the capture stream PyTorch itself keeps, costs
+    one workspace per device.
+    """
+    stream = _warmup_streams.get(device)
+    if stream is None:
+        stream = torch.cuda.Stream(device)
+        _warmup_streams[device] = stream
+    return stream
