@@ -221,11 +221,11 @@ def test_engine_mtp_matches_plain_and_prefix_cache(
 @pytest.mark.gpu
 def test_mimo_7b_rl_mtp_gates_on_l4() -> None:
     """Gates 1-4 on XiaomiMiMo/MiMo-7B-RL: >=99% parity, >=0.70 acc, bit-exact, reconcile."""
-    from tokenizers import Tokenizer
+    tokenizers: Any = pytest.importorskip("tokenizers")  # tests/tokenizers shadows it for pyright
 
     model_id = "XiaomiMiMo/MiMo-7B-RL"
     snap = resolve_source(ModelSourceConfig(model_id, offline=True))
-    tok = Tokenizer.from_file(str(snap / "tokenizer.json"))
+    tok = tokenizers.Tokenizer.from_file(str(snap / "tokenizer.json"))
     prompts = [
         tuple(
             tok.encode(
