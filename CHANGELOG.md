@@ -26,6 +26,9 @@
 - OLMoE (`OlmoeForCausalLM`, such as OLMoE-1B-7B) and Qwen3-MoE (`Qwen3MoeForCausalLM`, such as Qwen3-30B-A3B)
   checkpoints, with every expert in device memory. `clip_qkv` and quantized MoE checkpoints are refused with the
   reason. `ModelConfig` reads the expert fields of `config.json`.
+- MiMo-7B checkpoints (`MiMoForCausalLM`, such as MiMo-7B-RL), which are Qwen2 checkpoints. The multi-token-prediction
+  layer they also store (`model.mtp_layers.*`) is set aside, not loaded and not counted by `ayaka plan`; using it for
+  speculative decoding is tracked in #128.
 
 ### Fixed
 
