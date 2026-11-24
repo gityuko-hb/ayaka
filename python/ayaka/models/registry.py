@@ -28,6 +28,7 @@ __all__ = ["register_model", "resolve_model"]
 _BUILTIN: Final = {
     "GPT2LMHeadModel": "ayaka.models.gpt2:GPT2LMHeadModel",
     "LlamaForCausalLM": "ayaka.models.llama:LlamaForCausalLM",
+    "MiMoForCausalLM": "ayaka.models.mimo:MiMoForCausalLM",
     "OlmoeForCausalLM": "ayaka.models.olmoe:OlmoeForCausalLM",
     "Phi3ForCausalLM": "ayaka.models.phi3:Phi3ForCausalLM",
     "Qwen2ForCausalLM": "ayaka.models.qwen2:Qwen2ForCausalLM",

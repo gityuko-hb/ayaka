@@ -43,6 +43,12 @@ What it needs, and what it does when something is missing (as ``test_gpt2_parity
 A missing piece skips with the reason; ``AYAKA_REQUIRE_REAL_MODEL=1`` turns the skip into a failure.
 ``AYAKA_REFERENCE_DEVICE=cpu`` runs the float32 reference on the CPU instead of the GPU, for a
 checkpoint whose float32 copy does not fit the card (Phi-3-mini-4k, 3.8B, on the 24 GB L4).
+
+A MiMo-7B checkpoint (``model_type: mimo``) is a model ``transformers`` does not have: only the
+repository's own ``modeling_mimo.py`` defines it, and the project never runs remote code. That
+file subclasses the Qwen2 classes and overrides no forward method, so the reference is loaded as
+``Qwen2ForCausalLM`` from a view of the same files with a changed ``config.json``
+(:func:`_reference_source`); the multi-token-prediction tensors are unused keys there too.
 """
 
 from __future__ import annotations
@@ -206,7 +212,7 @@ def llama_dir() -> Path:
 
 
 @pytest.fixture(scope="module")
-def expected(llama_dir: Path) -> dict[str, Reference]:
+def expected(llama_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Reference]:
     """``transformers``' greedy tokens and top two logits per prompt, made once on the GPU.
 
     Float32 is the reference for every configuration, fp32 included: it is the most precise
@@ -214,9 +220,10 @@ def expected(llama_dir: Path) -> dict[str, Reference]:
     matches it is right. A reference in the configuration's own dtype can instead pick a
     different token where its rounding flips the top two logits (issue #39).
     """
-    tokenizer = transformers.AutoTokenizer.from_pretrained(str(llama_dir), local_files_only=True)
+    source = _reference_source(llama_dir, tmp_path_factory.mktemp("reference-view"))
+    tokenizer = transformers.AutoTokenizer.from_pretrained(source, local_files_only=True)
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        str(llama_dir),
+        source,
         dtype=torch.float32,
         attn_implementation="eager",
         local_files_only=True,
@@ -273,6 +280,23 @@ def _reserve_tokens(directory: Path) -> int:
     """
     raw = json.loads((directory / "config.json").read_text(encoding="utf-8"))
     return min(2048, ModelConfig.from_hf_config(raw).context_length)
+
+
+def _reference_source(directory: Path, scratch: Path) -> str:
+    """The directory ``transformers`` loads the reference from: ``directory`` or a Qwen2 view.
+
+    A ``mimo`` config becomes a ``qwen2`` one in ``scratch``, next to links to every other file.
+    """
+    raw = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    if raw.get("model_type") != "mimo":
+        return str(directory)
+    for entry in directory.iterdir():
+        if entry.name != "config.json":
+            (scratch / entry.name).symlink_to(entry.resolve())
+    patched = {k: v for k, v in raw.items() if k not in ("auto_map", "num_nextn_predict_layers")}
+    patched |= {"model_type": "qwen2", "architectures": ["Qwen2ForCausalLM"]}
+    (scratch / "config.json").write_text(json.dumps(patched), encoding="utf-8")
+    return str(scratch)
 
 
 def _reference_device() -> str:
@@ -367,11 +391,12 @@ def test_greedy_tokens_match_transformers_on_the_gpu(
 
 
 @pytest.fixture(scope="module")
-def long_expected(llama_dir: Path) -> Reference:
+def long_expected(llama_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> Reference:
     """``transformers``' float32 greedy reference for :data:`LONG_PROMPT`."""
-    tokenizer = transformers.AutoTokenizer.from_pretrained(str(llama_dir), local_files_only=True)
+    source = _reference_source(llama_dir, tmp_path_factory.mktemp("long-reference-view"))
+    tokenizer = transformers.AutoTokenizer.from_pretrained(source, local_files_only=True)
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        str(llama_dir),
+        source,
         dtype=torch.float32,
         attn_implementation="eager",
         local_files_only=True,

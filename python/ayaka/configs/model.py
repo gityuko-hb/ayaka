@@ -42,6 +42,7 @@ _ROPE_KINDS: Final[tuple[RopeScalingKind, ...]] = ("linear", "llama3", "yarn")
 _UNTIED_BY_DEFAULT: Final = frozenset(
     {
         "LlamaForCausalLM",
+        "MiMoForCausalLM",
         "OlmoeForCausalLM",
         "Phi3ForCausalLM",
         "Qwen2ForCausalLM",
@@ -547,6 +548,7 @@ def _hf_sliding_window(config: Mapping[str, object], num_layers: int) -> int | N
 #: defaults to when ``config.json`` does not give one.
 _ROPE_THETA_DEFAULT: Final = {
     "LlamaForCausalLM": 10000.0,
+    "MiMoForCausalLM": 10000.0,
     "OlmoeForCausalLM": 10000.0,
     "Phi3ForCausalLM": 10000.0,
     "Qwen2ForCausalLM": 10000.0,

@@ -98,6 +98,13 @@ status = "runs"
 result = "benchmarks/results/2026-11-24-nvidia-l4/phi-3-mini-4k-instruct/results.json"
 
 [[row]]
+model = "XiaomiMiMo/MiMo-7B-RL"
+precision = "bf16, multi-token-prediction layer not used"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/mimo-7b-rl/results.json"
+
+[[row]]
 model = "allenai/OLMoE-1B-7B-0125-Instruct"
 precision = "bf16, every expert on the GPU"
 machine = "NVIDIA L4 24 GB, Linux"
