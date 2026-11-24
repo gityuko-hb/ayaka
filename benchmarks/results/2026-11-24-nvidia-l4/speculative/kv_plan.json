@@ -8,6 +8,22 @@
   "displaced_kv_tokens": 0
  },
  {
+  "target": "XiaomiMiMo/MiMo-7B-RL",
+  "method": "plain",
+  "kv_blocks": 2304,
+  "kv_tokens": 36864,
+  "draft_bytes": 0,
+  "displaced_kv_tokens": 0
+ },
+ {
+  "target": "XiaomiMiMo/MiMo-7B-RL",
+  "method": "mtp",
+  "kv_blocks": 2170,
+  "kv_tokens": 34720,
+  "draft_bytes": 421580800,
+  "displaced_kv_tokens": 3824
+ },
+ {
   "target": "Qwen/Qwen3-8B",
   "method": "lookup",
   "kv_blocks": 1822,

@@ -246,7 +246,16 @@ def test_cli_speculative_flags_and_lookup_run(
             "serve",
             str(checkpoint.directory),
             "--speculative",
-            "lookup",
+            "mtp",
+            "--spec-mtp-depth",
+            "2",
+            "--spec-mtp-vocab-limit",
+            "8192",
+            "--spec-lookup-override",
+            "6",
         ]
     )
-    assert parsed.speculative == "lookup"
+    assert parsed.speculative == "mtp"
+    assert parsed.spec_mtp_depth == 2
+    assert parsed.spec_mtp_vocab_limit == 8192
+    assert parsed.spec_lookup_override == 6

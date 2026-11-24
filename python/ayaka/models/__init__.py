@@ -21,7 +21,12 @@ if TYPE_CHECKING:
     from ayaka.models.gpt2 import GPT2LMHeadModel
     from ayaka.models.gpt_oss import GptOssForCausalLM
     from ayaka.models.llama import LlamaForCausalLM
-    from ayaka.models.mimo import MiMoForCausalLM
+    from ayaka.models.mimo import (
+        MiMoForCausalLM,
+        MiMoMTPLayer,
+        describe_mimo_mtp_bytes,
+        load_mimo_mtp_layer,
+    )
     from ayaka.models.olmoe import OlmoeForCausalLM
     from ayaka.models.phi3 import Phi3ForCausalLM
     from ayaka.models.qwen2 import Qwen2ForCausalLM
@@ -39,12 +44,15 @@ __all__ = [
     "GptOssForCausalLM",
     "LlamaForCausalLM",
     "MiMoForCausalLM",
+    "MiMoMTPLayer",
     "OlmoeForCausalLM",
     "Phi3ForCausalLM",
     "Qwen2ForCausalLM",
     "Qwen3ForCausalLM",
     "Qwen3MoeForCausalLM",
     "Qwen3_5ForConditionalGeneration",
+    "describe_mimo_mtp_bytes",
+    "load_mimo_mtp_layer",
     "register_model",
     "resolve_model",
 ]
@@ -56,7 +64,12 @@ _EXPORTS = {
     "gpt2": ("GPT2LMHeadModel",),
     "gpt_oss": ("GptOssForCausalLM",),
     "llama": ("LlamaForCausalLM",),
-    "mimo": ("MiMoForCausalLM",),
+    "mimo": (
+        "MiMoForCausalLM",
+        "MiMoMTPLayer",
+        "describe_mimo_mtp_bytes",
+        "load_mimo_mtp_layer",
+    ),
     "olmoe": ("OlmoeForCausalLM",),
     "phi3": ("Phi3ForCausalLM",),
     "qwen2": ("Qwen2ForCausalLM",),

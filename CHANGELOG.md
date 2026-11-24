@@ -55,6 +55,12 @@
   masked by the request's grammar after the drafts before it, a draft is cut before the first token the
   grammar refuses, and only accepted tokens advance the grammar. Requests with a repetition, frequency
   or presence penalty still do not speculate.
+- Multi-token-prediction drafting for MiMo-7B checkpoints (`--speculative mtp`, #128), which uses the
+  prediction layer the checkpoint stores. On an NVIDIA L4 with MiMo-7B-RL at one request, one run per
+  variant: 1.43× over plain decoding, but the draft is accepted 0.64 to 0.74 of the time against the
+  model card's 0.90, which the alignment gate of #128 treats as a defect still to be traced, so it
+  stays off by default. The memory plan understates what the drafter takes from the KV cache (5.8%
+  planned, 18.8% in the running engine).
 
 ### Fixed
 

@@ -30,7 +30,7 @@ class Proposal:
         tokens: Draft token ids ``d_1 .. d_k``; may be empty.
         confidence: Integer confidence score (e.g., n-gram match length for lookup).
         source: Short label identifying the draft origin (e.g., ``"lookup"``, ``"prediction"``,
-            ``"token_recycling"``).
+            ``"mtp"``, ``"token_recycling"``).
         probs: Optional per-token draft probabilities in ``[0, 1]`` for confidence-based window
             trimming (used by drafters that report them).
     """

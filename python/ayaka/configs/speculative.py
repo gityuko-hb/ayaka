@@ -22,11 +22,12 @@ __all__ = [
     "SpeculativeMethod",
 ]
 
-type SpeculativeMethod = Literal["lookup", "token_recycling"]
+type SpeculativeMethod = Literal["lookup", "mtp", "token_recycling"]
 type SpeculativeController = Literal["cost", "fixed"]
 
 SPECULATIVE_METHODS: Final[tuple[SpeculativeMethod, ...]] = (
     "lookup",
+    "mtp",
     "token_recycling",
 )
 SPECULATIVE_CONTROLLERS: Final[tuple[SpeculativeController, ...]] = ("cost", "fixed")
@@ -38,7 +39,7 @@ class SpeculativeConfig(ConfigMixin):
 
     Attributes:
         enabled: Master switch. Off by default until measured gates pass.
-        method: Drafter kind: ``"lookup"`` or ``"token_recycling"``.
+        method: Drafter kind: ``"lookup"``, ``"mtp"``, or ``"token_recycling"``.
         max_draft_tokens: Maximum draft tokens ``k`` proposed per request per round.
         controller: ``"cost"`` (cost-aware adaptive choice) or ``"fixed"`` (always ``fixed_k``).
         fixed_k: Draft window length used by the ``"fixed"`` controller.
@@ -49,6 +50,11 @@ class SpeculativeConfig(ConfigMixin):
         lookup_max_match: Maximum suffix match length considered by n-gram lookup.
         lookup_candidates: Maximum recent candidate end positions inspected per trigram lookup.
         accept_prediction: Whether OpenAI ``prediction`` hints feed a per-request read-only index.
+        mtp_depth: Number of sequential MTP draft steps per round (1 default; 2 experimental).
+        mtp_vocab_limit: Top-frequent vocabulary rows used by an experimental reduced draft head
+            (0 uses the full target head).
+        lookup_override_match: When positive and running a model drafter (MTP), prefer
+            the lookup proposal when its match length reaches this threshold.
     """
 
     enabled: bool = False
@@ -62,6 +68,9 @@ class SpeculativeConfig(ConfigMixin):
     lookup_max_match: int = 32
     lookup_candidates: int = 4
     accept_prediction: bool = True
+    mtp_depth: int = 1
+    mtp_vocab_limit: int = 0
+    lookup_override_match: int = 0
 
     def __post_init__(self) -> None:
         require_bool(self.enabled, "speculative.enabled")
@@ -103,3 +112,6 @@ class SpeculativeConfig(ConfigMixin):
         )
         require_int(self.lookup_candidates, "speculative.lookup_candidates", minimum=1)
         require_bool(self.accept_prediction, "speculative.accept_prediction")
+        require_int(self.mtp_depth, "speculative.mtp_depth", minimum=1)
+        require_int(self.mtp_vocab_limit, "speculative.mtp_vocab_limit", minimum=0)
+        require_int(self.lookup_override_match, "speculative.lookup_override_match", minimum=0)

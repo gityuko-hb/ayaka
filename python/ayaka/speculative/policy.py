@@ -53,7 +53,7 @@ class DraftController(Protocol):
 
 def match_bucket(source: str, confidence: int) -> str:
     """Group lookup proposals into Strata-style match-length buckets, or name the draft source."""
-    if source in ("prediction", "token_recycling"):
+    if source in ("mtp", "prediction", "token_recycling"):
         return source
     if confidence >= 16:
         return "lookup:16+"
@@ -80,6 +80,7 @@ _DEFAULT_BUCKET_ACC: dict[str, float] = {
     "lookup:8-15": 0.75,
     "lookup:16+": 0.85,
     "prediction": 0.75,
+    "mtp": 0.80,
     "token_recycling": 0.35,
 }
 

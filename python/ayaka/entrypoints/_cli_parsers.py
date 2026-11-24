@@ -319,6 +319,27 @@ def _speculative_flags(command: argparse.ArgumentParser) -> None:
         metavar="K",
         help="draft window length when --spec-controller=fixed (2)",
     )
+    spec.add_argument(
+        "--spec-mtp-depth",
+        type=int,
+        default=1,
+        metavar="D",
+        help="sequential MTP draft steps per round (1)",
+    )
+    spec.add_argument(
+        "--spec-mtp-vocab-limit",
+        type=int,
+        default=0,
+        metavar="V",
+        help="experimental reduced MTP vocab rows; 0 uses full target head (0)",
+    )
+    spec.add_argument(
+        "--spec-lookup-override",
+        type=int,
+        default=0,
+        metavar="N",
+        help="prefer n-gram lookup over model drafter when match reaches N tokens; 0 disables (0)",
+    )
 
 
 def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
