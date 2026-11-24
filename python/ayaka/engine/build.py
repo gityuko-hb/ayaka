@@ -128,6 +128,8 @@ class EnginePlan:
         profiled: Whether a start-up profile measured before fed the plan.
         quantization: The label of the checkpoint's 8-bit recipe
             (:attr:`~ayaka.weights.quant.QuantFormat.name`), or ``None`` for 16- or 32-bit weights.
+        stored_types: For a GGUF file, the tensors of each GGML type (its ``weights_bytes`` are
+            the header's tensor sizes); ``None`` for a safetensors checkpoint.
     """
 
     directory: Path
@@ -147,6 +149,7 @@ class EnginePlan:
     profile_key: ProfileKey
     profiled: bool
     quantization: str | None = None
+    stored_types: Mapping[str, int] | None = None
 
     @property
     def block_size(self) -> int:
@@ -180,7 +183,7 @@ def plan_engine(config: EngineConfig) -> EnginePlan:
 
 def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     """The plan, the ops backend it was made for, and the bytes torch held before it."""
-    from ayaka.model_loader.loader import describe_model, read_model_config
+    from ayaka.model_loader.loader import describe_model, read_model_config, stored_weights
     from ayaka.ops.backend import load_backend
 
     device = config.device
@@ -269,7 +272,8 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             previous.activation_bytes_per_token,
             previous.graph_bytes,
         )
-    weights = _weights_bytes(model)
+    stored = stored_weights(config.source)
+    weights = _weights_bytes(model) if stored is None else stored[0]
     try:
         budget = _budget(
             config,
@@ -317,6 +321,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         profile_key=key,
         profiled=previous is not None,
         quantization=None if quant is None else quant.name,
+        stored_types=None if stored is None else stored[1],
     )
     return plan, ops, baseline_reserved
 

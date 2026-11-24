@@ -77,6 +77,7 @@ def plan_report(plan: EnginePlan, model: str) -> dict[str, object]:
             "reserve_tokens": plan.reserve_tokens,
         },
         "quantization": plan.quantization,
+        "gguf_types": None if plan.stored_types is None else dict(plan.stored_types),
         "max_running": plan.max_running,
         "chunk_tokens": plan.chunk_tokens,
         "ops": dict(plan.providers),
@@ -94,16 +95,25 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
     limit = "memory" if plan.max_context_tokens < context else "the model"
     reserve = budget.usable_bytes - plan.weights_bytes - plan.kv_bytes
     ops = ", ".join(f"{family}: {name}" for family, name in sorted(plan.providers.items()))
-    weights = (
-        f"  weights  {_mib(plan.weights_bytes)} ({spec.dtype.label})"
-        if plan.quantization is None
-        else f"  weights  {_mib(plan.weights_bytes)} ({plan.quantization} projections, the rest "
-        f"{spec.dtype.label})"
+    if plan.stored_types is not None:
+        types = ", ".join(f"{count} {name}" for name, count in plan.stored_types.items())
+        weights = f"  weights  {_mib(plan.weights_bytes)} (GGUF tensors: {types})"
+    elif plan.quantization is not None:
+        weights = (
+            f"  weights  {_mib(plan.weights_bytes)} ({plan.quantization} projections, the rest "
+            f"{spec.dtype.label})"
+        )
+    else:
+        weights = f"  weights  {_mib(plan.weights_bytes)} ({spec.dtype.label})"
+    files = (
+        f"files      {plan.directory} (GGUF header read; no tensor read, nothing downloaded)"
+        if plan.stored_types is not None
+        else f"files      {plan.directory} (config.json read; no weight read, nothing downloaded)"
     )
     lines = [
         f"machine    {plan.capabilities.describe()}",
         f"model      {model}: {config.architecture}",
-        f"files      {plan.directory} (config.json read; no weight read, nothing downloaded)",
+        files,
         f"memory     free {_mib(plan.baseline_bytes)}, usable {_mib(budget.usable_bytes)}"
         f", headroom {_mib(budget.headroom_bytes)}",
         weights,
@@ -124,6 +134,11 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
         ),
         "verdict    FITS.  Speed: not measured on this machine (run `ayaka bench`).",
     ]
+    if plan.stored_types is not None:
+        lines[-1] = (
+            "verdict    FITS in memory, but running GGUF tensors is not implemented: the engine "
+            "loads safetensors checkpoints only."
+        )
     if plan.quantization is not None:
         lines.insert(
             -1,
@@ -189,10 +204,10 @@ def shortfall_lines(shortfall: PlanShortfall) -> list[str]:
             if shortfall.weights_bytes
             else ""
         )
+        + "; an FP8 checkpoint of the same model halves 16-bit weights"
     )
     lines.append(
-        "  fix      more memory: --memory-ratio closer to 1, or close what else uses the device; "
-        "8-bit weights are not supported by this version yet"
+        "  fix      more memory: --memory-ratio closer to 1, or close what else uses the device"
     )
     return lines
 
