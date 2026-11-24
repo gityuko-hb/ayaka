@@ -1011,8 +1011,10 @@ Phi-3-mini-4k-instruct: 12 passed (float32 reference on the CPU); OLMoE-1B-7B-01
 passed, 4 skipped (float32 does not fit the card; reference on the CPU). No failure is a token
 mismatch: Qwen2.5's is the start-up memory reconciliation of the sixth engine built in one process
 (ledger 7,151,288,320 bytes, measured 6,729,760,768), and Qwen3's are the torch-backend CUDA-graph
-cases running out of memory during capture with a 40,960-token context. Both happen on `main` too
-(#114, #115). **Passed for all four architectures.**
+cases running out of memory during capture with a 40,960-token context. The out-of-memory happens
+on `main` too: reproduced at `965cfcf` with Llama-3.2-1B-Instruct, 5 failed and 7 passed (#122).
+The reconciliation failure was seen only with Qwen2.5-1.5B in the full file and passes alone; it
+is not reproduced on `main` (#123). **Passed for all four architectures.**
 
 **FP8 quality** (`quant-kl-llama-3.1-8b.json`, `quant-kl-qwen3-8b.json`; prompts rendered with the
 chat template with `enable_thinking` off, because Qwen3's template otherwise opens every answer with
