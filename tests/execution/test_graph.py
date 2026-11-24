@@ -409,3 +409,33 @@ def test_graph_replay_matches_the_formulas_in_fp32() -> None:
 
     state = {name: tensor.cpu() for name, tensor in stack.state.items()}
     assert emitted["a"] == greedy_reference(state, stack.config, prompt, 10)
+
+
+@pytest.mark.gpu
+def test_engines_that_capture_graphs_leave_no_memory_behind() -> None:
+    """Captures warm up on one stream per device: cuBLAS keeps one workspace, not one per graph.
+
+    PyTorch keeps a cuBLAS workspace for every stream that ran a matrix product, for the life of
+    the process. With a new warm-up stream per captured graph, each engine left one workspace per
+    graph behind (97.5 MiB for four buckets on an L4).
+    """
+    import gc
+
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+
+    def capture_and_release() -> int:
+        stack = _gpu_stack(("torch",), DType.FP32, cuda_graph=True)
+        stack.runner.capture_graphs((1, 2, 4))
+        del stack
+        gc.collect()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        return torch.cuda.memory_allocated()
+
+    first = capture_and_release()  # the shared stream gets its workspace here, once
+    second = capture_and_release()
+    third = capture_and_release()
+
+    assert second - first < 2**20, f"the second engine left {second - first} bytes behind"
+    assert third - second < 2**20, f"the third engine left {third - second} bytes behind"

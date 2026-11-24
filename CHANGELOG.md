@@ -41,6 +41,12 @@
   engine built in one test process was 402 MiB short against a 336 MiB tolerance. The cache is now released before
   the reading, as the capture does.
 
+- An engine that captures CUDA graphs no longer leaves about 100 MiB of GPU memory behind after it shuts down. The
+  warm-up before each capture ran on a new CUDA stream, and PyTorch keeps a cuBLAS workspace (8,519,680 bytes on an
+  NVIDIA L4) for every stream that ran a matrix product until the process exits: 12 of them, 97.5 MiB, per engine
+  with Llama-3.2-1B and four decode buckets. Every capture on a device now warms up on one shared stream, so the
+  process keeps one such workspace per device.
+
 ## 0.1.0 (not published on PyPI)
 
 On an NVIDIA L4 24 GB, Ayaka reads a 4,096-token prompt of Llama-3.1-8B-Instruct in fp16 at 2,393 tok/s and
