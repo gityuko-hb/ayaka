@@ -23,6 +23,9 @@
 - A mixture-of-experts op family, `moe` (`route`: float32 softmax and top-k, ties to the lower expert id;
   `experts`: the SiLU-gated expert MLPs), and `MoEBlock`, which holds every expert in device memory. The torch backend
   picks one of three exact strategies by the number of rows; CUDA graphs capture MoE steps of up to 32 rows.
+- OLMoE (`OlmoeForCausalLM`, such as OLMoE-1B-7B) and Qwen3-MoE (`Qwen3MoeForCausalLM`, such as Qwen3-30B-A3B)
+  checkpoints, with every expert in device memory. `clip_qkv` and quantized MoE checkpoints are refused with the
+  reason. `ModelConfig` reads the expert fields of `config.json`.
 
 ## 0.1.0 (not published on PyPI)
 

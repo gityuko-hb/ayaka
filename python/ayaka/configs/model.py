@@ -22,7 +22,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal, cast
+from typing import Any, Final, Literal, cast
 
 from ayaka.configs.base import ConfigMixin
 from ayaka.core.errors import ConfigError, ModelLoadError
@@ -40,7 +40,14 @@ _ROPE_KINDS: Final[tuple[RopeScalingKind, ...]] = ("linear", "llama3", "yarn")
 #: written from one of those omits the key. Tying by mistake would silently replace the
 #: stored output head by the embedding, so the default follows the architecture.
 _UNTIED_BY_DEFAULT: Final = frozenset(
-    {"LlamaForCausalLM", "Phi3ForCausalLM", "Qwen2ForCausalLM", "Qwen3ForCausalLM"}
+    {
+        "LlamaForCausalLM",
+        "OlmoeForCausalLM",
+        "Phi3ForCausalLM",
+        "Qwen2ForCausalLM",
+        "Qwen3ForCausalLM",
+        "Qwen3MoeForCausalLM",
+    }
 )
 
 
@@ -232,6 +239,15 @@ class ModelConfig(ConfigMixin):
             window, or ``None`` when every layer attends to the whole context. Ayaka
             does not implement windowed attention, so :attr:`context_length` stops at
             the window: up to it, windowed and full causal attention are the same.
+        num_experts: Experts in each mixture-of-experts layer; ``0`` for a dense model.
+        experts_per_token: Experts each token is routed to (``num_experts_per_tok``); ``0``
+            for a dense model.
+        moe_intermediate_size: Width of one expert's gate and up projections; ``0`` for a
+            dense model.
+        norm_topk_prob: Whether the routing weights of a token's chosen experts are divided by
+            their sum.
+        dense_layers: Layers of an MoE model that have the dense feed-forward block of width
+            ``intermediate_size`` instead of experts.
 
     Raises:
         TypeError: If a field has the wrong type.
@@ -258,6 +274,11 @@ class ModelConfig(ConfigMixin):
     attention_bias: bool = False
     mlp_bias: bool = False
     sliding_window: int | None = None
+    num_experts: int = 0
+    experts_per_token: int = 0
+    moe_intermediate_size: int = 0
+    norm_topk_prob: bool = False
+    dense_layers: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         require_text(self.architecture, "model.architecture")
@@ -282,6 +303,7 @@ class ModelConfig(ConfigMixin):
         require_bool(self.mlp_bias, "model.mlp_bias")
         if self.sliding_window is not None:
             require_int(self.sliding_window, "model.sliding_window", minimum=1)
+        self._check_experts()
         if self.rope_theta is not None:
             theta = require_number(self.rope_theta, "model.rope_theta")
             if not math.isfinite(theta) or theta <= 1:
@@ -310,6 +332,47 @@ class ModelConfig(ConfigMixin):
                 f"{self.num_kv_heads} key/value heads must divide "
                 f"{self.num_attention_heads} attention heads",
             )
+
+    def _check_experts(self) -> None:
+        require_int(self.num_experts, "model.num_experts", minimum=0)
+        require_int(self.experts_per_token, "model.experts_per_token", minimum=0)
+        require_int(self.moe_intermediate_size, "model.moe_intermediate_size", minimum=0)
+        require_bool(self.norm_topk_prob, "model.norm_topk_prob")
+        if not isinstance(cast("object", self.dense_layers), tuple):
+            raise TypeError("model.dense_layers must be a tuple of layer ids")
+        for layer in self.dense_layers:
+            require_int(layer, "model.dense_layers", minimum=0)
+            if layer >= self.num_layers:
+                raise ConfigError(
+                    "model.dense_layers",
+                    "INVALID_RANGE",
+                    f"layer {layer} is not one of the {self.num_layers} layers",
+                )
+        if not self.num_experts:
+            if self.experts_per_token or self.moe_intermediate_size or self.dense_layers:
+                raise ConfigError(
+                    "model.num_experts",
+                    "INVALID_RANGE",
+                    "a dense model (num_experts 0) has no experts_per_token, "
+                    "moe_intermediate_size or dense_layers",
+                )
+            return
+        if not 1 <= self.experts_per_token <= self.num_experts:
+            raise ConfigError(
+                "model.experts_per_token",
+                "INVALID_RANGE",
+                f"must be between 1 and num_experts ({self.num_experts}), "
+                f"got {self.experts_per_token}",
+            )
+        if self.moe_intermediate_size < 1:
+            raise ConfigError(
+                "model.moe_intermediate_size", "INVALID_RANGE", "an MoE model needs a width"
+            )
+
+    @property
+    def is_moe(self) -> bool:
+        """Whether some layer routes tokens to experts."""
+        return self.num_experts > 0 and len(self.dense_layers) < self.num_layers
 
     @property
     def context_length(self) -> int:
@@ -394,6 +457,13 @@ class ModelConfig(ConfigMixin):
                     f"multiple of {heads} attention heads",
                 )
             head_dim = hidden_size // heads
+        if config.get("clip_qkv") is not None:
+            raise ConfigError(
+                "model.clip_qkv",
+                "CLIP_QKV_UNSUPPORTED",
+                f"clipping the q, k and v projections (clip_qkv {config['clip_qkv']}) is "
+                "not implemented",
+            )
         kv_heads = config.get("num_key_value_heads")
         architecture = cast("str", found["architecture"])
         max_positions = cast("int", found["max_position_embeddings"])
@@ -419,7 +489,41 @@ class ModelConfig(ConfigMixin):
             attention_bias=cast("bool", config.get("attention_bias", False)),
             mlp_bias=cast("bool", config.get("mlp_bias", False)),
             sliding_window=_hf_sliding_window(config, cast("int", found["num_layers"])),
+            **_hf_experts(config, cast("int", found["num_layers"]), found["intermediate_size"]),
         )
+
+
+def _hf_experts(
+    config: Mapping[str, object], num_layers: int, intermediate_size: object
+) -> dict[str, Any]:
+    """The MoE fields of a ``config.json``: none for a dense model.
+
+    ``num_experts`` (OLMoE, Qwen3-MoE) or ``num_local_experts``; ``num_experts_per_tok``;
+    ``moe_intermediate_size``, else ``intermediate_size`` (OLMoE's experts have that width); a
+    layer is dense when ``mlp_only_layers`` lists it or ``decoder_sparse_step`` skips it, as
+    Qwen3-MoE reads them.
+    """
+    experts = config.get("num_experts", config.get("num_local_experts"))
+    if not experts:
+        return {}
+    step = config.get("decoder_sparse_step", 1)
+    only = config.get("mlp_only_layers") or ()
+    listed = (
+        {cast("int", layer) for layer in cast("Sequence[object]", only)}
+        if isinstance(only, Sequence) and not isinstance(only, str)
+        else set[int]()
+    )
+    step_value = step if type(step) is int and step >= 1 else 1
+    dense = tuple(
+        layer for layer in range(num_layers) if layer in listed or (layer + 1) % step_value
+    )
+    return {
+        "num_experts": experts,
+        "experts_per_token": config.get("num_experts_per_tok", 0),
+        "moe_intermediate_size": config.get("moe_intermediate_size") or intermediate_size,
+        "norm_topk_prob": config.get("norm_topk_prob", False),
+        "dense_layers": dense,
+    }
 
 
 def _hf_sliding_window(config: Mapping[str, object], num_layers: int) -> int | None:
@@ -443,9 +547,11 @@ def _hf_sliding_window(config: Mapping[str, object], num_layers: int) -> int | N
 #: defaults to when ``config.json`` does not give one.
 _ROPE_THETA_DEFAULT: Final = {
     "LlamaForCausalLM": 10000.0,
+    "OlmoeForCausalLM": 10000.0,
     "Phi3ForCausalLM": 10000.0,
     "Qwen2ForCausalLM": 10000.0,
     "Qwen3ForCausalLM": 10000.0,
+    "Qwen3MoeForCausalLM": 10000.0,
 }
 
 
