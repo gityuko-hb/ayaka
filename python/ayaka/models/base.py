@@ -25,6 +25,11 @@ Where a checkpoint's layout is turned into the model's
   :meth:`CausalLM.checkpoint_specs` then reports the stored (transposed) shape, so a
   checkpoint with the wrong shape is caught by ``bind`` before a byte is read,
   and :meth:`CausalLM.load_weight` transposes while it copies.
+* **Quantization**: a :class:`~ayaka.layers.linear.Linear` built with an 8-bit method
+  holds an 8-bit ``weight`` and a ``weight_scale``. Its method
+  (:class:`~ayaka.layers.quantization.method.QuantMethod`) says what the checkpoint stores
+  for each of them, also for one part of a fused parameter, and how a stored tensor fills
+  its rows; :meth:`CausalLM.checkpoint_specs` and :meth:`CausalLM.load_weight` ask it.
 * **Fusion**: Llama stores ``q_proj``, ``k_proj`` and ``v_proj`` separately
   where the model has one ``qkv_proj``, and ``gate_proj`` and ``up_proj`` where
   it has ``gate_up_proj``. A model lists each fused parameter's parts, in the
@@ -58,9 +63,11 @@ if TYPE_CHECKING:
     from ayaka.configs.model import ModelConfig
     from ayaka.core.types import KVLayoutKind
     from ayaka.layers.context import ForwardContext
+    from ayaka.layers.quantization.method import QuantMethod
     from ayaka.ops.backend import OpsBackend
     from ayaka.utils.dtypes import DType
     from ayaka.weights.mapping import WeightMapping
+    from ayaka.weights.quant import QuantFormat
 
 __all__ = ["CausalLM"]
 
@@ -83,17 +90,24 @@ class CausalLM(nn.Module, ABC):
         dtype: Compute dtype of the parameters and of the activations.
         device: Where the parameters live; ``"meta"`` builds a model with no memory
             behind it, which is how the loader starts.
+        quant: The checkpoint's quantization recipe (``config.json``
+            ``quantization_config``), or ``None`` for weights in a 16- or 32-bit float.
 
     Attributes:
         config: The architecture this model was built for.
         ops: The ops backend, also needed by whoever plans a step (``ops.attention.plan``).
         compute_dtype: The dtype given at construction.
+        quant_format: The recipe given at construction.
+        quant_method: The method its decoder linear layers are built with.
         stored_transposed: Full-match regular expressions of the names of the
             parameters whose checkpoint tensor is stored with its two dimensions
             swapped. Empty unless the architecture's checkpoints do that.
     """
 
     stored_transposed: ClassVar[tuple[str, ...]] = ()
+    #: Whether the architecture builds its linear layers with :attr:`quant_method`; a model
+    #: that does not refuses a quantized checkpoint instead of misreading it.
+    quantizable: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -102,11 +116,22 @@ class CausalLM(nn.Module, ABC):
         ops: OpsBackend,
         dtype: DType,
         device: torch.device | str | None = None,
+        quant: QuantFormat | None = None,
     ) -> None:
         super().__init__()
+        from ayaka.layers.quantization.method import quant_method
+
+        if quant is not None and not self.quantizable:
+            raise ModelLoadError(
+                f"{config.architecture} does not run quantized checkpoints "
+                f"({quant.producer}, {quant.name})",
+                context={"architecture": config.architecture, "quantization": quant.name},
+            )
         self.config = config
         self.ops = ops
         self.compute_dtype = dtype
+        self.quant_format = quant
+        self.quant_method: QuantMethod = quant_method(quant)
 
     @classmethod
     @abstractmethod
@@ -207,12 +232,26 @@ class CausalLM(nn.Module, ABC):
         its parts (:meth:`stored_parts`). Shapes are the stored ones, so
         :meth:`~ayaka.weights.mapping.WeightMapping.bind` compares like with
         like: a parameter in :attr:`stored_transposed` is listed with its
-        dimensions swapped. The dtype is the compute dtype; the checkpoint's
-        own dtype is converted when the tensor is loaded.
+        dimensions swapped, and a parameter of a quantized linear layer with the
+        shape its method says is stored. The dtype is the one the parameter holds:
+        the compute dtype, which any stored 16- or 32-bit float converts to, or the
+        8-bit dtype of a quantized weight, which the checkpoint must store as is.
         """
         specs: list[TensorSpec] = []
         for name, parameter in self.named_parameters():
             parts = self.stored_parts(name)
+            quantized = self._quantized_owner(name)
+            if quantized is not None:
+                method, local, in_features, out_features = quantized
+                dtype = method.stored_dtype(local, self.compute_dtype)
+                pieces = parts or ((name, out_features),)
+                if parts:
+                    method.part_rows(local, [rows for _, rows in parts])  # refuses a bad fusion
+                specs.extend(
+                    TensorSpec(part, method.stored_shape(local, rows, in_features), dtype)
+                    for part, rows in pieces
+                )
+                continue
             if parts:
                 tail = tuple(parameter.shape[1:])
                 specs.extend(
@@ -239,6 +278,11 @@ class CausalLM(nn.Module, ABC):
                 checkpoint it accepted; this is the guard for a direct call.
         """
         target = self._part_target(name)
+        fused_name = name if target is None else target[0]
+        quantized = self._quantized_owner(fused_name)
+        if quantized is not None:
+            self._load_quantized(name, tensor, quantized, target)
+            return
         if target is not None:
             fused, start, rows = target
             parameter = self.get_parameter(fused)
@@ -261,6 +305,48 @@ class CausalLM(nn.Module, ABC):
                 context={"parameter": name},
             )
         parameter.copy_(tensor)
+
+    def _load_quantized(
+        self,
+        name: str,
+        tensor: torch.Tensor,
+        quantized: tuple[QuantMethod, str, int, int],
+        target: tuple[str, int, int] | None,
+    ) -> None:
+        """Fill the rows of a quantized layer's parameter that the stored tensor ``name`` covers."""
+        method, local, in_features, out_features = quantized
+        if target is None:
+            parameter = self.get_parameter(name)
+            rows = out_features
+            span, first = int(parameter.shape[0]), 0
+        else:
+            fused, start, rows = target
+            parameter = self.get_parameter(fused)
+            parts = [count for _, count in self.stored_parts(fused)]
+            index = [part for part, _ in self.stored_parts(fused)].index(name)
+            spans = method.part_rows(local, parts)
+            span, first = spans[index], sum(spans[:index])
+            del start
+        expected = method.stored_shape(local, rows, in_features)
+        if tuple(tensor.shape) != expected:
+            raise ModelLoadError(
+                f"{name} is stored as {list(expected)} but the checkpoint tensor is "
+                f"{list(tensor.shape)}",
+                context={"parameter": name},
+            )
+        method.fill(local, parameter[first : first + span], tensor)
+
+    def _quantized_owner(self, name: str) -> tuple[QuantMethod, str, int, int] | None:
+        """``(method, local name, in, out features)`` of a parameter of a quantized layer."""
+        from ayaka.layers.linear import Linear
+
+        prefix, dot, local = name.rpartition(".")
+        if not dot or self.quant_format is None:
+            return None
+        module = self.get_submodule(prefix)
+        if not isinstance(module, Linear) or module.method.format is None:
+            return None
+        return module.method, local, module.in_features, module.out_features
 
     def _is_stored_transposed(self, name: str) -> bool:
         return any(re.fullmatch(pattern, name) for pattern in self.stored_transposed)

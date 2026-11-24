@@ -12,6 +12,7 @@ from ayaka.layers.norm import RMSNorm
 
 if TYPE_CHECKING:
     from ayaka.layers.context import ForwardContext
+    from ayaka.layers.quantization.method import QuantMethod
     from ayaka.layers.rope import RotaryEmbedding
     from ayaka.ops.backend import OpsBackend
 
@@ -59,6 +60,8 @@ class Attention(nn.Module):
         ops: The backend whose ``kvcache``, ``attention`` and ``linear`` ops do the work.
         dtype: Compute dtype of the parameters.
         device: Where the parameters live.
+        quant: How ``qkv_proj`` and ``o_proj`` store and multiply their weights; ``None``
+            for the compute dtype.
 
     Raises:
         ValueError: If ``num_kv_heads`` does not divide ``num_heads``.
@@ -80,6 +83,7 @@ class Attention(nn.Module):
         ops: OpsBackend,
         dtype: torch.dtype,
         device: torch.device | str | None = None,
+        quant: QuantMethod | None = None,
     ) -> None:
         super().__init__()
         if num_heads % num_kv_heads:
@@ -96,6 +100,7 @@ class Attention(nn.Module):
             ops=ops,
             dtype=dtype,
             device=device,
+            quant=quant,
         )
         self.o_proj = Linear(
             num_heads * head_dim,
@@ -104,6 +109,7 @@ class Attention(nn.Module):
             ops=ops,
             dtype=dtype,
             device=device,
+            quant=quant,
         )
         self.qk_norm = qk_norm
         self.q_norm: RMSNorm | None = None

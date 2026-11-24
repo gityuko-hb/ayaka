@@ -11,6 +11,7 @@ from ayaka.layers.activation import GELU, GELUAndMul, SiLUAndMul
 from ayaka.layers.linear import Linear
 
 if TYPE_CHECKING:
+    from ayaka.layers.quantization.method import QuantMethod
     from ayaka.ops.backend import OpsBackend
 
 __all__ = ["MLP", "GatedActivation", "GatedMLP"]
@@ -74,6 +75,8 @@ class GatedMLP(nn.Module):
         ops: The backend whose ops do the work.
         dtype: Compute dtype of the parameters.
         device: Where the parameters live.
+        quant: How both projections store and multiply their weights; ``None`` for the
+            compute dtype.
 
     Raises:
         ValueError: If ``activation`` is not one of the names above.
@@ -89,10 +92,17 @@ class GatedMLP(nn.Module):
         ops: OpsBackend,
         dtype: torch.dtype,
         device: torch.device | str | None = None,
+        quant: QuantMethod | None = None,
     ) -> None:
         super().__init__()
         self.gate_up_proj = Linear(
-            hidden_size, 2 * intermediate_size, bias=bias, ops=ops, dtype=dtype, device=device
+            hidden_size,
+            2 * intermediate_size,
+            bias=bias,
+            ops=ops,
+            dtype=dtype,
+            device=device,
+            quant=quant,
         )
         self.act: nn.Module
         match activation:
@@ -105,7 +115,13 @@ class GatedMLP(nn.Module):
                     f"activation must be 'silu', 'gelu' or 'gelu_tanh', got {activation!r}"
                 )
         self.down_proj = Linear(
-            intermediate_size, hidden_size, bias=bias, ops=ops, dtype=dtype, device=device
+            intermediate_size,
+            hidden_size,
+            bias=bias,
+            ops=ops,
+            dtype=dtype,
+            device=device,
+            quant=quant,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

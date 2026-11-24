@@ -501,6 +501,7 @@ def run_bench(
             "architecture": plan.model_config.architecture,
             "dtype": plan.group.spec.dtype.label,
             "weights_bytes": plan.weights_bytes,
+            "quantization": plan.quantization,
             "max_position_embeddings": plan.model_config.max_position_embeddings,
         },
         "engine": engine,

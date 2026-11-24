@@ -370,3 +370,53 @@ class TestColdCudaRuntimeGap:
         assert honest_plan.budget == self._expected_budget(
             cold_plan, baseline=nvml_free, late_alloc_bytes=5 * self._MIB
         )
+
+
+class TestQuantizedPlan:
+    @staticmethod
+    def _fp8_llama(directory: Path) -> Path:
+        from fp8_support import HF_FP8_BLOCK, fp8_data, quantize_state
+        from gpt2_support import tensor_data
+        from llama_support import llama_config, llama_config_dict, llama_state
+        from safetensors_files import write_safetensors
+
+        config = llama_config()
+        stored, _ = quantize_state(llama_state(config), "block", scale_name="weight_scale_inv")
+        directory.mkdir(parents=True)
+        raw = {**llama_config_dict(config), "quantization_config": HF_FP8_BLOCK}
+        (directory / "config.json").write_text(json.dumps(raw), encoding="utf-8")
+        write_safetensors(
+            directory / "model.safetensors",
+            {
+                name: fp8_data(t) if t.dtype == torch.float8_e4m3fn else tensor_data(t)
+                for name, t in stored.items()
+            },
+        )
+        return directory
+
+    def test_the_plan_says_in_one_line_that_the_weights_are_sliced(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        directory = self._fp8_llama(tmp_path / "fp8")
+
+        code = main(["plan", str(directory)])
+
+        out = capsys.readouterr().out
+        assert code == EXIT_OK
+        assert "fp8_e4m3/block-16x16 projections" in out
+        quantized = [line for line in out.splitlines() if line.startswith("quantized  ")]
+        assert len(quantized) == 1
+        assert "dequantized in slices" in quantized[0]
+
+    def test_the_planned_weights_are_the_loaded_eight_bit_weights(self, tmp_path: Path) -> None:
+        from ayaka.configs.model_source import ModelSourceConfig
+
+        directory = self._fp8_llama(tmp_path / "fp8")
+        config = tiny_engine_config(directory, num_blocks=None)
+
+        plan = plan_engine(config)
+        model = loader.load_model(ModelSourceConfig(str(directory)), config.device)
+
+        assert plan.quantization == "fp8_e4m3/block-16x16"
+        assert plan.weights_bytes == sum(p.numel() * p.element_size() for p in model.parameters())
+        assert "+fp8_e4m3/block-16x16" in plan.profile_key.model

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from ayaka.layers.context import ForwardContext
     from ayaka.ops.backend import OpsBackend
     from ayaka.utils.dtypes import DType
+    from ayaka.weights.quant import QuantFormat
 
 __all__ = ["GPT2LMHeadModel"]
 
@@ -135,8 +136,9 @@ class GPT2LMHeadModel(CausalLM):
         ops: OpsBackend,
         dtype: DType,
         device: torch.device | str | None = None,
+        quant: QuantFormat | None = None,
     ) -> None:
-        super().__init__(config, ops=ops, dtype=dtype, device=device)
+        super().__init__(config, ops=ops, dtype=dtype, device=device, quant=quant)
         _check_supported(config)
         torch_dtype = dtype.torch_dtype
         hidden = config.hidden_size
