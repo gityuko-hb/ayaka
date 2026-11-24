@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from ayaka.ops.backend import OpsBackend
     from ayaka.weights.tensor import TensorRef
 
-__all__ = ["describe_model", "load_model", "load_weights"]
+__all__ = ["describe_model", "load_model", "load_weights", "read_model_config"]
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,9 @@ def load_model(
     directory = resolve_source(source)
     config = _read_model_config(directory)
     model_class = resolve_model(config.architecture)
-    backend = ops or load_backend(device.backends, device=device.device_type, dtype=device.dtype)
+    backend = ops or load_backend(
+        device.backends, device=device.device_type, dtype=device.dtype, head_dim=config.head_dim
+    )
     target = resolve_device(device.device, capability="model_loader")
 
     model = model_class(config, ops=backend, dtype=device.dtype, device="meta")
@@ -145,10 +147,24 @@ def describe_model(
     directory = resolve_source(source)
     config = _read_model_config(directory)
     model_class = resolve_model(config.architecture)
-    backend = ops or load_backend(device.backends, device=device.device_type, dtype=device.dtype)
+    backend = ops or load_backend(
+        device.backends, device=device.device_type, dtype=device.dtype, head_dim=config.head_dim
+    )
     model = model_class(config, ops=backend, dtype=device.dtype, device="meta")
     model.tie_weights()
     return directory, model
+
+
+def read_model_config(source: ModelSourceConfig) -> ModelConfig:
+    """The architecture a source describes, from its ``config.json``: nothing else is read.
+
+    The engine reads it before choosing its ops backends, which depend on the head width.
+
+    Raises:
+        As :func:`describe_model`.
+    """
+    _require_readable_format(source)
+    return _read_model_config(resolve_source(source))
 
 
 def load_weights(model: CausalLM, directory: str | Path) -> None:

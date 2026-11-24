@@ -20,6 +20,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
 
 from ayaka.core.errors import BackendError, CapabilityError, ConfigError
+from ayaka.ops.backends.flashinfer import HEAD_DIMS as FLASHINFER_HEAD_DIMS
 from ayaka.utils.dtypes import COMPUTE_DTYPES, DType
 from ayaka.utils.torch_utils import require_torch
 from ayaka.utils.validation import require_text
@@ -120,6 +121,9 @@ class BackendCaps:
             request (prefill chunks, verify windows), not only decode rows. Every
             engine prefills, so :func:`load_backend` takes attention only from a
             backend that has it.
+        attention_head_dims: The head widths the attention family has kernels for, or
+            ``None`` for any. Given a model's ``head_dim``, :func:`load_backend` takes
+            attention from a backend that has it.
 
     Raises:
         ValueError: If ``name`` is blank, ``families`` names an unknown family,
@@ -135,6 +139,7 @@ class BackendCaps:
     graph_safe: frozenset[FamilyName] = frozenset()
     external_uniform: bool = False
     multi_row_attention: bool = False
+    attention_head_dims: frozenset[int] | None = None
 
     def __post_init__(self) -> None:
         require_text(self.name, "name")
@@ -205,7 +210,12 @@ def available_backends() -> tuple[BackendCaps, ...]:
 
 
 def load_backend(
-    names: Sequence[str], *, device: str, dtype: DType, cuda_graph: bool = False
+    names: Sequence[str],
+    *,
+    device: str,
+    dtype: DType,
+    cuda_graph: bool = False,
+    head_dim: int | None = None,
 ) -> OpsBackend:
     """Build the ops for one device from backends listed in priority order.
 
@@ -222,6 +232,8 @@ def load_backend(
         device: Torch device type the ops will run on: ``"cpu"`` or ``"cuda"``.
         dtype: Compute dtype of the model.
         cuda_graph: Whether decode steps will be captured in CUDA graphs.
+        head_dim: The model's attention head width, so that attention comes from a
+            backend with kernels for it; ``None`` when no model is known yet.
 
     Raises:
         ConfigError: If ``names`` is empty, repeats a name or contains an
@@ -241,7 +253,9 @@ def load_backend(
         rejections: list[str] = []
         passed_over: list[str] = []
         for name in names:
-            reason = _rejection(_registry[name][0], family, device, dtype, cuda_graph=cuda_graph)
+            reason = _rejection(
+                _registry[name][0], family, device, dtype, cuda_graph=cuda_graph, head_dim=head_dim
+            )
             if reason is None:
                 reason = _ensure_loaded(name, loaded, unavailable)
             if reason is None:
@@ -309,7 +323,13 @@ def _check_names(names: Sequence[str]) -> None:
 
 
 def _rejection(
-    caps: BackendCaps, family: FamilyName, device: str, dtype: DType, *, cuda_graph: bool
+    caps: BackendCaps,
+    family: FamilyName,
+    device: str,
+    dtype: DType,
+    *,
+    cuda_graph: bool,
+    head_dim: int | None,
 ) -> str | None:
     """Return why ``caps`` cannot serve ``family`` here, or ``None`` if it can."""
     if family not in caps.families:
@@ -323,6 +343,14 @@ def _rejection(
         problems.append(f"has no {dtype.label} support")
     if family == "attention" and not caps.multi_row_attention:
         problems.append("serves only one query row per request")
+    heads = caps.attention_head_dims
+    if (
+        family == "attention"
+        and head_dim is not None
+        and heads is not None
+        and head_dim not in heads
+    ):
+        problems.append(f"has no kernels for heads of {head_dim} (only {sorted(heads)})")
     if cuda_graph and family in GRAPH_FAMILIES and family not in caps.graph_safe:
         problems.append("cannot run inside a CUDA graph")
     return ", ".join(problems) or None
@@ -407,6 +435,7 @@ register_backend(
         dtypes=frozenset({DType.FP16, DType.BF16}),
         graph_safe=frozenset({"attention"}),
         multi_row_attention=True,
+        attention_head_dims=FLASHINFER_HEAD_DIMS,
     ),
     _load_flashinfer,
 )

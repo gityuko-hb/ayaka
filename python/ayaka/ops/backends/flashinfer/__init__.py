@@ -21,14 +21,18 @@ cache directory.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
     from ayaka.ops.backend import BackendFamilies
 
-__all__ = ["load"]
+__all__ = ["HEAD_DIMS", "load"]
+
+#: Head widths flashinfer has attention kernels for. ``load_backend`` takes attention from the
+#: next backend for a model with another width (Phi-3-mini: 96).
+HEAD_DIMS: Final = frozenset({64, 128, 256})
 
 
 def load() -> BackendFamilies:

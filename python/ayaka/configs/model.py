@@ -39,7 +39,9 @@ _ROPE_KINDS: Final[tuple[RopeScalingKind, ...]] = ("linear", "llama3", "yarn")
 #: ties by default, but some architectures' own config classes do not, and a checkpoint
 #: written from one of those omits the key. Tying by mistake would silently replace the
 #: stored output head by the embedding, so the default follows the architecture.
-_UNTIED_BY_DEFAULT: Final = frozenset({"LlamaForCausalLM", "Qwen2ForCausalLM", "Qwen3ForCausalLM"})
+_UNTIED_BY_DEFAULT: Final = frozenset(
+    {"LlamaForCausalLM", "Phi3ForCausalLM", "Qwen2ForCausalLM", "Qwen3ForCausalLM"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +443,7 @@ def _hf_sliding_window(config: Mapping[str, object], num_layers: int) -> int | N
 #: defaults to when ``config.json`` does not give one.
 _ROPE_THETA_DEFAULT: Final = {
     "LlamaForCausalLM": 10000.0,
+    "Phi3ForCausalLM": 10000.0,
     "Qwen2ForCausalLM": 10000.0,
     "Qwen3ForCausalLM": 10000.0,
 }
