@@ -51,7 +51,6 @@ __all__ = [
     "update_graph_metadata",
 ]
 
-#: Head widths flashinfer compiles attention for.
 #: The float scratch buffer every wrapper on one device shares; flashinfer's recommended size.
 WORKSPACE_BYTES: Final = 128 * 2**20
 _DTYPES: Final = (torch.float16, torch.bfloat16)
