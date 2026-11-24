@@ -1,0 +1,96 @@
+{
+  "source": {
+    "model": "Qwen/Qwen3-1.7B (bf16, snapshot 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e)",
+    "date": "2026-11-23",
+    "how": "Ayaka's engine (LLM.generate) on an NVIDIA L4, flashinfer attention, CUDA graphs, bf16, greedy, at commit 0019762 plus the Qwen3 model of the same pull request. Prompt token ids rendered by transformers apply_chat_template with the checkpoint's own template, the tools get_weather and get_time when tools_in_prompt is true, and enable_thinking as listed.",
+    "marker_ids": {
+      "<think>": 151667,
+      "</think>": 151668,
+      "<tool_call>": 151657,
+      "</tool_call>": 151658
+    },
+    "fields": {
+      "raw": "decoded with special tokens kept (ends with <|im_end|>)",
+      "text": "special tokens dropped: what the parser sees; <think>, </think>, <tool_call> and </tool_call> are added tokens that are not special, so they stay",
+      "marker_ids_in_output": "which of the four marker ids the generated token ids contain: each marker was one token"
+    }
+  },
+  "answers": [
+    {
+      "id": "think-then-call",
+      "tools_in_prompt": true,
+      "enable_thinking": true,
+      "mode": "greedy",
+      "prompt_tokens": 212,
+      "completion_tokens": 122,
+      "ended_by": "stop",
+      "raw": "<think>\nOkay, the user is asking about the weather in Paris right now. Let me check the tools available. There's a function called get_weather that takes a city parameter. The required parameter is city, and the example given is Paris. So I need to call get_weather with city set to Paris. I should make sure to format the tool call correctly in JSON inside the XML tags. No other functions are needed here since the user specifically asked for the weather. Alright, that's straightforward.\n</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call><|im_end|>",
+      "text": "<think>\nOkay, the user is asking about the weather in Paris right now. Let me check the tools available. There's a function called get_weather that takes a city parameter. The required parameter is city, and the example given is Paris. So I need to call get_weather with city set to Paris. I should make sure to format the tool call correctly in JSON inside the XML tags. No other functions are needed here since the user specifically asked for the weather. Alright, that's straightforward.\n</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>",
+      "marker_ids_in_output": [
+        151657,
+        151658,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "think-then-two-calls",
+      "tools_in_prompt": true,
+      "enable_thinking": true,
+      "mode": "greedy",
+      "prompt_tokens": 218,
+      "completion_tokens": 185,
+      "ended_by": "stop",
+      "raw": "<think>\nOkay, the user is asking for both the weather in Paris and the time in Tokyo. Let me check the tools available. There's get_weather which requires a city parameter, and get_time which also needs a city. So I need to call both functions. First, for Paris, I'll use get_weather with city set to Paris. Then, for Tokyo, I'll use get_time with city set to Tokyo. I should make sure to structure the tool calls correctly in JSON within the XML tags. Let me verify the parameters again to ensure they're required and correctly formatted. Yep, both functions need the city name as a string. Alright, I'll generate the tool calls for both cities.\n</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"get_time\", \"arguments\": {\"city\": \"Tokyo\"}}\n</tool_call><|im_end|>",
+      "text": "<think>\nOkay, the user is asking for both the weather in Paris and the time in Tokyo. Let me check the tools available. There's get_weather which requires a city parameter, and get_time which also needs a city. So I need to call both functions. First, for Paris, I'll use get_weather with city set to Paris. Then, for Tokyo, I'll use get_time with city set to Tokyo. I should make sure to structure the tool calls correctly in JSON within the XML tags. Let me verify the parameters again to ensure they're required and correctly formatted. Yep, both functions need the city name as a string. Alright, I'll generate the tool calls for both cities.\n</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"get_time\", \"arguments\": {\"city\": \"Tokyo\"}}\n</tool_call>",
+      "marker_ids_in_output": [
+        151657,
+        151658,
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "no-think-call",
+      "tools_in_prompt": true,
+      "enable_thinking": false,
+      "mode": "greedy",
+      "prompt_tokens": 216,
+      "completion_tokens": 20,
+      "ended_by": "stop",
+      "raw": "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call><|im_end|>",
+      "text": "<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>",
+      "marker_ids_in_output": [
+        151657,
+        151658
+      ]
+    },
+    {
+      "id": "think-then-text",
+      "tools_in_prompt": false,
+      "enable_thinking": true,
+      "mode": "greedy",
+      "prompt_tokens": 20,
+      "completion_tokens": 130,
+      "ended_by": "stop",
+      "raw": "<think>\nOkay, the user is asking for the capital of Japan in one short sentence. Let me think. I know that Japan's capital is Tokyo. But I need to make sure I'm not mixing it up with another city. Kyoto is the capital of Kyoto, but that's not the main capital. Tokyo is the largest city and the political center. Yeah, I'm pretty sure that's right. So the answer should be Tokyo. Let me check if there's any other possible answer. No, I think that's correct. Just need to phrase it in a single sentence as requested.\n</think>\n\nThe capital of Japan is Tokyo.<|im_end|>",
+      "text": "<think>\nOkay, the user is asking for the capital of Japan in one short sentence. Let me think. I know that Japan's capital is Tokyo. But I need to make sure I'm not mixing it up with another city. Kyoto is the capital of Kyoto, but that's not the main capital. Tokyo is the largest city and the political center. Yeah, I'm pretty sure that's right. So the answer should be Tokyo. Let me check if there's any other possible answer. No, I think that's correct. Just need to phrase it in a single sentence as requested.\n</think>\n\nThe capital of Japan is Tokyo.",
+      "marker_ids_in_output": [
+        151667,
+        151668
+      ]
+    },
+    {
+      "id": "after-tool-result",
+      "tools_in_prompt": true,
+      "enable_thinking": false,
+      "mode": "greedy",
+      "prompt_tokens": 263,
+      "completion_tokens": 14,
+      "ended_by": "stop",
+      "raw": "The current weather in Paris is 18°C with clouds.<|im_end|>",
+      "text": "The current weather in Paris is 18°C with clouds.",
+      "marker_ids_in_output": []
+    }
+  ]
+}

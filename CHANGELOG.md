@@ -6,6 +6,8 @@
 
 - Qwen2 and Qwen2.5 checkpoints (`Qwen2ForCausalLM`). A model whose sliding window is shorter than its trained context
   is served up to the window, because windowed attention is not implemented; `ayaka plan` shows the shorter context.
+- Qwen3 checkpoints (`Qwen3ForCausalLM`), whose `<think>` reasoning and `<tool_call>` calls go through the `think` and
+  `hermes` parsers.
 
 ## 0.1.0 (not published on PyPI)
 
