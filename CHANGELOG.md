@@ -20,6 +20,9 @@
 - `ayaka plan <file>.gguf` plans a `llama` GGUF file from its header: the weights are the sum of the tensor sizes the
   header gives (any mix of GGML quantization types), and the KV cache follows the metadata. The engine does not run
   GGUF tensors and refuses such a file with the reason.
+- A mixture-of-experts op family, `moe` (`route`: float32 softmax and top-k, ties to the lower expert id;
+  `experts`: the SiLU-gated expert MLPs), and `MoEBlock`, which holds every expert in device memory. The torch backend
+  picks one of three exact strategies by the number of rows; CUDA graphs capture MoE steps of up to 32 rows.
 
 ## 0.1.0 (not published on PyPI)
 

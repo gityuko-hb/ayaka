@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ayaka.layers.context import ForwardContext
     from ayaka.layers.embedding.token import LMHead, TokenEmbedding
     from ayaka.layers.ffn.dense import MLP, GatedMLP
+    from ayaka.layers.ffn.moe import MoEBlock, StackedExperts
     from ayaka.layers.linear import Linear
     from ayaka.layers.norm import LayerNorm, RMSNorm
     from ayaka.layers.rope import RotaryEmbedding, rope_inverse_frequencies
@@ -36,9 +37,11 @@ __all__ = [
     "LMHead",
     "LayerNorm",
     "Linear",
+    "MoEBlock",
     "RMSNorm",
     "RotaryEmbedding",
     "SiLUAndMul",
+    "StackedExperts",
     "TokenEmbedding",
     "rope_inverse_frequencies",
 ]
@@ -49,6 +52,7 @@ _EXPORTS = {
     "context": ("ForwardContext",),
     "embedding.token": ("LMHead", "TokenEmbedding"),
     "ffn.dense": ("MLP", "GatedMLP"),
+    "ffn.moe": ("MoEBlock", "StackedExperts"),
     "linear": ("Linear",),
     "norm": ("LayerNorm", "RMSNorm"),
     "rope": ("RotaryEmbedding", "rope_inverse_frequencies"),
