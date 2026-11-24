@@ -1,0 +1,330 @@
+{
+  "benchmark": "quant_kl",
+  "machine": {
+    "date": "2026-11-24T09:48:34+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "40fbf48d93d843a5402ffa85c55230461061fca1-dirty"
+  },
+  "reference": "/root/.cache/huggingface/hub/models--unsloth--Llama-3.1-8B-Instruct/snapshots/4699cc75b550f9c6f3173fb80f4703b62d946aa5",
+  "quantized": "/root/.cache/huggingface/hub/models--RedHatAI--Meta-Llama-3.1-8B-Instruct-FP8/snapshots/870a1177ed082c0ba5dbefd62573ab8f91803f6a",
+  "dtype": "bf16",
+  "backends": [
+    "torch"
+  ],
+  "prompts": 32,
+  "threshold_nats": 0.05,
+  "mean_kl_nats": 0.0026067838766636875,
+  "max_kl_nats": 0.012082859873771667,
+  "top1_agreement": 1.0,
+  "mean_reference_entropy_nats": 0.5400946880352286,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "passes": true,
+  "load_seconds": {
+    "reference": 47.45221777900042,
+    "quantized": 2.841017112001282
+  },
+  "per_prompt": [
+    {
+      "prompt": "What is the capital of France?",
+      "tokens": 42,
+      "kl_nats": 7.913164154160768e-06,
+      "reference_entropy_nats": 0.002471711952239275,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "Write a haiku about the sea.",
+      "tokens": 43,
+      "kl_nats": 0.001310498802922666,
+      "reference_entropy_nats": 1.217665195465088,
+      "top1_agrees": true,
+      "top1_reference": 54,
+      "top1_quantized": 54
+    },
+    {
+      "prompt": "Explain what a hash table is in two sentences.",
+      "tokens": 46,
+      "kl_nats": 1.0695517005387956e-07,
+      "reference_entropy_nats": 1.5103661326065776e-06,
+      "top1_agrees": true,
+      "top1_reference": 32,
+      "top1_quantized": 32
+    },
+    {
+      "prompt": "Translate 'good morning' into Spanish.",
+      "tokens": 43,
+      "kl_nats": 0.0007445570081472397,
+      "reference_entropy_nats": 1.5091135501861572,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "What is 17 multiplied by 23?",
+      "tokens": 44,
+      "kl_nats": 0.007786594331264496,
+      "reference_entropy_nats": 0.7449683547019958,
+      "top1_agrees": true,
+      "top1_reference": 1114,
+      "top1_quantized": 1114
+    },
+    {
+      "prompt": "Name three primary colors.",
+      "tokens": 40,
+      "kl_nats": 0.0006332884076982737,
+      "reference_entropy_nats": 0.04426075518131256,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "Write a Python function that reverses a string.",
+      "tokens": 45,
+      "kl_nats": 0.007277805358171463,
+      "reference_entropy_nats": 0.8364987373352051,
+      "top1_agrees": true,
+      "top1_reference": 334,
+      "top1_quantized": 334
+    },
+    {
+      "prompt": "Why is the sky blue?",
+      "tokens": 41,
+      "kl_nats": 2.633332769619301e-06,
+      "reference_entropy_nats": 0.002507398836314678,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "Summarize the plot of Romeo and Juliet in one sentence.",
+      "tokens": 48,
+      "kl_nats": 0.008294573053717613,
+      "reference_entropy_nats": 0.9978501796722412,
+      "top1_agrees": true,
+      "top1_reference": 49,
+      "top1_quantized": 49
+    },
+    {
+      "prompt": "What does HTTP stand for?",
+      "tokens": 41,
+      "kl_nats": 3.866082988679409e-05,
+      "reference_entropy_nats": 0.005517221055924892,
+      "top1_agrees": true,
+      "top1_reference": 9412,
+      "top1_quantized": 9412
+    },
+    {
+      "prompt": "Give me a synonym for 'happy'.",
+      "tokens": 43,
+      "kl_nats": 0.002136616036295891,
+      "reference_entropy_nats": 0.7413917183876038,
+      "top1_agrees": true,
+      "top1_reference": 32,
+      "top1_quantized": 32
+    },
+    {
+      "prompt": "How many continents are there?",
+      "tokens": 41,
+      "kl_nats": 0.0009060036391019821,
+      "reference_entropy_nats": 0.15120825171470642,
+      "top1_agrees": true,
+      "top1_reference": 3947,
+      "top1_quantized": 3947
+    },
+    {
+      "prompt": "Write a SQL query that counts the rows of a table named users.",
+      "tokens": 49,
+      "kl_nats": 0.002364836633205414,
+      "reference_entropy_nats": 0.5747588872909546,
+      "top1_agrees": true,
+      "top1_reference": 334,
+      "top1_quantized": 334
+    },
+    {
+      "prompt": "What is the boiling point of water at sea level in Celsius?",
+      "tokens": 48,
+      "kl_nats": 0.0005284908693283796,
+      "reference_entropy_nats": 0.09529659152030945,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "List the planets of the solar system in order.",
+      "tokens": 45,
+      "kl_nats": 0.006167693994939327,
+      "reference_entropy_nats": 0.6910848617553711,
+      "top1_agrees": true,
+      "top1_reference": 8586,
+      "top1_quantized": 8586
+    },
+    {
+      "prompt": "What is a prime number?",
+      "tokens": 41,
+      "kl_nats": 2.009040827033459e-06,
+      "reference_entropy_nats": 0.00015071695088408887,
+      "top1_agrees": true,
+      "top1_reference": 32,
+      "top1_quantized": 32
+    },
+    {
+      "prompt": "Describe a cat to someone who has never seen one.",
+      "tokens": 46,
+      "kl_nats": 0.011169368401169777,
+      "reference_entropy_nats": 1.6230838298797607,
+      "top1_agrees": true,
+      "top1_reference": 32,
+      "top1_quantized": 32
+    },
+    {
+      "prompt": "What year did the Second World War end?",
+      "tokens": 44,
+      "kl_nats": 0.0013469563564285636,
+      "reference_entropy_nats": 0.11573924124240875,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "Write a short apology for being late to a meeting.",
+      "tokens": 46,
+      "kl_nats": 0.0025354349054396152,
+      "reference_entropy_nats": 1.1808128356933594,
+      "top1_agrees": true,
+      "top1_reference": 8586,
+      "top1_quantized": 8586
+    },
+    {
+      "prompt": "What is the difference between a list and a tuple in Python?",
+      "tokens": 48,
+      "kl_nats": 0.003005131147801876,
+      "reference_entropy_nats": 0.49836790561676025,
+      "top1_agrees": true,
+      "top1_reference": 334,
+      "top1_quantized": 334
+    },
+    {
+      "prompt": "Suggest a name for a coffee shop.",
+      "tokens": 44,
+      "kl_nats": 0.00020951073383912444,
+      "reference_entropy_nats": 0.12152914702892303,
+      "top1_agrees": true,
+      "top1_reference": 8586,
+      "top1_quantized": 8586
+    },
+    {
+      "prompt": "How do vaccines work?",
+      "tokens": 40,
+      "kl_nats": 0.0005546687752939761,
+      "reference_entropy_nats": 0.008842150680720806,
+      "top1_agrees": true,
+      "top1_reference": 53,
+      "top1_quantized": 53
+    },
+    {
+      "prompt": "What is the square root of 144?",
+      "tokens": 44,
+      "kl_nats": 8.179534052032977e-05,
+      "reference_entropy_nats": 0.014796681702136993,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "Write the first line of a mystery novel.",
+      "tokens": 44,
+      "kl_nats": 0.0014838017523288727,
+      "reference_entropy_nats": 1.9976680278778076,
+      "top1_agrees": true,
+      "top1_reference": 2170,
+      "top1_quantized": 2170
+    },
+    {
+      "prompt": "Explain recursion to a ten-year-old.",
+      "tokens": 44,
+      "kl_nats": 0.004197221249341965,
+      "reference_entropy_nats": 0.8609399199485779,
+      "top1_agrees": true,
+      "top1_reference": 52157,
+      "top1_quantized": 52157
+    },
+    {
+      "prompt": "What is the largest ocean on Earth?",
+      "tokens": 43,
+      "kl_nats": 5.531894203159027e-06,
+      "reference_entropy_nats": 0.00033549603540450335,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "Convert 5 kilometres to miles.",
+      "tokens": 42,
+      "kl_nats": 0.0036129094660282135,
+      "reference_entropy_nats": 0.6227391362190247,
+      "top1_agrees": true,
+      "top1_reference": 1271,
+      "top1_quantized": 1271
+    },
+    {
+      "prompt": "What is photosynthesis?",
+      "tokens": 40,
+      "kl_nats": 5.270197561912937e-06,
+      "reference_entropy_nats": 0.0015928935026749969,
+      "top1_agrees": true,
+      "top1_reference": 32872,
+      "top1_quantized": 32872
+    },
+    {
+      "prompt": "Write a bash command that lists files sorted by size.",
+      "tokens": 46,
+      "kl_nats": 0.0016709119081497192,
+      "reference_entropy_nats": 0.6192134618759155,
+      "top1_agrees": true,
+      "top1_reference": 2675,
+      "top1_quantized": 2675
+    },
+    {
+      "prompt": "Who wrote 'Pride and Prejudice'?",
+      "tokens": 45,
+      "kl_nats": 0.012082859873771667,
+      "reference_entropy_nats": 0.9182802438735962,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "What are the three states of matter?",
+      "tokens": 43,
+      "kl_nats": 0.0010664062574505806,
+      "reference_entropy_nats": 0.16101869940757751,
+      "top1_agrees": true,
+      "top1_reference": 791,
+      "top1_quantized": 791
+    },
+    {
+      "prompt": "Give one tip for writing clear documentation.",
+      "tokens": 43,
+      "kl_nats": 0.002187024336308241,
+      "reference_entropy_nats": 0.923324704170227,
+      "top1_agrees": true,
+      "top1_reference": 8586,
+      "top1_quantized": 8586
+    }
+  ]
+}

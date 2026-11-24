@@ -1,0 +1,285 @@
+{
+  "schema": "ayaka.bench/1",
+  "valid": true,
+  "model": {
+    "name": "unsloth/Llama-3.1-8B-Instruct",
+    "architecture": "LlamaForCausalLM",
+    "dtype": "bf16",
+    "weights_bytes": 16060522496,
+    "quantization": null,
+    "max_position_embeddings": 131072
+  },
+  "engine": {
+    "source": {
+      "model": "unsloth/Llama-3.1-8B-Instruct",
+      "revision": "",
+      "tokenizer": "",
+      "tokenizer_revision": "",
+      "format": "auto",
+      "trust": "strict",
+      "offline": true,
+      "reproducible": false,
+      "cache_dir": ""
+    },
+    "tokenizer": null,
+    "device": {
+      "device": "cuda",
+      "dtype": "bf16",
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "cuda_graph": true,
+      "graph_buckets": [
+        1,
+        2,
+        4,
+        8
+      ]
+    },
+    "cache": {
+      "block_size": 16,
+      "num_blocks": null,
+      "memory_ratio": 0.9,
+      "kv_reserve_tokens": 16384,
+      "prefix_cache": true
+    },
+    "scheduler": {
+      "max_running": null,
+      "max_tokens_per_step": 2048,
+      "max_waiting": 1024,
+      "policy": "fcfs",
+      "max_consecutive_prefills": 2
+    }
+  },
+  "backends": {
+    "norm": "torch",
+    "activation": "torch",
+    "embedding": "torch",
+    "linear": "torch",
+    "rope": "torch",
+    "kvcache": "torch",
+    "attention": "flashinfer",
+    "sampling": "torch",
+    "moe": "torch"
+  },
+  "plan": {
+    "max_context_tokens": 38352,
+    "engine_context_tokens": 38128,
+    "max_running": 2,
+    "kv_blocks": 2398,
+    "block_size": 16,
+    "chunk_tokens": 2048,
+    "usable_bytes": 21293236224
+  },
+  "machine": {
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "vram_free_bytes": 433192960,
+    "vram_total_bytes": 23659151360,
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "llguidance": "1.9.1",
+    "transformers": "5.22.2",
+    "ayaka": {
+      "version": "0.1.0",
+      "commit": "40fbf48d93d843a5402ffa85c55230461061fca1",
+      "dirty": true
+    }
+  },
+  "power": "unknown",
+  "thermal": {
+    "gpu_start_c": 74,
+    "gpu_end_c": 73
+  },
+  "options": {
+    "quick": true,
+    "seed": 0,
+    "repeats": 2
+  },
+  "started": "2026-11-24T10:19:48+00:00",
+  "finished": "2026-11-24T10:21:59+00:00",
+  "prompt_set": {
+    "version": 1,
+    "groups": [
+      "edit",
+      "write",
+      "prose"
+    ],
+    "lengths": [
+      1024,
+      4096
+    ],
+    "digests": {
+      "edit/1024": "aad4f2185954475a",
+      "edit/4096": "5b235fc7ca276682",
+      "write/1024": "18395d9c383e2d1e",
+      "write/4096": "927a7eb5e92c686c",
+      "prose/1024": "d19ce6a17996265c",
+      "prose/4096": "070c653027cdf016"
+    }
+  },
+  "prompt_read": [
+    {
+      "group": "edit",
+      "length": 1024,
+      "seconds": [
+        0.3882258069988893,
+        0.3942184110001108
+      ],
+      "tokens_per_s": [
+        2637.640212318316,
+        2597.5448417088573
+      ],
+      "median_tokens_per_s": 2617.5925270135867
+    },
+    {
+      "group": "edit",
+      "length": 4096,
+      "seconds": [
+        1.6985342000007222,
+        1.7087354280010913
+      ],
+      "tokens_per_s": [
+        2411.491037388743,
+        2397.0943265286965
+      ],
+      "median_tokens_per_s": 2404.2926819587196
+    },
+    {
+      "group": "write",
+      "length": 1024,
+      "seconds": [
+        0.39918930299973,
+        0.4011070930009737
+      ],
+      "tokens_per_s": [
+        2565.198997831594,
+        2552.9341611456225
+      ],
+      "median_tokens_per_s": 2559.066579488608
+    },
+    {
+      "group": "write",
+      "length": 4096,
+      "seconds": [
+        1.708724403000815,
+        1.7114944889999606
+      ],
+      "tokens_per_s": [
+        2397.109793016777,
+        2393.230025761476
+      ],
+      "median_tokens_per_s": 2395.1699093891266
+    },
+    {
+      "group": "prose",
+      "length": 1024,
+      "seconds": [
+        0.3961769760007883,
+        0.4014127609989373
+      ],
+      "tokens_per_s": [
+        2584.703458380586,
+        2550.990151513173
+      ],
+      "median_tokens_per_s": 2567.8468049468793
+    },
+    {
+      "group": "prose",
+      "length": 4096,
+      "seconds": [
+        1.7103510090000782,
+        1.7161212379996869
+      ],
+      "tokens_per_s": [
+        2394.830054442826,
+        2386.7777574819265
+      ],
+      "median_tokens_per_s": 2390.803905962376
+    }
+  ],
+  "generation": [
+    {
+      "context": 1024,
+      "output_tokens": 256,
+      "tokens_per_s": [
+        15.584950077957666,
+        15.603610933451954
+      ],
+      "median_tokens_per_s": 15.594280505704809
+    },
+    {
+      "context": 4096,
+      "output_tokens": 256,
+      "tokens_per_s": [
+        15.202499865644759,
+        15.204077683406041
+      ],
+      "median_tokens_per_s": 15.2032887745254
+    }
+  ],
+  "ttft": {
+    "system_tokens": 2048,
+    "cold_s": [
+      0.925446062001356,
+      0.9232297919988923
+    ],
+    "warm_s": [
+      0.08044450300076278,
+      0.08043805000124848
+    ],
+    "cold_median_s": 0.9243379270001242,
+    "warm_median_s": 0.08044127650100563
+  },
+  "agent": {
+    "turns": [
+      {
+        "prompt_tokens": 2098,
+        "cached_tokens": 16,
+        "cached_share": 0.0076263107721639654,
+        "seconds": 2.914457046001189
+      },
+      {
+        "prompt_tokens": 3162,
+        "cached_tokens": 2096,
+        "cached_share": 0.6628716002530044,
+        "seconds": 2.4739391160001105
+      },
+      {
+        "prompt_tokens": 3960,
+        "cached_tokens": 3152,
+        "cached_share": 0.795959595959596,
+        "seconds": 2.3899298010001075
+      }
+    ],
+    "cached_share": 0.7294155981063002,
+    "total_s": 7.778325963001407
+  },
+  "sanity": [
+    {
+      "name": "tool call",
+      "passed": true,
+      "detail": "call: {\"name\":\"get_weather\",\"arguments\":{\"city\":\"Hanoi\"}}"
+    },
+    {
+      "name": "structured output",
+      "passed": true,
+      "detail": "answer: {\"length\":5,\"unit\":\"cm\"}"
+    }
+  ],
+  "memory": {
+    "peak_vram_bytes": 23719706624,
+    "peak_rss_bytes": 5928898560,
+    "samples": 1242,
+    "vram_scope": "the whole GPU (NVML)"
+  },
+  "notes": []
+}

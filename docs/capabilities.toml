@@ -75,3 +75,80 @@ precision = "fp16"
 machine = "NVIDIA L4 24 GB, Linux"
 status = "runs"
 result = "benchmarks/results/2026-11-23-nvidia-l4/tinyllama-1.1b-chat-v1.0/results.json"
+
+[[row]]
+model = "Qwen/Qwen2.5-1.5B-Instruct"
+precision = "bf16"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/qwen2.5-1.5b-instruct/results.json"
+
+[[row]]
+model = "Qwen/Qwen3-1.7B"
+precision = "bf16"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/qwen3-1.7b/results.json"
+
+[[row]]
+model = "microsoft/Phi-3-mini-4k-instruct"
+precision = "bf16, served up to its 2,047-token sliding window"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/phi-3-mini-4k-instruct/results.json"
+
+[[row]]
+model = "allenai/OLMoE-1B-7B-0125-Instruct"
+precision = "bf16, every expert on the GPU"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/olmoe-1b-7b-0125-instruct/results.json"
+
+[[row]]
+model = "RedHatAI/phi-4-FP8-dynamic"
+precision = "FP8 weights (one scale per row), bf16 compute"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/phi-4-fp8-dynamic/results.json"
+
+[[row]]
+model = "unsloth/Llama-3.1-8B-Instruct"
+precision = "bf16, --kv-reserve-tokens 16384, quick run (round 1 of 3)"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/fp8-rounds/llama-3.1-8b-instruct-round1/results.json"
+
+[[row]]
+model = "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8"
+precision = "FP8 weights (one scale per tensor), bf16 compute, --kv-reserve-tokens 16384, quick run (round 1 of 3)"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/fp8-rounds/llama-3.1-8b-instruct-fp8-round1/results.json"
+
+[[row]]
+model = "Qwen/Qwen3-8B"
+precision = "bf16, --kv-reserve-tokens 16384, quick run (round 1 of 3)"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/fp8-rounds/qwen3-8b-round1/results.json"
+
+[[row]]
+model = "Qwen/Qwen3-8B-FP8"
+precision = "FP8 weights (128 x 128 blocks), bf16 compute, --kv-reserve-tokens 16384, quick run (round 1 of 3)"
+machine = "NVIDIA L4 24 GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-24-nvidia-l4/fp8-rounds/qwen3-8b-fp8-round1/results.json"
+
+[[quality]]
+model = "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8"
+precision = "FP8 weights (one scale per tensor), bf16 compute"
+machine = "NVIDIA L4 24 GB, Linux"
+reference = "unsloth/Llama-3.1-8B-Instruct, bf16"
+result = "benchmarks/results/2026-11-24-nvidia-l4/quant-kl-llama-3.1-8b.json"
+
+[[quality]]
+model = "Qwen/Qwen3-8B-FP8"
+precision = "FP8 weights (128 x 128 blocks), bf16 compute"
+machine = "NVIDIA L4 24 GB, Linux"
+reference = "Qwen/Qwen3-8B, bf16"
+result = "benchmarks/results/2026-11-24-nvidia-l4/quant-kl-qwen3-8b.json"
