@@ -1,9 +1,9 @@
 """The speculative drafter of an engine: which proposer, which controller, how many look-ahead rows.
 
 :func:`build_speculation` is the step of :func:`ayaka.engine.build.build_engine` that turns the
-speculative configuration into a proposer (lookup, token recycling, or the multi-token-prediction
-layer of a MiMo checkpoint) and a draft-length controller, after the memory plan has decided
-whether a drafter with weights fits.
+speculative configuration into a proposer (lookup, token recycling, the multi-token-prediction
+layer of a MiMo checkpoint, or a DFlash block drafter) and a draft-length controller, after the
+memory plan has decided whether a drafter with weights fits.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from ayaka.speculative.token_recycling import TokenRecyclingProposer
 
 if TYPE_CHECKING:
     from ayaka.configs.device import DeviceConfig
+    from ayaka.configs.model_source import ModelSourceConfig
     from ayaka.configs.speculative import SpeculativeConfig
     from ayaka.engine.build import EnginePlan
     from ayaka.kvcache.storage.pool import KVPool, LatentKVPool
@@ -59,12 +60,14 @@ def build_speculation(
     pool: KVPool | LatentKVPool,
     group: KVGroup | LatentKVGroup,
     mtp_active: bool,
+    source: ModelSourceConfig,
     has_recurrent_state: bool = False,
 ) -> SpeculativeSetup:
     """The proposer and controller ``spec_cfg`` asks for, or none, with the reason logged.
 
     ``pool`` and ``group`` are the model's KV pool and group, the prediction layer's KV included
-    when ``mtp_active``. A model with recurrent-state layers refuses every drafter: a verify
+    when ``mtp_active``. A DFlash draft checkpoint is read at ``source``'s revision and offline
+    setting. A model with recurrent-state layers refuses every drafter: a verify
     window advances the state through every draft row, and a rejected draft cannot be undone.
     """
     proposer: Proposer | None = None
@@ -132,6 +135,46 @@ def build_speculation(
                     "speculative mtp disabled: %s checkpoint has num_nextn_predict_layers=0",
                     engine_plan.model_config.architecture,
                 )
+        elif spec_cfg.method == "dflash":
+            if (
+                "dflash" in engine_plan.budget.loaded_drafts
+                and spec_cfg.draft_model
+                and hasattr(model, "embed_tokens")
+            ):
+                from ayaka.configs.model_source import ModelSourceConfig
+                from ayaka.model_loader.source import resolve_source
+                from ayaka.models.dflash import load_dflash_draft_model
+                from ayaka.speculative.dflash import DFlashProposer
+
+                draft_dir = resolve_source(
+                    ModelSourceConfig(
+                        spec_cfg.draft_model, revision=source.revision, offline=source.offline
+                    )
+                )
+                dflash_model = load_dflash_draft_model(
+                    draft_dir, ops=ops, dtype=device.dtype, device=device.device
+                )
+                draft_bytes = sum(p.numel() * p.element_size() for p in dflash_model.parameters())
+                model_config = engine_plan.model_config
+                proposer = DFlashProposer(
+                    dflash_model,
+                    model.embed_tokens,  # type: ignore[attr-defined]  # Llama/Qwen3 embed_tokens
+                    model.compute_logits,
+                    block_size=dflash_model.config.block_size,
+                    mask_token_id=dflash_model.config.mask_token_id,
+                    target_layer_ids=dflash_model.config.target_layer_ids,
+                    target_hidden_size=model_config.hidden_size,
+                    target_num_layers=model_config.num_layers,
+                    device=device.device,
+                    confidence_threshold=spec_cfg.draft_confidence_threshold,
+                    context_cap=spec_cfg.draft_context_cap,
+                    lookup_override_match=spec_cfg.lookup_override_match,
+                )
+                lookahead = min(spec_cfg.max_draft_tokens, dflash_model.config.block_size - 1)
+            elif any(name == "dflash" for name, _ in engine_plan.budget.skipped):
+                logger.warning("speculative dflash disabled: insufficient memory in budget")
+            else:
+                logger.warning("speculative dflash disabled: missing draft_model")
         if proposer is not None:
             reason = proposer.supports(engine_plan.model_config)
             if reason is None and has_recurrent_state:
@@ -146,12 +189,16 @@ def build_speculation(
                 if lookahead == 0:
                     lookahead = spec_cfg.max_draft_tokens
                 controller = (
-                    FixedController(min(spec_cfg.fixed_k, lookahead))
+                    FixedController(
+                        min(spec_cfg.fixed_k, lookahead),
+                        confidence_threshold=spec_cfg.draft_confidence_threshold,
+                    )
                     if spec_cfg.controller == "fixed"
                     else CostAwareController(
                         max_k=lookahead,
                         min_gain=spec_cfg.min_gain,
                         ema=spec_cfg.ema,
+                        confidence_threshold=spec_cfg.draft_confidence_threshold,
                     )
                 )
     return SpeculativeSetup(

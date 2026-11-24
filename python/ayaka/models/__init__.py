@@ -17,6 +17,15 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 if TYPE_CHECKING:
     from ayaka.models.base import CausalLM
     from ayaka.models.deepseek_mla import DeepseekV2ForCausalLM, DeepseekV3ForCausalLM
+    from ayaka.models.dflash import (
+        DFlashAttention,
+        DFlashConfig,
+        DFlashDecoderLayer,
+        DFlashDraftModel,
+        describe_dflash_bytes,
+        describe_dflash_kv_bytes_per_token,
+        load_dflash_draft_model,
+    )
     from ayaka.models.gemma4 import Gemma4ForConditionalGeneration
     from ayaka.models.gpt2 import GPT2LMHeadModel
     from ayaka.models.gpt_oss import GptOssForCausalLM
@@ -37,6 +46,10 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CausalLM",
+    "DFlashAttention",
+    "DFlashConfig",
+    "DFlashDecoderLayer",
+    "DFlashDraftModel",
     "DeepseekV2ForCausalLM",
     "DeepseekV3ForCausalLM",
     "GPT2LMHeadModel",
@@ -51,7 +64,10 @@ __all__ = [
     "Qwen3ForCausalLM",
     "Qwen3MoeForCausalLM",
     "Qwen3_5ForConditionalGeneration",
+    "describe_dflash_bytes",
+    "describe_dflash_kv_bytes_per_token",
     "describe_mimo_mtp_bytes",
+    "load_dflash_draft_model",
     "load_mimo_mtp_layer",
     "register_model",
     "resolve_model",
@@ -61,6 +77,15 @@ _EXPORTS = {
     "base": ("CausalLM",),
     "deepseek_mla": ("DeepseekV2ForCausalLM", "DeepseekV3ForCausalLM"),
     "gemma4": ("Gemma4ForConditionalGeneration",),
+    "dflash": (
+        "DFlashAttention",
+        "DFlashConfig",
+        "DFlashDecoderLayer",
+        "DFlashDraftModel",
+        "describe_dflash_bytes",
+        "describe_dflash_kv_bytes_per_token",
+        "load_dflash_draft_model",
+    ),
     "gpt2": ("GPT2LMHeadModel",),
     "gpt_oss": ("GptOssForCausalLM",),
     "llama": ("LlamaForCausalLM",),

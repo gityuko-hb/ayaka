@@ -246,7 +246,13 @@ def test_cli_speculative_flags_and_lookup_run(
             "serve",
             str(checkpoint.directory),
             "--speculative",
-            "mtp",
+            "dflash",
+            "--spec-draft-model",
+            "z-lab/Qwen3-8B-DFlash-b16",
+            "--spec-confidence-threshold",
+            "0.7",
+            "--spec-context-cap",
+            "256",
             "--spec-mtp-depth",
             "2",
             "--spec-mtp-vocab-limit",
@@ -255,7 +261,10 @@ def test_cli_speculative_flags_and_lookup_run(
             "6",
         ]
     )
-    assert parsed.speculative == "mtp"
+    assert parsed.speculative == "dflash"
+    assert parsed.spec_draft_model == "z-lab/Qwen3-8B-DFlash-b16"
+    assert parsed.spec_confidence_threshold == 0.7
+    assert parsed.spec_context_cap == 256
     assert parsed.spec_mtp_depth == 2
     assert parsed.spec_mtp_vocab_limit == 8192
     assert parsed.spec_lookup_override == 6

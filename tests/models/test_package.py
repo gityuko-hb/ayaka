@@ -26,6 +26,10 @@ def test_the_public_names_are_the_ones_the_tree_lists() -> None:
 
     assert sorted(package.__all__) == [
         "CausalLM",
+        "DFlashAttention",
+        "DFlashConfig",
+        "DFlashDecoderLayer",
+        "DFlashDraftModel",
         "DeepseekV2ForCausalLM",
         "DeepseekV3ForCausalLM",
         "GPT2LMHeadModel",
@@ -40,7 +44,10 @@ def test_the_public_names_are_the_ones_the_tree_lists() -> None:
         "Qwen3ForCausalLM",
         "Qwen3MoeForCausalLM",
         "Qwen3_5ForConditionalGeneration",
+        "describe_dflash_bytes",
+        "describe_dflash_kv_bytes_per_token",
         "describe_mimo_mtp_bytes",
+        "load_dflash_draft_model",
         "load_mimo_mtp_layer",
         "register_model",
         "resolve_model",

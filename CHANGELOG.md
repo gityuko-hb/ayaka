@@ -61,6 +61,12 @@
   model card's 0.90, which the alignment gate of #128 treats as a defect still to be traced, so it
   stays off by default. The memory plan understates what the drafter takes from the KV cache (5.8%
   planned, 18.8% in the running engine).
+- DFlash block drafting for Qwen3 and Llama-3.1 checkpoints (`--speculative dflash --spec-draft-model
+  REPO`, #129) with the `z-lab` DFlash checkpoints, loaded without running their code. On an NVIDIA
+  L4, one request, one run per arm: 1.51× over plain on Qwen3-8B and 2.31× on Llama-3.1-8B-Instruct,
+  and the drafter takes about half of the KV capacity (30,368 to 14,592 tokens on Qwen3-8B). On
+  Qwen3-8B it is 0.75× of the reference loop of the DFlash repository on a code-edit prompt and 0.93×
+  of lookup on a reasoning prompt, so it stays off by default; `docs/EXPERIMENTS.md` has the numbers.
 
 ### Fixed
 

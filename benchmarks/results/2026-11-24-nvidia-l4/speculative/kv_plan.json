@@ -8,6 +8,30 @@
   "displaced_kv_tokens": 0
  },
  {
+  "target": "Qwen/Qwen3-8B",
+  "method": "dflash",
+  "kv_blocks": 912,
+  "kv_tokens": 14592,
+  "draft_bytes": 2395769344,
+  "displaced_kv_tokens": 16240
+ },
+ {
+  "target": "unsloth/Llama-3.1-8B-Instruct",
+  "method": "plain",
+  "kv_blocks": 2321,
+  "kv_tokens": 37136,
+  "draft_bytes": 0,
+  "displaced_kv_tokens": 0
+ },
+ {
+  "target": "unsloth/Llama-3.1-8B-Instruct",
+  "method": "dflash",
+  "kv_blocks": 1143,
+  "kv_tokens": 18288,
+  "draft_bytes": 2471463424,
+  "displaced_kv_tokens": 18848
+ },
+ {
   "target": "XiaomiMiMo/MiMo-7B-RL",
   "method": "plain",
   "kv_blocks": 2304,
