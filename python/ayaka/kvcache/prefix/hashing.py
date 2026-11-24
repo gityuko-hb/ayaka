@@ -94,7 +94,12 @@ def root_digest(root: ChainRoot, salt: str | None) -> bytes:
 
 
 def chain_digests(
-    parent: bytes, token_ids: Sequence[int], block_size: int, *, aux: bytes = b""
+    parent: bytes,
+    token_ids: Sequence[int],
+    block_size: int,
+    *,
+    aux: bytes = b"",
+    lookahead: int = 0,
 ) -> list[bytes]:
     """Digests of the full blocks of ``token_ids``, chained from ``parent``.
 
@@ -103,21 +108,24 @@ def chain_digests(
         token_ids: Tokens that start on a block boundary; a partial last block is ignored.
         block_size: Tokens per block.
         aux: Extra bytes folded into every block (a media hash later); empty for text.
+        lookahead: Extra trailing tokens after each block that its KV depends on.
 
     Returns:
-        One digest per full block, in order.
+        One digest per complete hashable block, in order.
     """
-    full = len(token_ids) // block_size
+    usable = len(token_ids) - lookahead
+    full = usable // block_size if usable > 0 else 0
     if full == 0:
         return []
-    data = np.asarray(token_ids[: full * block_size], dtype="<u4").tobytes()
+    data = np.asarray(token_ids[: full * block_size + lookahead], dtype="<u4").tobytes()
     stride = 4 * block_size
+    tail = 4 * lookahead
     view = memoryview(data)
     digests: list[bytes] = []
     previous = parent
     for index in range(full):
         hasher = hashlib.blake2b(previous, digest_size=DIGEST_SIZE)
-        hasher.update(view[index * stride : (index + 1) * stride])
+        hasher.update(view[index * stride : (index + 1) * stride + tail])
         if aux:
             hasher.update(aux)
         previous = hasher.digest()

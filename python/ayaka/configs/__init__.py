@@ -24,6 +24,13 @@ if TYPE_CHECKING:
     from ayaka.configs.model_source import ModelSourceConfig, ModelTrustPolicy, RequestFormat
     from ayaka.configs.scheduler import SchedulerConfig, SchedulingPolicyName
     from ayaka.configs.server import DEFAULT_PORT, ServerConfig
+    from ayaka.configs.speculative import (
+        SPECULATIVE_CONTROLLERS,
+        SPECULATIVE_METHODS,
+        SpeculativeConfig,
+        SpeculativeController,
+        SpeculativeMethod,
+    )
     from ayaka.configs.tokenizer import (
         DetokBackend,
         DetokenizeParams,
@@ -38,6 +45,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_PORT",
+    "SPECULATIVE_CONTROLLERS",
+    "SPECULATIVE_METHODS",
     "CacheConfig",
     "ConfigMixin",
     "DetokBackend",
@@ -57,6 +66,9 @@ __all__ = [
     "SchedulingPolicyName",
     "ServerConfig",
     "SpecialTokenPolicyName",
+    "SpeculativeConfig",
+    "SpeculativeController",
+    "SpeculativeMethod",
     "TokenizerConfig",
     "TokenizerMode",
     "TruncationSide",
@@ -79,6 +91,13 @@ _EXPORTS = {
     "model_source": ("ModelSourceConfig", "ModelTrustPolicy", "RequestFormat"),
     "scheduler": ("SchedulerConfig", "SchedulingPolicyName"),
     "server": ("DEFAULT_PORT", "ServerConfig"),
+    "speculative": (
+        "SPECULATIVE_CONTROLLERS",
+        "SPECULATIVE_METHODS",
+        "SpeculativeConfig",
+        "SpeculativeController",
+        "SpeculativeMethod",
+    ),
     "tokenizer": (
         "DetokBackend",
         "DetokUpdate",

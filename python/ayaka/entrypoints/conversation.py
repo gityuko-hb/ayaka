@@ -400,6 +400,8 @@ class UsageEvent:
     cached_tokens: int = 0
     reasoning_tokens: int = 0
     cache_written_tokens: int = 0
+    accepted_prediction_tokens: int = 0
+    rejected_prediction_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)

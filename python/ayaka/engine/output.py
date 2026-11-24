@@ -78,6 +78,8 @@ class _Family:
     completion_tokens: int = 0
     cached_tokens: int = 0
     cache_written_tokens: int = 0
+    accepted_prediction_tokens: int = 0
+    rejected_prediction_tokens: int = 0
 
     def usage(self) -> Usage:
         """The request's usage: its prompt counts once, however many sequences it has.
@@ -94,6 +96,8 @@ class _Family:
             completion_tokens=self.completion_tokens,
             cached_tokens=cached,
             cache_written_tokens=min(self.cache_written_tokens, prompt - cached),
+            accepted_prediction_tokens=self.accepted_prediction_tokens,
+            rejected_prediction_tokens=self.rejected_prediction_tokens,
         )
 
 
@@ -259,6 +263,8 @@ class OutputProcessor:
         written = max(sequence.cache_written_tokens, event.cache_written_tokens)
         family.cache_written_tokens += written - sequence.cache_written_tokens
         sequence.cache_written_tokens = written
+        family.accepted_prediction_tokens += event.accepted_prediction_tokens
+        family.rejected_prediction_tokens += event.rejected_prediction_tokens
         if kept and family.first_token_at is None:
             family.first_token_at = now
         detokenizer = sequence.detokenizer

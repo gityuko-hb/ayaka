@@ -67,28 +67,23 @@ class Usage:
     completion_tokens: int = 0
     cached_tokens: int = 0
     cache_written_tokens: int = 0
+    accepted_prediction_tokens: int = 0
+    rejected_prediction_tokens: int = 0
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
+        for name in (
             "prompt_tokens",
-            require_int(self.prompt_tokens, "prompt_tokens", minimum=0),
-        )
-        object.__setattr__(
-            self,
             "completion_tokens",
-            require_int(self.completion_tokens, "completion_tokens", minimum=0),
-        )
-        object.__setattr__(
-            self,
             "cached_tokens",
-            require_int(self.cached_tokens, "cached_tokens", minimum=0),
-        )
-        object.__setattr__(
-            self,
             "cache_written_tokens",
-            require_int(self.cache_written_tokens, "cache_written_tokens", minimum=0),
-        )
+            "accepted_prediction_tokens",
+            "rejected_prediction_tokens",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                require_int(getattr(self, name), name, minimum=0),
+            )
         if self.cached_tokens > self.prompt_tokens:
             raise InvalidRequestError("cached_tokens must be <= prompt_tokens")
         if self.cached_tokens + self.cache_written_tokens > self.prompt_tokens:

@@ -43,7 +43,7 @@ import torch
 
 from ayaka.core.errors import ConfigError, EngineError
 from ayaka.core.types import ForwardMode
-from ayaka.layers.context import ForwardContext
+from ayaka.layers.context import FeatureSink, ForwardContext
 from ayaka.sampling.logits import LogitControls
 from ayaka.sampling.sampler import Sampler
 from ayaka.utils.gc_control import paused_gc
@@ -55,7 +55,8 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from ayaka.core.types import TokenId
-    from ayaka.execution.inputs import InputBuilder, StagedDecode
+    from ayaka.execution.inputs import InputBuilder
+    from ayaka.execution.staged import StagedDecode, StagedVerify
     from ayaka.models.base import CausalLM
     from ayaka.ops.attention import AttentionMetadata
     from ayaka.ops.kvcache import KVBuffers, LatentKVBuffers
@@ -113,6 +114,9 @@ class GraphRunner:
         state_buffers: Mapping[int, RecurrentStateBuffers] | None = None,
         group_layers: Sequence[tuple[int, ...]] | None = None,
         device: torch.device | str | None = None,
+        verify_buckets: Sequence[int] = (),
+        save_hidden: bool = False,
+        feature_layer_ids: frozenset[int] = frozenset(),
     ) -> None:
         if not model.ops.graph_safe:
             raise ConfigError(
@@ -144,6 +148,16 @@ class GraphRunner:
                 "GRAPH_BUCKETS_INVALID",
                 f"no bucket of {list(buckets)} fits the {capacity} requests a step can hold",
             )
+        # A verify window is captured for one KV group of paged KV only: the staged verify step
+        # carries one block table, and a recurrent state or a latent cache has no verify kernel.
+        # Such models still verify draft windows eagerly (or refuse speculation, see
+        # ``speculative.proposer``).
+        verify_capturable = builder.num_groups == 1 and not latent_map and not state_map
+        verify_usable = tuple(
+            sorted({bucket for bucket in verify_buckets if 2 <= bucket <= builder.max_rows})
+            if verify_capturable
+            else ()
+        )
         self._model = model
         self._builder = builder
         self._kv_buffers = dict(kv_buffers)
@@ -152,18 +166,65 @@ class GraphRunner:
         self._group_layers = tuple(group_layers) if group_layers is not None else ()
         self._device = resolved
         self._buckets = usable
+        self._verify_buckets = verify_usable
         self._sampler = Sampler(model.ops.sampling)
         self._words = (model.config.vocab_size + 31) // 32  # words of a token mask
         self._meta: dict[int, tuple[AttentionMetadata, ...]] = {}
+        self._verify_meta: dict[int, AttentionMetadata] = {}
         # (bucket, greedy, masked)
         self._graphs: dict[tuple[int, bool, bool], torch.cuda.CUDAGraph] = {}
+        # (bucket, greedy) for VERIFY steps
+        self._verify_graphs: dict[tuple[int, bool], torch.cuda.CUDAGraph] = {}
         self._pool: Any = None
+        max_cap = max([*usable, *verify_usable])
+        hidden_size = model.config.hidden_size
+        model_dtype = model.compute_dtype.torch_dtype
+        self._hidden_buf: torch.Tensor | None = (
+            torch.empty((max_cap, hidden_size), dtype=model_dtype, device=resolved)
+            if save_hidden
+            else None
+        )
+        self._feature_buffers: dict[int, torch.Tensor] = {
+            lid: torch.empty((max_cap, hidden_size), dtype=model_dtype, device=resolved)
+            for lid in feature_layer_ids
+        }
+        self._feature_sink: FeatureSink | None = (
+            FeatureSink(layer_ids=feature_layer_ids, buffers=self._feature_buffers)
+            if feature_layer_ids
+            else None
+        )
         self.replays = 0
+        self.verify_replays = 0
+
+    def hidden_view(self, num_rows: int) -> torch.Tensor | None:
+        """View ``[num_rows, hidden_size]`` captured by the last decode or verify graph replay."""
+        return None if self._hidden_buf is None else self._hidden_buf[:num_rows]
+
+    def features_view(self, layer_ids: Sequence[int], num_rows: int) -> torch.Tensor | None:
+        """Concatenated ``[num_rows, len(layer_ids) * hidden_size]`` features from last replay."""
+        if not self._feature_buffers or not layer_ids:
+            return None
+        return torch.cat([self._feature_buffers[lid][:num_rows] for lid in layer_ids], dim=-1)
 
     @property
     def buckets(self) -> tuple[int, ...]:
         """The bucket sizes this runner captures, ascending."""
         return self._buckets
+
+    @property
+    def pool(self) -> Any:
+        """Shared CUDA graph memory pool handle once :meth:`capture` has run."""
+        return self._pool
+
+    @property
+    def verify_buckets(self) -> tuple[int, ...]:
+        """The total-row bucket sizes captured for ``VERIFY`` steps, ascending."""
+        return self._verify_buckets
+
+    @property
+    def max_verify_rows(self) -> int:
+        """Largest verify step row count covered by captured graphs, or 0 if none."""
+        return self._verify_buckets[-1] if self._verify_buckets else 0
 
     @property
     def captured(self) -> bool:
@@ -174,6 +235,8 @@ class GraphRunner:
         """Drop captured CUDA graphs, metadata, and buffer views to free device memory."""
         self._graphs.clear()
         self._meta.clear()
+        self._verify_graphs.clear()
+        self._verify_meta.clear()
         self._kv_buffers.clear()
         self._latent_kv_buffers.clear()
         self._state_buffers.clear()
@@ -181,13 +244,24 @@ class GraphRunner:
 
     def bucket_for(self, step: StepInput) -> int | None:
         """The smallest bucket that can replay ``step``, or ``None`` if it must run eagerly."""
-        if not self._graphs or step.mode is not ForwardMode.DECODE:
+        if step.mode is ForwardMode.DECODE:
+            if not self._graphs or step.num_rows != step.num_requests:
+                return None
+            for bucket in self._buckets:
+                if bucket >= step.num_requests:
+                    return bucket
             return None
-        if step.num_rows != step.num_requests:  # draft rows
+        if step.mode is ForwardMode.VERIFY:
+            if not self._verify_graphs:
+                return None
+            # When all max_requests slots are active and padding rows remain, we have no spare
+            # padding request row in the block table; only exact-row match can replay then.
+            for bucket in self._verify_buckets:
+                if bucket >= step.num_rows and (
+                    step.num_requests < self._builder.max_requests or bucket == step.num_rows
+                ):
+                    return bucket
             return None
-        for bucket in self._buckets:
-            if bucket >= step.num_requests:
-                return bucket
         return None
 
     def capture(self) -> list[CapturedBucket]:
@@ -222,13 +296,87 @@ class GraphRunner:
                 CapturedBucket(bucket, max(after - before, 0), time.monotonic() - started)
             )
         results.reverse()
+        kept_verify: list[int] = []
+        for vbucket in reversed(self._verify_buckets):
+            started = time.monotonic()
+            torch.cuda.synchronize(self._device)
+            before = torch.cuda.memory_reserved(self._device)
+            try:
+                vmeta = attention.verify_graph_metadata(
+                    vbucket,
+                    builder.max_requests,
+                    builder.max_blocks,
+                    builder.block_size,
+                    self._device,
+                )
+                self._verify_meta[vbucket] = vmeta
+                for greedy in (True, False):
+                    self._verify_graphs[vbucket, greedy] = self._capture_verify(
+                        vbucket, greedy, vmeta
+                    )
+                torch.cuda.synchronize(self._device)
+                after = torch.cuda.memory_reserved(self._device)
+                kept_verify.append(vbucket)
+                results.append(
+                    CapturedBucket(vbucket, max(after - before, 0), time.monotonic() - started)
+                )
+            except torch.cuda.OutOfMemoryError as exc:
+                self._verify_meta.pop(vbucket, None)
+                self._verify_graphs.pop((vbucket, True), None)
+                self._verify_graphs.pop((vbucket, False), None)
+                torch.cuda.empty_cache()
+                logger.warning(
+                    "dropping verify CUDA graph bucket %d due to out-of-memory: %s",
+                    vbucket,
+                    exc,
+                )
+        self._verify_buckets = tuple(sorted(kept_verify))
         logger.info(
-            "captured CUDA graphs for decode buckets %s: %d bytes in %.1fs",
+            "captured CUDA graphs for decode buckets %s and verify buckets %s: %d bytes in %.1fs",
             list(self._buckets),
+            list(self._verify_buckets),
             sum(item.bytes for item in results),
             sum(item.seconds for item in results),
         )
         return results
+
+    def _capture_verify(self, bucket: int, greedy: bool, meta: AttentionMetadata) -> Any:
+        tokens, batch, sampled = self._builder.graph_views(bucket)
+        batch = replace(batch, all_greedy=greedy)
+        context = ForwardContext(
+            attention=meta, kv_buffers=self._kv_buffers, feature_sink=self._feature_sink
+        )
+
+        def body() -> None:
+            hidden = self._model(tokens, context)
+            if self._hidden_buf is not None:
+                self._hidden_buf[:bucket].copy_(hidden)
+            logits = self._model.compute_logits(hidden)
+            self._sampler.sample(logits, batch, sampled, None)
+
+        self._reset_verify_inputs(bucket)
+        side = _warmup_stream(self._device)
+        side.wait_stream(torch.cuda.current_stream(self._device))
+        with torch.inference_mode(), torch.cuda.stream(side):
+            for _ in range(_WARMUP_RUNS):
+                body()
+        torch.cuda.current_stream(self._device).wait_stream(side)
+        torch.cuda.synchronize(self._device)
+        graph = torch.cuda.CUDAGraph()
+        with torch.inference_mode(), paused_gc(), torch.cuda.graph(graph, pool=self._pool):
+            body()
+        return graph
+
+    def _reset_verify_inputs(self, bucket: int) -> None:
+        builder = self._builder
+        rows = torch.zeros(builder.max_requests, dtype=torch.int32)
+        rows[0] = bucket
+        lengths = torch.zeros(builder.max_requests, dtype=torch.int32)
+        table = torch.zeros((builder.max_requests, builder.max_blocks), dtype=torch.int32)
+        self._model.ops.attention.update_verify_graph_metadata(
+            self._verify_meta[bucket], rows, lengths, table
+        )
+        builder.reset_graph_inputs(bucket)
 
     def _capture_one(
         self, bucket: int, greedy: bool, masked: bool, metas: tuple[AttentionMetadata, ...]
@@ -248,6 +396,7 @@ class GraphRunner:
             latent_kv_buffers=self._latent_kv_buffers,
             state_buffers=self._state_buffers,
             linear_attention=linear_meta,
+            feature_sink=self._feature_sink,
         )
         # The same controls an eager step with only a structural mask builds, so the two draw
         # from the same float32 logits.
@@ -264,6 +413,8 @@ class GraphRunner:
 
         def body() -> None:
             hidden = self._model(tokens, context)
+            if self._hidden_buf is not None:
+                self._hidden_buf[:bucket].copy_(hidden)
             logits = self._model.compute_logits(hidden)
             self._sampler.sample(logits, batch, sampled, controls)
 
@@ -332,6 +483,29 @@ class GraphRunner:
         """
         staged = self.launch(step, masks)
         return self._builder.read_sampled(staged.count)
+
+    def launch_verify(self, step: StepInput, drafts: Sequence[Sequence[TokenId]]) -> StagedVerify:
+        """Stage a ``VERIFY`` step into a captured total-row bucket and queue its replay."""
+        bucket = self.bucket_for(step)
+        if bucket is None or step.mode is not ForwardMode.VERIFY:
+            raise EngineError(f"verify step {step.step_id} cannot be replayed by a verify graph")
+        staged = self._builder.stage_verify(step, drafts, bucket)
+        self._model.ops.attention.update_verify_graph_metadata(
+            self._verify_meta[bucket],
+            staged.rows_per_request,
+            staged.kv_lengths,
+            staged.block_rows,
+        )
+        self._verify_graphs[bucket, staged.all_greedy].replay()
+        self.verify_replays += 1
+        return staged
+
+    def run_verify(
+        self, step: StepInput, drafts: Sequence[Sequence[TokenId]]
+    ) -> tuple[StagedVerify, list[TokenId]]:
+        """Replay a ``VERIFY`` step and return ``(staged, sampled_tokens)`` in one D2H sync."""
+        staged = self.launch_verify(step, drafts)
+        return staged, self._builder.read_sampled(staged.num_rows)
 
 
 #: The stream the warm-up runs of every capture on a device use, kept for the process.

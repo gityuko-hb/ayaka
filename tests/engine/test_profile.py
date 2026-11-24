@@ -25,9 +25,9 @@ from ayaka.utils.dtypes import DType
 torch: Any = pytest.importorskip("torch")
 
 from ayaka.device.context import Device, MemoryReading  # noqa: E402
-from ayaka.engine import build as engine_build  # noqa: E402
-from ayaka.engine.build import _startup_run  # noqa: E402  # pyright: ignore[reportPrivateUsage]
+from ayaka.engine import startup as engine_startup  # noqa: E402
 from ayaka.engine.profile import measure_startup  # noqa: E402
+from ayaka.engine.startup import startup_run  # noqa: E402
 from tiny_model import build_tiny_stack, tiny_engine_config  # noqa: E402  # needs the importorskip above
 
 if TYPE_CHECKING:
@@ -349,7 +349,7 @@ class TestStartupRunSaveGate:
         import ayaka.device.context as device_context
 
         monkeypatch.setattr(device_context, "Device", _FakeDevice)
-        monkeypatch.setattr(engine_build, "measure_startup", lambda *args, **kwargs: profile)
+        monkeypatch.setattr(engine_startup, "measure_startup", lambda *args, **kwargs: profile)
 
         base_config = tiny_engine_config(tmp_path)
         config = type(base_config)(
@@ -373,7 +373,7 @@ class TestStartupRunSaveGate:
             usable_blocks=16,
             group=SimpleNamespace(spec=SimpleNamespace(block_size=16)),
         )
-        _startup_run(
+        startup_run(
             config,
             runner,
             pool,

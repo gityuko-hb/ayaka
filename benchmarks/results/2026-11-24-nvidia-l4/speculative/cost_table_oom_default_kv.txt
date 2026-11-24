@@ -1,0 +1,11 @@
+Qwen/Qwen3-8B bf16, cuda_graph=True, default cache sizing (kv_reserve_tokens=512, num_blocks derived from free memory),
+max_running=8, speculative lookup max_k=15, step = 8 requests x (1+15) rows = 128 rows. NVIDIA L4, 2026-11-24, torch 2.14.1+cu130.
+
+Result: torch.OutOfMemoryError in ayaka/ops/backends/torch/sampling.py:_check_logits (argmax), allocating 76 MiB:
+"GPU 0 has a total capacity of 22.03 GiB of which 44.00 MiB is free ... 20.45 GiB is allocated by PyTorch, with
+531.88 MiB allocated in private pools (CUDA Graphs)".
+Start-up logged: "saved startup profile measured 0 bytes of runtime memory, below the 200409088-byte NVML/CUDA gap observed
+now; planning with 200409088 bytes". The plan therefore left about 200 MB for the scratch of the largest step, which a
+128-row verify window exceeded (float32 copies of 128 x 151,936 logits are 77 MB each).
+The published cost_table.json uses a fixed small KV cache (num_blocks=130) so the step can run; this file records what
+happened with the default sizing.

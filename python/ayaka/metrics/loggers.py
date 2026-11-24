@@ -136,6 +136,27 @@ class PrometheusStatLogger:
             buckets=(0.0001, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0),
             registry=self.registry,
         )
+        self._spec_drafted = Counter(
+            "ayaka_spec_draft_tokens",
+            "Draft tokens proposed and verified",
+            registry=self.registry,
+        )
+        self._spec_accepted = Counter(
+            "ayaka_spec_accepted_tokens",
+            "Draft tokens accepted by verification",
+            registry=self.registry,
+        )
+        self._spec_rounds = Counter(
+            "ayaka_spec_rounds",
+            "Speculative verification rounds",
+            registry=self.registry,
+        )
+        self._spec_disabled = Counter(
+            "ayaka_spec_disabled",
+            "Rounds where speculation was skipped for a request, by reason",
+            ["reason"],
+            registry=self.registry,
+        )
 
     def record(self, stats: IterationStats) -> None:
         self._running.set(stats.num_running)
@@ -152,6 +173,15 @@ class PrometheusStatLogger:
             self._requests.labels("aborted").inc(stats.num_aborted)
         if stats.num_failed:
             self._requests.labels("failed").inc(stats.num_failed)
+        if stats.spec_draft_tokens:
+            self._spec_drafted.inc(stats.spec_draft_tokens)
+        if stats.spec_accepted_tokens:
+            self._spec_accepted.inc(stats.spec_accepted_tokens)
+        if stats.spec_rounds:
+            self._spec_rounds.inc(stats.spec_rounds)
+        for reason, count in stats.spec_disabled:
+            if count:
+                self._spec_disabled.labels(reason).inc(count)
         self._step.observe(stats.step_seconds)
 
     def log(self) -> None:

@@ -1,0 +1,25 @@
+{
+ "loaded_from": "git worktree of commit 6543176 (python/ayaka)",
+ "Qwen/Qwen3-8B": {
+  "code_edit": {
+   "tok_per_sec": 15.29,
+   "tokens": 128
+  },
+  "reasoning": {
+   "tok_per_sec": 15.27,
+   "tokens": 128
+  }
+ },
+ "XiaomiMiMo/MiMo-7B-RL": {
+  "code_edit": {
+   "tok_per_sec": 16.62,
+   "tokens": 128
+  },
+  "reasoning": {
+   "tok_per_sec": 16.61,
+   "tokens": 128
+  }
+ },
+ "commit": "6543176",
+ "setup": "NVIDIA L4, bf16, backends flashinfer+torch, CUDA graphs, greedy, 128 tokens, ignore_eos, one run per prompt after a 16-token warm-up; plain decoding only (no speculative code at this commit)"
+}

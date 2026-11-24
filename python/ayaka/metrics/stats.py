@@ -39,3 +39,7 @@ class IterationStats:
     num_failed: int = 0
     num_settled: int = 0
     step_seconds: float = 0.0
+    spec_draft_tokens: int = 0
+    spec_accepted_tokens: int = 0
+    spec_rounds: int = 0
+    spec_disabled: tuple[tuple[str, int], ...] = ()

@@ -22,7 +22,6 @@ This module imports torch. Import it through ``ayaka.execution``, which loads it
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -30,6 +29,7 @@ import torch
 
 from ayaka.core.errors import EngineError
 from ayaka.core.types import ForwardMode
+from ayaka.execution.staged import ModelInputs, StagedDecode, StagedVerify
 from ayaka.ops.linear_attention import LinearAttentionMetadata
 from ayaka.sampling.batch import SamplingBatch
 from ayaka.sampling.rng import resolve_seed
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from ayaka.ops.attention import AttentionMetadata, AttentionOps
     from ayaka.scheduler.step import StepInput
 
-__all__ = ["InputBuilder", "ModelInputs", "StagedDecode"]
+__all__ = ["InputBuilder"]
 
 
 class _Mirrored:
@@ -68,64 +68,6 @@ class _Mirrored:
         """Copy the first ``stop`` entries back to the host and wait for them."""
         if self.device is not self.host and stop:
             self.host[:stop].copy_(self.device[:stop])
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class StagedDecode:
-    """A decode step written into the fixed buffers at a bucket's size, for a captured graph.
-
-    Attributes:
-        bucket: Rows the graph runs: the step's requests, then padding requests.
-        count: The step's own requests; their rows come first.
-        kv_lengths: ``[bucket]`` int32 CPU tensor, 0 for padding requests.
-        block_rows: ``[bucket, max_blocks]`` int32 CPU tensor of group 0's block tables.
-        all_greedy: Whether every request samples greedily, which picks the graph variant.
-        group_block_rows: Per-group ``[bucket, max_blocks]`` int32 CPU tensors for all
-            KV/latent groups.
-        state_slots: Optional ``[bucket]`` int32 host/staged state slot ids.
-    """
-
-    bucket: int
-    count: int
-    kv_lengths: torch.Tensor
-    block_rows: torch.Tensor
-    all_greedy: bool
-    group_block_rows: tuple[torch.Tensor, ...] = ()
-    state_slots: torch.Tensor | None = None
-
-
-@dataclass(frozen=True, slots=True, eq=False)
-class ModelInputs:
-    """The inputs of one forward, as views of the builder's fixed buffers.
-
-    Attributes:
-        token_ids: ``[N]`` int64 input token of every row, requests in step order.
-        attention: The planned step for group 0 (backward-compatible default).
-        logit_rows: ``[L]`` int64 indices of the rows whose hidden states are projected and
-            sampled: the last row of a prefill chunk that ends its prompt, every row of a decode
-            or verify request.
-        sampling: The sampling parameters of those ``L`` rows.
-        sampled: ``[L]`` int64 buffer the sampler writes the chosen token ids into.
-        logit_counts: Per request, how many of the ``L`` rows are its own (0 for a prefill chunk
-            that does not end the prompt).
-        draft_tokens: Per request, the tokens the step used for its draft rows.
-        group_attentions: Planned attention metadata per KV/latent KV group.
-        linear_attention: Planned linear-attention step metadata, or ``None`` when unused.
-    """
-
-    token_ids: torch.Tensor
-    attention: AttentionMetadata
-    logit_rows: torch.Tensor
-    sampling: SamplingBatch
-    sampled: torch.Tensor
-    logit_counts: tuple[int, ...]
-    draft_tokens: tuple[tuple[TokenId, ...], ...]
-    group_attentions: tuple[AttentionMetadata, ...] = field(default=())
-    linear_attention: LinearAttentionMetadata | None = None
-
-    def __post_init__(self) -> None:
-        if not self.group_attentions:
-            object.__setattr__(self, "group_attentions", (self.attention,))
 
 
 class InputBuilder:
@@ -192,6 +134,7 @@ class InputBuilder:
             torch.zeros((requests, max_blocks), dtype=torch.int32, pin_memory=pinned)
             for _ in range(self._num_groups)
         )
+        self._verify_rows = torch.zeros(requests, dtype=torch.int32, pin_memory=pinned)
         # The token masks the masked graph variants read, made by `graph_mask` (it knows the width).
         self._masks: _Mirrored | None = None
 
@@ -204,6 +147,17 @@ class InputBuilder:
     def max_rows(self) -> int:
         """Most rows one step can have."""
         return self._max_rows
+
+    def active_block_tables(self, step: StepInput) -> torch.Tensor:
+        """Device ``[num_requests, max_blocks]`` block-table rows for ``step.batch_rows``."""
+        count = step.num_requests
+        self._batch_rows.array[:count] = step.batch_rows
+        self._batch_rows.push(count)
+        block_rows = self._group_block_rows[0][:count]
+        torch.index_select(
+            self._mirrors[0].device, 0, self._batch_rows.device[:count], out=block_rows
+        )
+        return block_rows
 
     @property
     def buffers(self) -> Mapping[str, torch.Tensor]:
@@ -356,15 +310,20 @@ class InputBuilder:
         return self._max_requests
 
     def reset_graph_inputs(self, bucket: int) -> None:
-        """Fill the first ``bucket`` rows with a valid all-padding decode step, for a capture."""
+        """Fill the first ``bucket`` rows with a valid all-padding step, for a capture.
+
+        A decode bucket counts requests, a verify bucket rows; the per-request buffers are
+        filled for at most the requests a step can hold.
+        """
         self._tokens.array[:bucket] = 0
         self._tokens.push(bucket)
-        self._state_slots.array[:bucket] = 0
-        self._state_slots.push(bucket)
-        self._rows_per_request.array[:bucket] = 1
-        self._rows_per_request.push(bucket)
-        self._cu_seqlens.array[: bucket + 1] = np.arange(bucket + 1, dtype=np.int32)
-        self._cu_seqlens.push(bucket + 1)
+        requests = min(bucket, self._max_requests)
+        self._state_slots.array[:requests] = 0
+        self._state_slots.push(requests)
+        self._rows_per_request.array[:requests] = 1
+        self._rows_per_request.push(requests)
+        self._cu_seqlens.array[: requests + 1] = np.arange(requests + 1, dtype=np.int32)
+        self._cu_seqlens.push(requests + 1)
         for buffer, neutral in (
             (self._seeds, 0),
             (self._positions, 0),
@@ -388,6 +347,93 @@ class InputBuilder:
             cu_seqlens=self._cu_seqlens.device[: bucket + 1],
             state_slots=self._state_slots.device[:bucket],
             rows_per_request=self._rows_per_request.device[:bucket],
+        )
+
+    def stage_verify(
+        self,
+        step: StepInput,
+        drafts: Sequence[Sequence[TokenId]],
+        bucket: int,
+    ) -> StagedVerify:
+        """Write a ``VERIFY`` step padded up to ``bucket`` total rows for graph replay."""
+        count = step.num_requests
+        total_rows = step.num_rows
+        if step.mode is not ForwardMode.VERIFY:
+            raise EngineError(f"step {step.step_id} is not a VERIFY step")
+        if total_rows > bucket or bucket > self._max_rows or count > self._max_requests:
+            raise EngineError(
+                f"step {step.step_id} has {total_rows} rows and {count} requests for verify "
+                f"bucket {bucket} (max_rows={self._max_rows}, max_requests={self._max_requests})"
+            )
+        try:
+            self._apply_table_updates(step)
+        except BaseException:
+            self._stale = True
+            raise
+        batch_rows = step.batch_rows
+        if max(batch_rows) >= self._max_requests or min(batch_rows) < 0:
+            raise EngineError(f"step {step.step_id} uses a batch row outside the block table")
+
+        used_drafts: list[tuple[TokenId, ...]] = []
+        offset = 0
+        slots = step.draft_slots
+        for index in range(count):
+            known = step.tokens[index]
+            wanted = slots[index]
+            given = tuple(drafts[index]) if index < len(drafts) else ()
+            filled = (*given[:wanted], *([known[-1]] * max(0, wanted - len(given))))
+            used_drafts.append(filled)
+            end = offset + step.rows_per_request[index]
+            self._tokens.array[offset : offset + len(known)] = known
+            self._tokens.array[offset + len(known) : end] = filled
+            offset = end
+        self._tokens.array[offset:bucket] = 0
+        self._tokens.push(bucket)
+
+        rows_arr = self._verify_rows.numpy()
+        rows_arr[:count] = step.rows_per_request
+        pad_rows = bucket - total_rows
+        if count < self._max_requests:
+            rows_arr[count] = pad_rows
+            rows_arr[count + 1 :] = 0
+        elif pad_rows > 0:
+            # All max_requests slots are active; cannot add a separate padding request.
+            raise EngineError(f"step {step.step_id}: no padding slot left for bucket {bucket}")
+
+        lengths = self._graph_lengths.numpy()
+        lengths[:count] = [
+            start + rows
+            for start, rows in zip(step.start_positions, step.rows_per_request, strict=True)
+        ]
+        lengths[count:] = 0
+        rows = self._graph_rows[0].numpy()
+        rows[:count] = self._table.rows[0, list(batch_rows)]
+        rows[count:] = 0
+
+        logit_counts = step.rows_per_request
+        greedy = self._sampling_batch(step, logit_counts).all_greedy
+        for buffer, neutral in (
+            (self._seeds, 0),
+            (self._positions, 0),
+            (self._sequences, 0),
+            (self._temperature, 1.0),
+            (self._top_k, 0),
+            (self._top_p, 1.0),
+            (self._min_p, 0.0),
+        ):
+            buffer.array[total_rows:bucket] = neutral
+            buffer.push(bucket)
+
+        return StagedVerify(
+            bucket=bucket,
+            num_rows=total_rows,
+            num_requests=count,
+            rows_per_request=self._verify_rows,
+            kv_lengths=self._graph_lengths,
+            block_rows=self._graph_rows[0],
+            all_greedy=greedy,
+            draft_tokens=tuple(used_drafts),
+            logit_counts=logit_counts,
         )
 
     @property

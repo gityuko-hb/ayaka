@@ -1,0 +1,273 @@
+{
+  "machine": {
+    "date": "2026-11-24T19:03:14+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "6543176a80876e5ba7dce746335a52d22d593734-dirty"
+  },
+  "model": "Qwen/Qwen3-8B",
+  "results": {
+    "plain_b1": {
+      "code_edit": {
+        "tokens": 128,
+        "seconds": 8.4069,
+        "tok_per_sec": 15.23,
+        "rounds": 0,
+        "drafted": 0,
+        "accepted": 0,
+        "acceptance_rate": 0.0,
+        "accepted_prediction_tokens": 0
+      },
+      "rag_extract": {
+        "tokens": 128,
+        "seconds": 8.4266,
+        "tok_per_sec": 15.19,
+        "rounds": 0,
+        "drafted": 0,
+        "accepted": 0,
+        "acceptance_rate": 0.0,
+        "accepted_prediction_tokens": 0
+      },
+      "creative_chat": {
+        "tokens": 128,
+        "seconds": 8.3956,
+        "tok_per_sec": 15.25,
+        "rounds": 0,
+        "drafted": 0,
+        "accepted": 0,
+        "acceptance_rate": 0.0,
+        "accepted_prediction_tokens": 0
+      }
+    },
+    "lookup_cost_b1": {
+      "code_edit": {
+        "tokens": 128,
+        "seconds": 5.7221,
+        "tok_per_sec": 22.37,
+        "rounds": 12,
+        "drafted": 72,
+        "accepted": 42,
+        "acceptance_rate": 0.583,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.469
+      },
+      "rag_extract": {
+        "tokens": 128,
+        "seconds": 7.5275,
+        "tok_per_sec": 17.0,
+        "rounds": 5,
+        "drafted": 33,
+        "accepted": 14,
+        "acceptance_rate": 0.424,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": false,
+        "speedup_vs_plain": 1.119
+      },
+      "creative_chat": {
+        "tokens": 128,
+        "seconds": 7.6412,
+        "tok_per_sec": 16.75,
+        "rounds": 7,
+        "drafted": 56,
+        "accepted": 12,
+        "acceptance_rate": 0.214,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": false,
+        "speedup_vs_plain": 1.098
+      }
+    },
+    "lookup_fixed4_b1": {
+      "code_edit": {
+        "tokens": 128,
+        "seconds": 5.9055,
+        "tok_per_sec": 21.67,
+        "rounds": 15,
+        "drafted": 60,
+        "accepted": 39,
+        "acceptance_rate": 0.65,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": false,
+        "speedup_vs_plain": 1.423
+      },
+      "rag_extract": {
+        "tokens": 128,
+        "seconds": 7.6563,
+        "tok_per_sec": 16.72,
+        "rounds": 7,
+        "drafted": 25,
+        "accepted": 12,
+        "acceptance_rate": 0.48,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": false,
+        "speedup_vs_plain": 1.101
+      },
+      "creative_chat": {
+        "tokens": 128,
+        "seconds": 7.8388,
+        "tok_per_sec": 16.33,
+        "rounds": 9,
+        "drafted": 36,
+        "accepted": 9,
+        "acceptance_rate": 0.25,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.071
+      }
+    },
+    "lookup_prediction_b1": {
+      "code_edit": {
+        "tokens": 128,
+        "seconds": 4.4834,
+        "tok_per_sec": 28.55,
+        "rounds": 14,
+        "drafted": 91,
+        "accepted": 61,
+        "acceptance_rate": 0.67,
+        "accepted_prediction_tokens": 50,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.875
+      },
+      "rag_extract": {
+        "tokens": 128,
+        "seconds": 7.7311,
+        "tok_per_sec": 16.56,
+        "rounds": 6,
+        "drafted": 32,
+        "accepted": 11,
+        "acceptance_rate": 0.344,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.09
+      },
+      "creative_chat": {
+        "tokens": 128,
+        "seconds": 7.8465,
+        "tok_per_sec": 16.31,
+        "rounds": 9,
+        "drafted": 44,
+        "accepted": 9,
+        "acceptance_rate": 0.205,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.07
+      }
+    },
+    "token_recycling_b1": {
+      "code_edit": {
+        "tokens": 128,
+        "seconds": 6.2782,
+        "tok_per_sec": 20.39,
+        "rounds": 58,
+        "drafted": 168,
+        "accepted": 36,
+        "acceptance_rate": 0.214,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.339
+      },
+      "rag_extract": {
+        "tokens": 128,
+        "seconds": 7.8051,
+        "tok_per_sec": 16.4,
+        "rounds": 57,
+        "drafted": 166,
+        "accepted": 13,
+        "acceptance_rate": 0.078,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.08
+      },
+      "creative_chat": {
+        "tokens": 128,
+        "seconds": 6.8622,
+        "tok_per_sec": 18.65,
+        "rounds": 43,
+        "drafted": 122,
+        "accepted": 26,
+        "acceptance_rate": 0.213,
+        "accepted_prediction_tokens": 0,
+        "exact_match_plain": true,
+        "speedup_vs_plain": 1.223
+      }
+    },
+    "plain_b4": {
+      "code_edit": {
+        "tokens": 512,
+        "seconds": 8.8998,
+        "tok_per_sec": 57.53,
+        "rounds": 0,
+        "drafted": 0,
+        "accepted": 0,
+        "acceptance_rate": 0.0,
+        "accepted_prediction_tokens": 0
+      },
+      "rag_extract": {
+        "tokens": 512,
+        "seconds": 9.0486,
+        "tok_per_sec": 56.58,
+        "rounds": 0,
+        "drafted": 0,
+        "accepted": 0,
+        "acceptance_rate": 0.0,
+        "accepted_prediction_tokens": 0
+      },
+      "creative_chat": {
+        "tokens": 512,
+        "seconds": 8.9034,
+        "tok_per_sec": 57.51,
+        "rounds": 0,
+        "drafted": 0,
+        "accepted": 0,
+        "acceptance_rate": 0.0,
+        "accepted_prediction_tokens": 0
+      }
+    },
+    "lookup_cost_b4": {
+      "code_edit": {
+        "tokens": 512,
+        "seconds": 6.5279,
+        "tok_per_sec": 78.43,
+        "rounds": 72,
+        "drafted": 216,
+        "accepted": 144,
+        "acceptance_rate": 0.667,
+        "accepted_prediction_tokens": 0,
+        "speedup_vs_plain": 1.363
+      },
+      "rag_extract": {
+        "tokens": 512,
+        "seconds": 8.3141,
+        "tok_per_sec": 61.58,
+        "rounds": 24,
+        "drafted": 80,
+        "accepted": 44,
+        "acceptance_rate": 0.55,
+        "accepted_prediction_tokens": 0,
+        "speedup_vs_plain": 1.088
+      },
+      "creative_chat": {
+        "tokens": 512,
+        "seconds": 8.4072,
+        "tok_per_sec": 60.9,
+        "rounds": 32,
+        "drafted": 112,
+        "accepted": 32,
+        "acceptance_rate": 0.286,
+        "accepted_prediction_tokens": 0,
+        "speedup_vs_plain": 1.059
+      }
+    }
+  }
+}

@@ -26,11 +26,15 @@ __all__ = [
     "DECODE_CHUNK_BYTES",
     "TorchAttentionPlan",
     "TorchGraphPlan",
+    "TorchVerifyGraphPlan",
     "attend",
     "graph_metadata",
     "plan",
     "stage_graph_step",
+    "stage_verify_graph_step",
     "update_graph_metadata",
+    "update_verify_graph_metadata",
+    "verify_graph_metadata",
 ]
 
 #: Bytes of float32 keys a decode step gathers at a time.
@@ -49,6 +53,18 @@ class TorchAttentionPlan:
 class TorchGraphPlan:
     """Host staging of the graph metadata: what :func:`update_graph_metadata` fills."""
 
+    positions: torch.Tensor
+    slot_mapping: torch.Tensor
+    kv_lengths: torch.Tensor
+    block_table: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class TorchVerifyGraphPlan:
+    """Host staging of a captured ``VERIFY`` bucket of ``num_rows`` rows across ``max_requests``."""
+
+    rows_per_request: torch.Tensor
+    request_of_row: torch.Tensor
     positions: torch.Tensor
     slot_mapping: torch.Tensor
     kv_lengths: torch.Tensor
@@ -169,9 +185,9 @@ def attend(
 ) -> None:
     op = "attention.attend"
     require_buffers(op, buffers)
-    if not isinstance(meta.plan, (TorchAttentionPlan, TorchGraphPlan)) or not isinstance(
-        meta.block_table, torch.Tensor
-    ):
+    if not isinstance(
+        meta.plan, (TorchAttentionPlan, TorchGraphPlan, TorchVerifyGraphPlan)
+    ) or not isinstance(meta.block_table, torch.Tensor):
         raise BackendError(
             f"{op}: this step was planned by another backend; plan it with the same ops",
             context={"op": op, "argument": "meta"},
@@ -220,7 +236,23 @@ def attend(
             sinks=sinks,
         )
         return
-    if not isinstance(meta.plan, TorchAttentionPlan):
+    if isinstance(meta.plan, TorchVerifyGraphPlan):
+        _attend_verify(
+            q,
+            keys,
+            values,
+            buffers,
+            meta.block_table,
+            meta.kv_lengths,
+            meta.request_of_row,
+            meta.positions,
+            out,
+            scale=scale,
+            window=window,
+            sinks=sinks,
+        )
+        return
+    if not isinstance(meta.plan, TorchAttentionPlan):  # graph metadata is always DECODE
         raise BackendError(f"{op}: graph metadata must be a DECODE step", context={"op": op})
     group = heads // buffers.num_kv_heads
     out.zero_()
@@ -405,6 +437,200 @@ def stage_graph_step(
     staging.kv_lengths.copy_(kv_lengths)
     staging.block_table.copy_(block_rows)
     for device_tensor, host_tensor in (
+        (meta.positions, staging.positions),
+        (meta.slot_mapping, staging.slot_mapping),
+        (meta.kv_lengths, staging.kv_lengths),
+        (table, staging.block_table),
+    ):
+        device_tensor.copy_(host_tensor, non_blocking=True)
+
+
+def _attend_verify(
+    q: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    buffers: KVBuffers,
+    table: torch.Tensor,
+    lengths: torch.Tensor,
+    request_of_row: torch.Tensor,
+    row_positions: torch.Tensor,
+    out: torch.Tensor,
+    *,
+    scale: float,
+    window: int | None = None,
+    sinks: torch.Tensor | None = None,
+) -> None:
+    """Graph-safe causal attention for a ``VERIFY`` bucket of fixed total rows.
+
+    Masks, the sliding window, attention sinks and the cache's dtype are applied as
+    :func:`_attend_decode` applies them, per row instead of per request.
+    """
+    num_rows, heads, head_dim = q.shape
+    block_size, kv_heads = keys.shape[1], keys.shape[2]
+    group = heads // kv_heads
+    _, width = table.shape
+    req_idx = request_of_row.long()
+    row_blocks = table[req_idx]  # [N, width]
+    row_kv_len = lengths.long()[req_idx]  # [N]
+    # A row sees positions <= min(row_positions[r], row_kv_len[r] - 1) when row_kv_len > 0.
+    max_pos = torch.where(row_kv_len > 0, torch.minimum(row_positions.long(), row_kv_len - 1), -1)
+
+    per_block = num_rows * block_size * kv_heads * head_dim * 4
+    step = max(1, min(width, DECODE_CHUNK_BYTES // max(per_block, 1)))
+    query = q.float().reshape(num_rows, kv_heads, group, head_dim)
+    shape = (num_rows, kv_heads, group)
+    running_max = torch.full(shape, float("-inf"), dtype=torch.float32, device=q.device)
+    total = torch.zeros(shape, dtype=torch.float32, device=q.device)
+    acc = torch.zeros((*shape, head_dim), dtype=torch.float32, device=q.device)
+    for first in range(0, width, step):
+        blocks = row_blocks[:, first : first + step].long()
+        context_k, context_v = dequantize_kv(
+            keys[blocks].flatten(1, 2), values[blocks].flatten(1, 2), buffers
+        )
+        start = first * block_size
+        positions = torch.arange(start, start + context_k.shape[1], device=q.device)
+        visible = positions[None, :] <= max_pos[:, None]
+        if window is not None:
+            visible = visible & (positions[None, :] > (max_pos[:, None] - window))
+        scores = torch.einsum("bkgd,blkd->bkgl", query, context_k) * scale
+        scores = scores.masked_fill(~visible[:, None, None, :], float("-inf"))
+        new_max = torch.maximum(running_max, scores.amax(dim=-1))
+        shift = torch.where(torch.isfinite(new_max), new_max, 0.0)
+        correction = torch.exp(running_max - shift)
+        weights = torch.exp(scores - shift[..., None])
+        context_v = torch.where(visible[:, :, None, None], context_v, 0.0)
+        acc = acc * correction[..., None] + torch.einsum("bkgl,blkd->bkgd", weights, context_v)
+        total = total * correction + weights.sum(dim=-1)
+        running_max = new_max
+    if sinks is not None:
+        sink_logits = sinks.float().reshape(1, kv_heads, group)
+        final_max = torch.maximum(running_max, sink_logits)
+        shift = torch.where(torch.isfinite(final_max), final_max, 0.0)
+        correction = torch.exp(running_max - shift)
+        acc = acc * correction[..., None]
+        total = total * correction + torch.exp(sink_logits - shift)
+    seen = (total > 0) & (max_pos >= 0)[:, None, None]
+    result = torch.where(seen[..., None], acc / torch.where(seen, total, 1.0)[..., None], 0.0)
+    out.copy_(result.reshape(num_rows, heads, head_dim))
+
+
+def verify_graph_metadata(
+    num_rows: int, max_requests: int, max_blocks: int, block_size: int, device: torch.device
+) -> AttentionMetadata:
+    if num_rows < 1 or max_requests < 1 or max_blocks < 1 or block_size < 1:
+        raise BackendError(
+            "attention.verify_graph_metadata: dimensions must be positive",
+            context={"op": "attention.verify_graph_metadata"},
+        )
+    target = torch.device(device)
+    pinned = target.type == "cuda"
+
+    def host(shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
+        return torch.zeros(shape, dtype=dtype, pin_memory=pinned)
+
+    staging = TorchVerifyGraphPlan(
+        rows_per_request=host((max_requests,), torch.int32),
+        request_of_row=host((num_rows,), torch.int32),
+        positions=host((num_rows,), torch.int32),
+        slot_mapping=host((num_rows,), torch.int64),
+        kv_lengths=host((max_requests,), torch.int32),
+        block_table=host((max_requests, max_blocks), torch.int32),
+    )
+    return AttentionMetadata(
+        mode=ForwardMode.VERIFY,
+        block_size=block_size,
+        rows_per_request=torch.zeros(max_requests, dtype=torch.int32, device=target),
+        request_of_row=torch.zeros(num_rows, dtype=torch.int32, device=target),
+        positions=torch.zeros(num_rows, dtype=torch.int32, device=target),
+        slot_mapping=torch.zeros(num_rows, dtype=torch.int64, device=target),
+        kv_lengths=torch.zeros(max_requests, dtype=torch.int32, device=target),
+        block_table=torch.zeros((max_requests, max_blocks), dtype=torch.int32, device=target),
+        plan=staging,
+    )
+
+
+def update_verify_graph_metadata(
+    meta: AttentionMetadata,
+    rows_per_request: torch.Tensor,
+    kv_lengths: torch.Tensor,
+    block_rows: torch.Tensor,
+) -> None:
+    op = "attention.update_verify_graph_metadata"
+    staging = meta.plan
+    if not isinstance(staging, TorchVerifyGraphPlan) or not isinstance(
+        meta.block_table, torch.Tensor
+    ):
+        raise BackendError(
+            f"{op}: meta was not made by this backend's verify_graph_metadata",
+            context={"op": op, "argument": "meta"},
+        )
+    stage_verify_graph_step(op, meta, staging, rows_per_request, kv_lengths, block_rows)
+
+
+def stage_verify_graph_step(
+    op: str,
+    meta: AttentionMetadata,
+    staging: TorchVerifyGraphPlan,
+    rows_per_request: torch.Tensor,
+    kv_lengths: torch.Tensor,
+    block_rows: torch.Tensor,
+) -> None:
+    """Check a ``VERIFY`` step given on the host and asynchronously copy it to device."""
+    table = meta.block_table
+    if not isinstance(table, torch.Tensor):
+        raise BackendError(
+            f"{op}: meta has no block table tensor", context={"op": op, "argument": "meta"}
+        )
+    max_requests, max_blocks = staging.block_table.shape
+    num_rows = staging.positions.shape[0]
+    for name, tensor, shape in (
+        ("rows_per_request", rows_per_request, (max_requests,)),
+        ("kv_lengths", kv_lengths, (max_requests,)),
+        ("block_rows", block_rows, (max_requests, max_blocks)),
+    ):
+        if (
+            tuple(tensor.shape) != shape
+            or tensor.dtype != torch.int32
+            or tensor.device.type != "cpu"
+        ):
+            raise BackendError(
+                f"{op}: {name} must be an int32 CPU tensor of shape {list(shape)}, got "
+                f"{tensor.dtype} {list(tensor.shape)} on {tensor.device}",
+                context={"op": op, "argument": name},
+            )
+    total_rows = int(rows_per_request.sum().item())
+    if total_rows != num_rows:
+        raise BackendError(
+            f"{op}: rows_per_request sums to {total_rows}, expected {num_rows}",
+            context={"op": op, "argument": "rows_per_request"},
+        )
+    block_size = meta.block_size
+    rows64 = rows_per_request.long()
+    lengths64 = kv_lengths.long()
+    if (
+        bool((rows64 < 0).any())
+        or bool((lengths64 < 0).any())
+        or bool((lengths64 > max_blocks * block_size).any())
+    ):
+        raise BackendError(f"{op}: invalid row counts or kv_lengths", context={"op": op})
+    req_of_row = torch.repeat_interleave(torch.arange(max_requests, dtype=torch.int64), rows64)
+    first_row = torch.cumsum(rows64, dim=0) - rows64
+    within = torch.arange(num_rows, dtype=torch.int64) - first_row[req_of_row]
+    row_len = lengths64[req_of_row]
+    is_padding = row_len == 0
+    positions = torch.where(is_padding, 0, row_len - rows64[req_of_row] + within)
+    block = block_rows.long()[req_of_row, positions // block_size]
+    slots = torch.where(is_padding, 0, block * block_size + positions % block_size)
+
+    staging.rows_per_request.copy_(rows_per_request)
+    staging.request_of_row.copy_(req_of_row.to(torch.int32))
+    staging.positions.copy_(positions.to(torch.int32))
+    staging.slot_mapping.copy_(slots)
+    staging.kv_lengths.copy_(kv_lengths)
+    staging.block_table.copy_(block_rows)
+    for device_tensor, host_tensor in (
+        (meta.rows_per_request, staging.rows_per_request),
+        (meta.request_of_row, staging.request_of_row),
         (meta.positions, staging.positions),
         (meta.slot_mapping, staging.slot_mapping),
         (meta.kv_lengths, staging.kv_lengths),

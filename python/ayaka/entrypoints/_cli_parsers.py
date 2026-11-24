@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ayaka.__version__ import __version__
 from ayaka.configs.server import DEFAULT_PORT
+from ayaka.configs.speculative import SPECULATIVE_CONTROLLERS, SPECULATIVE_METHODS
 from ayaka.entrypoints.console import PROG
 from ayaka.utils.dtypes import COMPUTE_DTYPES
 
@@ -286,6 +287,37 @@ def _engine_flags(command: argparse.ArgumentParser) -> None:
     where.add_argument("--tokenizer", default="", help="tokenizer directory or repo id")
     where.add_argument(
         "--offline", action="store_true", help="never use the network; read the local cache only"
+    )
+    _speculative_flags(command)
+
+
+def _speculative_flags(command: argparse.ArgumentParser) -> None:
+    spec = command.add_argument_group("speculative decoding")
+    spec.add_argument(
+        "--speculative",
+        choices=("off", *SPECULATIVE_METHODS),
+        default="off",
+        help="speculative decoding method; off disables speculation (off)",
+    )
+    spec.add_argument(
+        "--spec-max-draft-tokens",
+        type=int,
+        default=8,
+        metavar="K",
+        help="maximum draft tokens per round (8)",
+    )
+    spec.add_argument(
+        "--spec-controller",
+        choices=SPECULATIVE_CONTROLLERS,
+        default="cost",
+        help="draft window controller (cost)",
+    )
+    spec.add_argument(
+        "--spec-fixed-k",
+        type=int,
+        default=2,
+        metavar="K",
+        help="draft window length when --spec-controller=fixed (2)",
     )
 
 

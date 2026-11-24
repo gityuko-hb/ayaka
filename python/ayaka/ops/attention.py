@@ -86,3 +86,19 @@ class AttentionOps(Protocol):
     ) -> None:
         """Update fixed graph metadata buffers from host tensors."""
         ...
+
+    def verify_graph_metadata(
+        self, num_rows: int, max_requests: int, max_blocks: int, block_size: int, device: device
+    ) -> AttentionMetadata:
+        """Allocate fixed metadata for a captured ``VERIFY`` step of ``num_rows`` total rows."""
+        ...
+
+    def update_verify_graph_metadata(
+        self,
+        meta: AttentionMetadata,
+        rows_per_request: Tensor,
+        kv_lengths: Tensor,
+        block_rows: Tensor,
+    ) -> None:
+        """Write the next ``VERIFY`` step into ``meta`` made by :meth:`verify_graph_metadata`."""
+        ...

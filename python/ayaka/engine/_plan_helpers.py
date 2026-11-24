@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from ayaka.device.info import DeviceInfo
     from ayaka.engine.profile import StartupProfile
     from ayaka.kvcache.storage.spec import KVGroup, LatentKVGroup, RecurrentStateGroup
-    from ayaka.memory.budget import BudgetPlan
+    from ayaka.memory.budget import BudgetPlan, DraftCost
     from ayaka.models.base import CausalLM
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
@@ -92,8 +92,13 @@ def compute_budget(
     previous: StartupProfile | None,
     *,
     initial_runtime_bytes: int = 0,
+    drafts: tuple[DraftCost, ...] = (),
 ) -> BudgetPlan:
-    """Compute the engine's memory budget from free memory, weights, and KV/state geometry."""
+    """Compute the engine's memory budget from free memory, weights, and KV/state geometry.
+
+    ``drafts`` are the speculative draft sources the plan should load when they fit: their
+    weights and per-token cache come out of the memory the KV cache would otherwise take.
+    """
     late_alloc_bytes = (
         max(previous.runtime_bytes, initial_runtime_bytes)
         if previous is not None
@@ -128,6 +133,7 @@ def compute_budget(
             graph_bytes_estimate=(
                 previous.graph_bytes if previous and config.device.cuda_graph else 0
             ),
+            drafts=drafts,
         )
     )
 

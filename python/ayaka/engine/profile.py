@@ -385,6 +385,7 @@ def measure_startup(
     baseline_bytes: int,
     baseline_reserved_bytes: int = 0,
     kv_bytes: int,
+    extra_weights_bytes: int = 0,
     chunk_tokens: int,
     buckets: Sequence[int],
     block_size: int,
@@ -513,10 +514,10 @@ def measure_startup(
     # weights and the cache can land in memory the allocator already held: the device did not lose
     # it, so it is counted here and added back when the ledger is compared with the device.
     cache_total = kv_bytes + state_bytes
-    reused = max(weights + cache_total - reserved, 0)
+    reused = max(weights + extra_weights_bytes + cache_total - reserved, 0)
     # What the allocator holds beyond the weights and the cache: the step's activations, the
     # matrix libraries' workspaces and the allocator's own rounding.
-    workspace = max(reserved + reused - weights - cache_total, max(peak, 0))
+    workspace = max(reserved + reused - weights - extra_weights_bytes - cache_total, max(peak, 0))
     profile = StartupProfile(
         key=key,
         weights_bytes=weights,

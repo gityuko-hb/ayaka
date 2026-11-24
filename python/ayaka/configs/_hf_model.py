@@ -327,6 +327,7 @@ def parse_hf_model_fields(raw_config: Mapping[str, object]) -> dict[str, Any]:
             else 0
         ),
         "use_bidirectional_vision": config.get("use_bidirectional_attention") == "vision",
+        "num_nextn_predict_layers": int(cast("int", config.get("num_nextn_predict_layers") or 0)),
         **rope_fields,
         **_hf_experts(config, num_layers, found["intermediate_size"]),
     }

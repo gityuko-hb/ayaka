@@ -198,6 +198,10 @@ class StepOutput:
     logprobs: tuple[tuple[TokenLogprob, ...] | None, ...] = ()
     releasable: tuple[RequestId, ...] | None = None
     error: ErrorInfo | None = None
+    spec_drafted: tuple[int, ...] = ()
+    spec_prediction_accepted: tuple[int, ...] = ()
+    spec_prediction_rejected: tuple[int, ...] = ()
+    spec_disabled: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         count = len(self.request_ids)
@@ -207,7 +211,13 @@ class StepOutput:
             raise EngineError(
                 f"step {self.step_id}: {len(self.tokens)} token lists for {count} requests"
             )
-        for name, values in (("accepted", self.accepted), ("logprobs", self.logprobs)):
+        for name, values in (
+            ("accepted", self.accepted),
+            ("logprobs", self.logprobs),
+            ("spec_drafted", self.spec_drafted),
+            ("spec_prediction_accepted", self.spec_prediction_accepted),
+            ("spec_prediction_rejected", self.spec_prediction_rejected),
+        ):
             if values and len(values) != count:
                 raise EngineError(
                     f"step {self.step_id}: {len(values)} {name} entries for {count} requests"

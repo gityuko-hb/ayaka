@@ -439,3 +439,102 @@ def test_engines_that_capture_graphs_leave_no_memory_behind() -> None:
 
     assert second - first < 2**20, f"the second engine left {second - first} bytes behind"
     assert third - second < 2**20, f"the third engine left {third - second} bytes behind"
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(("backends", "dtype"), GPU_CASES)
+def test_verify_graph_replay_matches_eager_and_one_sync(
+    backends: tuple[str, ...], dtype: DType
+) -> None:
+    """Gate 3: captured verify buckets replay ragged steps identically to eager with 1 D2H sync."""
+    from adversarial_proposers import RandomProposer
+    from ayaka.configs.speculative import SpeculativeConfig
+    from ayaka.speculative.policy import FixedController
+
+    stack_eager = _gpu_stack(backends, dtype, cuda_graph=False)
+    stack_graph = _gpu_stack(backends, dtype, cuda_graph=True)
+
+    # Expand runner buffers on both stacks for verify rows (up to 4 requests x (1+3) = 16 rows).
+    from ayaka.execution.runner import ModelRunner
+
+    def wrap_runner(stack: TinyStack) -> ModelRunner:
+        return ModelRunner(
+            stack.model,
+            [stack.pool],
+            stack.kv.table,
+            max_rows=64,
+            device="cuda",
+            speculative=SpeculativeConfig(
+                enabled=True, max_draft_tokens=3, controller="fixed", fixed_k=3
+            ),
+            proposer=RandomProposer(stack.config.vocab_size, seed=7),
+            controller=FixedController(3),
+        )
+
+    eager_runner = wrap_runner(stack_eager)
+    graph_runner = wrap_runner(stack_graph)
+    captured = graph_runner.capture_graphs((1, 2, 4), verify_buckets=(2, 4, 8, 12, 16))
+    assert graph_runner.graph is not None
+    assert graph_runner.graph.verify_buckets == (2, 4, 8, 12, 16)
+    assert sum(b.bytes for b in captured) >= 0
+
+    prompt_a = _prompt(11, 8) * 2
+    prompt_b = _prompt(12, 10) * 2
+
+    def run_both(stack: TinyStack, runner: ModelRunner) -> dict[str, list[int]]:
+        for rid, pr, temp in [("a", prompt_a, 0.0), ("b", prompt_b, 0.7)]:
+            req = _request(rid, pr, max_tokens=12, temperature=temp, seed=42)
+            stack.scheduler.add_request(req)
+            runner.admit_speculative(req.request_id, req.prompt_token_ids, sampling=req.sampling)
+        emitted: dict[str, list[int]] = {}
+        while (step := stack.scheduler.schedule(runner.plan_lookahead())) is not None:
+            out = runner.execute(step)
+            stack.scheduler.update(out)
+            for ev in stack.scheduler.take_events():
+                emitted.setdefault(ev.request_id, []).extend(ev.token_ids)
+                if ev.finished:
+                    runner.release_speculative(ev.request_id)
+                elif ev.token_ids:
+                    runner.commit_speculative(ev.request_id, ev.token_ids)
+        return emitted
+
+    out_eager = run_both(stack_eager, eager_runner)
+    out_graph = run_both(stack_graph, graph_runner)
+    assert out_graph == out_eager
+    assert graph_runner.graph.verify_replays > 0
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(("backends", "dtype"), GPU_CASES)
+def test_launch_verify_has_no_implicit_synchronization(
+    backends: tuple[str, ...], dtype: DType
+) -> None:
+    stack = _gpu_stack(backends, dtype, cuda_graph=True)
+    from ayaka.execution.runner import ModelRunner
+
+    runner = ModelRunner(stack.model, [stack.pool], stack.kv.table, max_rows=32, device="cuda")
+    runner.capture_graphs((1, 2, 4), verify_buckets=(4, 8))
+    assert runner.graph is not None
+    stack.scheduler.add_request(_request("a", _prompt(3, 6), max_tokens=6))
+    while (step := stack.scheduler.schedule()) is not None:
+        if step.mode is ForwardMode.DECODE:
+            vstep = (
+                stack.scheduler.schedule({RequestId("a"): 3})
+                if not stack.scheduler.in_flight
+                else None
+            )
+            del vstep
+        if step.mode is ForwardMode.DECODE:
+            stack.scheduler.update(runner.execute(step))
+            break
+        stack.scheduler.update(runner.execute(step))
+    vstep = stack.scheduler.schedule({RequestId("a"): 3})
+    assert vstep is not None
+    assert vstep.mode is ForwardMode.VERIFY
+    _sync_debug("error")
+    try:
+        staged = runner.graph.launch_verify(vstep, [[1, 2, 3]])
+    finally:
+        _sync_debug("default")
+    sampled = runner.builder.read_sampled(staged.num_rows)
+    assert len(sampled) == staged.num_rows

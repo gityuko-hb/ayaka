@@ -148,6 +148,9 @@ class InputProcessor:
             images=request.images,
             image_spans=request.image_spans,
         )
+        prediction_ids = self._tokenize_prediction(request.prediction)
+        if prediction_ids:
+            tokenized = replace(tokenized, prediction_token_ids=prediction_ids)
         if request.structured is None:
             return tokenized
         # Compiled after tokenizing, so a prompt that does not fit is refused without compiling.
@@ -253,3 +256,17 @@ class InputProcessor:
             images=images,
             image_spans=image_spans,
         )
+
+    def _tokenize_prediction(self, prediction: str | tuple[int, ...] | None) -> tuple[int, ...]:
+        if not prediction:
+            return ()
+        if isinstance(prediction, tuple):
+            return prediction
+        try:
+            result = self._service.encode(
+                TextInput(prediction, add_special_tokens=False),
+                EncodeOptions(max_output_tokens=1, truncate=True),
+            )
+        except Exception:
+            return ()
+        return tuple(result.token_ids)

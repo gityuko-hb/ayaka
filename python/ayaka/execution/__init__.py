@@ -12,8 +12,9 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
     from ayaka.execution.graph import CapturedBucket, GraphRunner
-    from ayaka.execution.inputs import InputBuilder, ModelInputs, StagedDecode
+    from ayaka.execution.inputs import InputBuilder
     from ayaka.execution.runner import ModelRunner
+    from ayaka.execution.staged import ModelInputs, StagedDecode, StagedVerify
 
 __all__ = [
     "CapturedBucket",
@@ -22,12 +23,14 @@ __all__ = [
     "ModelInputs",
     "ModelRunner",
     "StagedDecode",
+    "StagedVerify",
 ]
 
 _EXPORTS = {
     "graph": ("CapturedBucket", "GraphRunner"),
-    "inputs": ("InputBuilder", "ModelInputs", "StagedDecode"),
+    "inputs": ("InputBuilder",),
     "runner": ("ModelRunner",),
+    "staged": ("ModelInputs", "StagedDecode", "StagedVerify"),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())
