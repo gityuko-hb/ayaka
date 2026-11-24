@@ -308,11 +308,11 @@ def test_dflash_real_checkpoints_gates_on_l4(
     target_id: str, draft_id: str, max_k: int, min_tau: float
 ) -> None:
     """Gates 1-4 for Qwen3-8B and Llama-3.1-8B DFlash on L4 GPU."""
-    from tokenizers import Tokenizer
+    tokenizers: Any = pytest.importorskip("tokenizers")  # tests/tokenizers shadows it for pyright
 
     target_dir = resolve_source(ModelSourceConfig(target_id, offline=True))
     draft_dir = resolve_source(ModelSourceConfig(draft_id, offline=True))
-    tok = Tokenizer.from_file(str(target_dir / "tokenizer.json"))
+    tok = tokenizers.Tokenizer.from_file(str(target_dir / "tokenizer.json"))
     prompts = [
         tuple(
             tok.encode(
