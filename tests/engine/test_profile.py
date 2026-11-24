@@ -479,3 +479,54 @@ class TestStartupRunSaveGate:
             and expected_log in record.message
             for record in caplog.records
         ), (case, caplog.text)
+
+
+def test_the_workspace_is_read_after_the_cache_of_freed_scratch_is_released() -> None:
+    """#123: graph capture empties the allocator's cache after the start-up run.
+
+    If the workspace were read while the cache still held the steps' freed scratch, the ledger
+    would count bytes that the capture then gives back, and the reconciliation after the capture
+    would find the allocator holding less than the ledger.
+    """
+    stack = build_tiny_stack(num_blocks=40)
+    weights = sum(p.numel() * p.element_size() for p in stack.model.parameters())
+    live = weights + stack.pool.nbytes + 10 * MIB
+
+    class _CachingDevice(Device):
+        def __init__(self) -> None:
+            super().__init__("cpu")
+            self.calls: list[str] = []
+
+        def release_cache(self) -> None:
+            self.calls.append("release")
+
+        def memory(self) -> MemoryReading:
+            self.calls.append("memory")
+            cache = 0 if "release" in self.calls else 300 * MIB
+            return MemoryReading(
+                free=4096 * MIB - live - cache,
+                total=4096 * MIB,
+                allocated=live,
+                reserved=live + cache,
+                peak_allocated=live + 50 * MIB,
+            )
+
+    device = _CachingDevice()
+
+    profile = measure_startup(
+        stack.model,
+        stack.runner.kv_buffers,
+        key=_key(),
+        device=device,
+        baseline_bytes=4096 * MIB,
+        kv_bytes=stack.pool.nbytes,
+        chunk_tokens=16,
+        buckets=(1,),
+        block_size=4,
+        usable_blocks=stack.pool.usable_blocks,
+    )
+
+    assert device.calls[-2:] == ["release", "memory"]
+    # The peak (50 MiB above what was allocated) is kept; the 300 MiB of cache is not workspace.
+    assert profile.workspace_bytes == 50 * MIB
+    assert profile.reused_bytes == 0

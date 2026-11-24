@@ -104,6 +104,16 @@ class Device:
             peak_allocated=int(torch.cuda.max_memory_allocated(self._device)),
         )
 
+    def release_cache(self) -> None:
+        """Give the memory torch's allocator caches but no tensor uses back to the driver.
+
+        Waits for the device first, so blocks freed by queued kernels are released too. A no-op
+        on the CPU.
+        """
+        if self.is_cuda:
+            torch.cuda.synchronize(self._device)
+            torch.cuda.empty_cache()
+
     def reset_peak(self) -> None:
         """Start a new peak for :attr:`MemoryReading.peak_allocated`; a no-op on the CPU."""
         if self.is_cuda:
