@@ -981,3 +981,90 @@ OpenCode (the check's own requests; OpenCode itself is not installed on this mac
 `codex exec` session got two `exec_command` calls from the model, but Codex ran neither: the model
 wrote `"max_output_tokens": "10000"` and `"tty": "true"`, strings where the schema says number and
 boolean (#103). The request is the fixture `codex-0.171.0/002-openai-responses.json`.
+
+## Models and quantization: new architectures, FP8 quality and speed, GGUF plan, first MoE, on NVIDIA L4 24 GB (2026-11-24) (#111, #112, #113)
+
+### Setup and thresholds, written before the run
+
+Fixed in #111, #112 and #113 on 2026-11-23, before any of the runs below. Machine: native Linux
+(kernel `6.6.159+`), **NVIDIA L4** (`sm_89`, 22.5 GiB usable), driver `580.82.07`, CUDA `13.0`,
+Python `3.13.16`, `torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, `transformers 5.22.2`, 12 CPU
+cores, 56.9 GB RAM. Raw results: `benchmarks/results/2026-11-24-nvidia-l4/`.
+
+| Question | Measurement | Threshold or rule, written before the run |
+| --- | --- | --- |
+| Do Qwen2, Qwen3 and Phi-3 match `transformers`? | `tests/e2e/test_real_llama.py` on a real checkpoint of each, greedy, against `transformers` in float32 | every greedy token matches, except the near ties the test allows |
+| Is FP8 close enough to 16 bit? | `benchmarks/e2e/quant_kl.py`: KL(16 bit ‖ FP8) of the first generated token over 32 fixed prompts | mean at most **0.05 nats**; maximum and top-1 agreement recorded |
+| How much slower is the sliced FP8 path? | generation tok/s after a 1K prompt, FP8 over 16 bit, same model and card, three alternating rounds of `ayaka bench --quick` | **≥ 0.5**: recommend FP8 for a checkpoint that does not fit in 16 bit; **< 0.5**: document FP8 as "fits, but slow". The default stays 16 bit either way |
+| Does `ayaka plan` size a mixed GGUF file? | `weights_bytes` of a Q4_K_M file | equal to the sum of the tensor sizes in the header, cross-checked with llama.cpp |
+| Does one MoE model run `fused` and match? | `tests/e2e/test_real_llama.py` on OLMoE-1B-7B-0125-Instruct | as the dense parity |
+| Which MoE family first? | the machine's memory against the size of the experts | a recorded input for the next stage |
+
+Every model in bf16 with `--backends flashinfer,torch --cuda-graph`. The FP8 rounds use
+`--kv-reserve-tokens 16384` for all four models, the largest reserve with which Qwen3-8B in bf16
+fits next to its weights; the other `ayaka bench` runs use each model's own context.
+
+### Result
+
+**Parity.** Qwen2.5-1.5B-Instruct: 11 passed, 1 failed; Qwen3-1.7B: 8 passed, 4 failed;
+Phi-3-mini-4k-instruct: 12 passed (float32 reference on the CPU); OLMoE-1B-7B-0125-Instruct: 8
+passed, 4 skipped (float32 does not fit the card; reference on the CPU). No failure is a token
+mismatch: Qwen2.5's is the start-up memory reconciliation of the sixth engine built in one process
+(ledger 7,151,288,320 bytes, measured 6,729,760,768), and Qwen3's are the torch-backend CUDA-graph
+cases running out of memory during capture with a 40,960-token context. Both happen on `main` too
+(#114, #115). **Passed for all four architectures.**
+
+**FP8 quality** (`quant-kl-llama-3.1-8b.json`, `quant-kl-qwen3-8b.json`; prompts rendered with the
+chat template with `enable_thinking` off, because Qwen3's template otherwise opens every answer with
+`<think>` at a probability near 1 and the KL says nothing; a first run without the switch gave
+3.1e-7 nats for Qwen3-8B and was discarded for that reason):
+
+| FP8 checkpoint | Against | Mean KL | Max KL | Top-1 agreement | Mean entropy of the 16-bit distribution |
+| --- | --- | ---: | ---: | ---: | ---: |
+| RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8 (one scale per tensor) | unsloth/Llama-3.1-8B-Instruct, bf16 | 0.0026 nats | 0.0121 | 32/32 | 0.54 nats |
+| Qwen/Qwen3-8B-FP8 (128 × 128 blocks) | Qwen/Qwen3-8B, bf16 | 0.0085 nats | 0.1038 | 32/32 | 0.17 nats |
+
+**Passed** (both means below 0.05 nats).
+
+**FP8 speed** (`fp8-rounds/`, `ayaka bench --quick`, two repetitions per run, medians; the order of
+each round: Llama bf16, Llama FP8, Qwen3 bf16, Qwen3 FP8; all twelve runs valid, both sanity checks
+pass in every run):
+
+| Model | Round | Generation after 1K | After 4K | Prompt read 4K | First token cold | Context per request |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Llama-3.1-8B-Instruct, bf16 | 1 / 2 / 3 | 15.60 / 15.59 / 15.51 tok/s | 15.18 / 15.20 / 15.11 | 2,462 / 2,391 / 2,390 tok/s | 918 / 924 / 926 ms | 38,128 |
+| Llama-3.1-8B-Instruct, FP8 | 1 / 2 / 3 | 1.781 / 1.780 / 1.780 tok/s | 1.772 / 1.772 / 1.772 | 1,454 / 1,437 / 1,437 tok/s | 1,977 / 1,982 / 1,984 ms | 91,552 / 91,344 / 91,344 |
+| Qwen3-8B, bf16 | 1 / 2 / 3 | 15.06 / 15.02 / 15.07 tok/s | 14.65 / 14.63 / 14.64 | 2,242 / 2,245 / 2,242 tok/s | 979 / 981 / 979 ms | 31,904 / 31,712 / 31,712 |
+| Qwen3-8B, FP8 | 1 / 2 / 3 | 1.771 / 1.771 / 1.771 tok/s | 1.762 / 1.762 / 1.762 | 1,405 / 1,400 / 1,399 tok/s | 2,018 / 2,021 / 2,022 ms | 40,960 |
+
+FP8 over 16 bit, generation after 1K: Llama-3.1-8B 0.114, 0.114, 0.115; Qwen3-8B 0.118, 0.118,
+0.118. **Below 0.5: FP8 is documented as "fits, but slow"** (`docs/TROUBLESHOOTING.md`), and the
+default stays 16 bit. What FP8 buys on this card is memory: Llama-3.1-8B's weights take 9.09 GB
+instead of 16.06 GB, and the KV cache gets the difference (91,552 tokens per request instead of
+38,128). Phi-4 (14B), which does not fit in bf16, runs in FP8 (`phi-4-fp8-dynamic/`, at `40fbf48`, its own
+16,384-token context, three repetitions): both sanity checks pass, prompt read 746 tok/s at 4,096
+tokens, generation 0.9 tok/s after 1K, 4K and 16K tokens, first token 3.86 s cold, peak 20.7 GiB.
+
+The first attempt at these rounds ran out of CUDA memory in the FP8 runs: the sliced product
+allocated new tensors of varying sizes for every slice next to a KV cache sized to fill the card.
+#117 now dequantizes every slice into two buffers kept after the first call; the rounds above ran
+with that fix (`40fbf48`).
+
+**GGUF plan.** `bartowski/Meta-Llama-3.1-8B-Instruct-GGUF` at `bf5b95e`,
+`Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf`: 292 tensors (193 Q4_K, 66 F32, 33 Q6_K), whose sizes sum
+to 4,912,898,304 bytes; the data offset plus that sum is the file size. llama.cpp's Python reader
+(`gguf` 0.17.1) gives the same sum. **Passed.** Deviation from the setup: the file is the
+publisher's (made with `llama-quantize`), not one quantized here, and the cross-check is llama.cpp's
+reader rather than the size its loader prints, because running llama.cpp's conversion script was
+not possible in this environment.
+
+**MoE.** OLMoE-1B-7B-0125-Instruct runs fused and matches (above); `ayaka bench`: 41.5 tok/s after
+1K tokens, both sanity checks pass. In bf16, OLMoE's weights are 13.84 GB (12.88 GB of experts),
+Qwen3-30B-A3B's 61.06 GB (57.98 GB of experts): its experts alone exceed this machine's RAM, so the
+next stage (experts in host memory) needs more RAM or an 8-bit expert path for it.
+
+Revisions: the parity runs and the bf16 `ayaka bench` runs at `ca93917`, the KL and FP8 rounds at
+`40fbf48`. `ca93917` was the same stack before its commit messages were rewritten and before the
+FP8 buffer fix; its code under `python/` differs from `40fbf48` only in that fix, which 16-bit and
+MoE models do not use. A first Phi-4 FP8 run, at `ca93917` before the fix, gave the same 0.9 tok/s
+and is replaced by the one above.

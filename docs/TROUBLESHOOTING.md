@@ -18,6 +18,23 @@ the weights. Llama-3.2-1B-Instruct allows 131,072 tokens, which needs 6.4 GB of 
 allows, `N` is only the floor. `ayaka plan MODEL --kv-reserve-tokens N` shows the result without loading anything,
 and `ayaka plan MODEL --for claude-code` (or `codex`, `opencode`) says whether a request holds that tool's prompt.
 
+## The weights themselves do not fit: FP8 fits, but is slow
+
+**Symptom.** `ayaka plan` says the weights alone (or the weights and the shortest context you need) do not fit,
+for example Phi-4 (14B) in bf16, 29 GB, on a 24 GB GPU.
+
+**Cause.** 16-bit weights take two bytes per parameter.
+
+**Fix.** Use an FP8 checkpoint of the same model: Hugging Face `fp8` (such as `Qwen/Qwen3-8B-FP8`) or
+`compressed-tensors` with 8-bit float weights (such as RedHat AI's `-FP8` checkpoints). Ayaka keeps those weights in
+8 bit and `ayaka plan` says so in one line. It fits, but it is slow: until there is an FP8 matrix kernel, every
+product first dequantizes its weights. On an NVIDIA L4 24 GB, three alternating rounds of `ayaka bench --quick`
+generated 1.78 tok/s with Llama-3.1-8B-Instruct-FP8 against 15.6 tok/s in bf16, and 1.77 tok/s with Qwen3-8B-FP8
+against 15.1 tok/s (0.11 to 0.12 of the 16-bit speed), with the same first tokens on 32 of 32 fixed prompts
+([results](../benchmarks/results/2026-11-24-nvidia-l4/), [record](EXPERIMENTS.md)). The memory it frees goes to the
+KV cache: 91,552 tokens per request for Llama-3.1-8B in FP8 against 38,128 in bf16. A model that fits in 16 bit
+should stay in 16 bit.
+
 ## Not enough headroom for a prefill step
 
 **Symptom.**
