@@ -27,7 +27,9 @@ fused projections): see :mod:`ayaka.models.base`.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import logging
+import re
 import time
 import warnings
 from itertools import groupby
@@ -46,6 +48,7 @@ from ayaka.utils.dtypes import DType
 from ayaka.utils.parsing import parse_json_strict
 from ayaka.utils.torch_utils import resolve_device
 from ayaka.weights.manifest import WeightManifest
+from ayaka.weights.quant import read_quant_format
 from ayaka.weights.safetensors import SafetensorsFile
 
 if TYPE_CHECKING:
@@ -55,6 +58,8 @@ if TYPE_CHECKING:
     from ayaka.configs.model_source import ModelSourceConfig
     from ayaka.models.base import CausalLM
     from ayaka.ops.backend import OpsBackend
+    from ayaka.weights.mapping import WeightMapping
+    from ayaka.weights.quant import QuantFormat
     from ayaka.weights.tensor import TensorRef
 
 __all__ = ["describe_model", "load_model", "load_weights", "read_model_config"]
@@ -64,7 +69,7 @@ logger = logging.getLogger(__name__)
 _CONFIG_FILE: Final = "config.json"
 _CONFIG_LIMIT: Final = 16 * 2**20
 #: Stored dtypes that a copy converts correctly. Quantised and 8-bit floating formats carry
-#: scales that the copy would drop, so they are refused, not misread.
+#: scales that the copy would drop, so they load only into a parameter of their own dtype.
 _PLAIN_FLOATS: Final = (DType.FP64, DType.FP32, DType.FP16, DType.BF16)
 _UNWRITABLE: Final = "The given buffer is not writable"
 
@@ -103,14 +108,14 @@ def load_model(
     _require_readable_format(source)
     started = time.monotonic()
     directory = resolve_source(source)
-    config = _read_model_config(directory)
+    config, quant = _read_checkpoint_config(directory)
     model_class = resolve_model(config.architecture)
     backend = ops or load_backend(
         device.backends, device=device.device_type, dtype=device.dtype, head_dim=config.head_dim
     )
     target = resolve_device(device.device, capability="model_loader")
 
-    model = model_class(config, ops=backend, dtype=device.dtype, device="meta")
+    model = model_class(config, ops=backend, dtype=device.dtype, device="meta", quant=quant)
     bound = _bind(model, directory)
     model.to_empty(device=target)
     model.tie_weights()
@@ -145,13 +150,20 @@ def describe_model(
     """
     _require_readable_format(source)
     directory = resolve_source(source)
-    config = _read_model_config(directory)
+    config, quant = _read_checkpoint_config(directory)
     model_class = resolve_model(config.architecture)
     backend = ops or load_backend(
         device.backends, device=device.device_type, dtype=device.dtype, head_dim=config.head_dim
     )
-    model = model_class(config, ops=backend, dtype=device.dtype, device="meta")
+    model = model_class(config, ops=backend, dtype=device.dtype, device="meta", quant=quant)
     model.tie_weights()
+    if quant is not None:
+        logger.warning(
+            "%s weights (%s): kept 8 bit and dequantized in slices before each product, "
+            "which is slower than 16-bit weights",
+            quant.name,
+            quant.producer,
+        )
     return directory, model
 
 
@@ -164,7 +176,7 @@ def read_model_config(source: ModelSourceConfig) -> ModelConfig:
         As :func:`describe_model`.
     """
     _require_readable_format(source)
-    return _read_model_config(resolve_source(source))
+    return _read_checkpoint_config(resolve_source(source))[0]
 
 
 def load_weights(model: CausalLM, directory: str | Path) -> None:
@@ -199,7 +211,8 @@ def _require_readable_format(source: ModelSourceConfig) -> None:
     )
 
 
-def _read_model_config(directory: Path) -> ModelConfig:
+def _read_checkpoint_config(directory: Path) -> tuple[ModelConfig, QuantFormat | None]:
+    """The architecture and the quantization recipe that ``config.json`` describes."""
     path = directory / _CONFIG_FILE
     try:
         with path.open("rb") as handle:
@@ -221,25 +234,61 @@ def _read_model_config(directory: Path) -> ModelConfig:
             f"{path}: expected a JSON object, got {type(document).__name__}",
             context={"path": str(path)},
         )
-    return ModelConfig.from_hf_config(cast("Mapping[str, object]", document))
+    raw = cast("Mapping[str, object]", document)
+    return ModelConfig.from_hf_config(raw), read_quant_format(raw)
 
 
 def _bind(model: CausalLM, directory: Path) -> Mapping[str, TensorRef]:
     """Match the checkpoint to the model from headers alone; raise one error for every problem."""
     manifest = WeightManifest.from_directory(directory)
-    bound = type(model).weight_mapping(model.config).bind(manifest, model.checkpoint_specs())
+    specs = {spec.name: spec for spec in model.checkpoint_specs()}
+    bound = _mapping(model).bind(manifest, specs.values())
     unsupported = {
-        name: ref.dtype.label for name, ref in bound.items() if ref.dtype not in _PLAIN_FLOATS
+        name: ref.dtype.label
+        for name, ref in bound.items()
+        if not _converts(ref.dtype, specs[name].dtype)
     }
     if unsupported:
-        listed = ", ".join(f"{name} is {label}" for name, label in list(unsupported.items())[:12])
+        listed = ", ".join(
+            f"{name} is {label}, expected {specs[name].dtype.label}"
+            for name, label in list(unsupported.items())[:12]
+        )
         raise ModelLoadError(
             f"checkpoint {directory} stores {len(unsupported)} tensors in a dtype this build "
-            f"cannot convert to {model.compute_dtype.label} (quantised formats are not "
-            f"supported yet): {listed}",
+            f"cannot load as {model.compute_dtype.label} weights"
+            f"{_quant_label(model)}: {listed}",
             context={"unsupported_dtype": unsupported},
         )
     return bound
+
+
+def _mapping(model: CausalLM) -> WeightMapping:
+    """The model's names, plus the scales and the unused tensors of its quantization recipe."""
+    mapping = type(model).weight_mapping(model.config)
+    quant = model.quant_format
+    if quant is None:
+        return mapping
+    return dataclasses.replace(
+        mapping,
+        suffixes=(*mapping.suffixes, (quant.scale_name, "weight_scale")),
+        ignore=(*mapping.ignore, *(rf".*\.{re.escape(suffix)}" for suffix in quant.ignored)),
+    )
+
+
+def _converts(stored: DType, held: DType) -> bool:
+    """Whether a stored dtype loads into a parameter of ``held``: a float copy, or the same 8 bits.
+
+    An 8-bit tensor carries scales that a copy would drop, so it loads only into a parameter
+    that holds it as is (a quantized weight), never into a 16-bit one.
+    """
+    if held in _PLAIN_FLOATS:
+        return stored in _PLAIN_FLOATS
+    return stored is held
+
+
+def _quant_label(model: CausalLM) -> str:
+    quant = model.quant_format
+    return "" if quant is None else f" with {quant.producer} {quant.name} quantization"
 
 
 def _stream(model: CausalLM, bound: Mapping[str, TensorRef]) -> None:

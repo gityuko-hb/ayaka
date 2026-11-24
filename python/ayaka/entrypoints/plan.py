@@ -76,6 +76,7 @@ def plan_report(plan: EnginePlan, model: str) -> dict[str, object]:
             "model_context": plan.model_config.max_position_embeddings,
             "reserve_tokens": plan.reserve_tokens,
         },
+        "quantization": plan.quantization,
         "max_running": plan.max_running,
         "chunk_tokens": plan.chunk_tokens,
         "ops": dict(plan.providers),
@@ -93,13 +94,19 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
     limit = "memory" if plan.max_context_tokens < context else "the model"
     reserve = budget.usable_bytes - plan.weights_bytes - plan.kv_bytes
     ops = ", ".join(f"{family}: {name}" for family, name in sorted(plan.providers.items()))
-    return [
+    weights = (
+        f"  weights  {_mib(plan.weights_bytes)} ({spec.dtype.label})"
+        if plan.quantization is None
+        else f"  weights  {_mib(plan.weights_bytes)} ({plan.quantization} projections, the rest "
+        f"{spec.dtype.label})"
+    )
+    lines = [
         f"machine    {plan.capabilities.describe()}",
         f"model      {model}: {config.architecture}",
         f"files      {plan.directory} (config.json read; no weight read, nothing downloaded)",
         f"memory     free {_mib(plan.baseline_bytes)}, usable {_mib(budget.usable_bytes)}"
         f", headroom {_mib(budget.headroom_bytes)}",
-        f"  weights  {_mib(plan.weights_bytes)} ({spec.dtype.label})",
+        weights,
         f"  KV       {_mib(plan.kv_bytes)} = {plan.kv_blocks - 1:,} blocks of {plan.block_size}"
         f" tokens ({spec.dtype.label}, {spec.bytes_per_token():,} bytes per token;"
         f" {budget.kv_blocks[0] - 1:,} would fit)",
@@ -117,6 +124,13 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
         ),
         "verdict    FITS.  Speed: not measured on this machine (run `ayaka bench`).",
     ]
+    if plan.quantization is not None:
+        lines.insert(
+            -1,
+            f"quantized  {plan.quantization}: weights stay 8 bit and are dequantized in slices "
+            "before each product, slower than 16-bit weights (no FP8 matrix kernel yet)",
+        )
+    return lines
 
 
 @dataclass(frozen=True, slots=True)

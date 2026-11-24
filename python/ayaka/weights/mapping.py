@@ -41,12 +41,19 @@ class WeightMapping:
        (``\\1``, ``\\g<name>``).
     3. Otherwise the name is the parameter name.
 
+    A name that ends in one of the stored suffixes of ``suffixes`` (a quantized
+    checkpoint's ``q_proj.weight_scale_inv``) is renamed as the ``weight`` it sits
+    next to, then given the parameter suffix (``attn.q_proj.weight_scale``), so a
+    model's renames, written for ``weight`` and ``bias``, cover its scales too.
+
     Patterns are Python regular expressions. A name that is neither ignored nor
     claimed by a parameter is an error, never skipped silently.
 
     Attributes:
         renames: ``(pattern, replacement)`` pairs, tried in order.
         ignore: Patterns of checkpoint names to drop.
+        suffixes: ``(stored suffix, parameter suffix)`` pairs of tensors stored next to a
+            ``weight`` under the same prefix.
 
     Raises:
         ValueError: If a pattern is not a valid regular expression.
@@ -63,6 +70,7 @@ class WeightMapping:
 
     renames: tuple[tuple[str, str], ...] = ()
     ignore: tuple[str, ...] = ()
+    suffixes: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         for pattern in (*(pattern for pattern, _ in self.renames), *self.ignore):
@@ -79,6 +87,15 @@ class WeightMapping:
         """
         if any(_compiled(pattern).fullmatch(name) for pattern in self.ignore):
             return None
+        for stored, parameter in self.suffixes:
+            if name.endswith(f".{stored}"):
+                renamed = self._rename(f"{name.removesuffix(stored)}weight")
+                if renamed.endswith(".weight"):
+                    return f"{renamed.removesuffix('weight')}{parameter}"
+                return name
+        return self._rename(name)
+
+    def _rename(self, name: str) -> str:
         for pattern, replacement in self.renames:
             if (match := _compiled(pattern).fullmatch(name)) is not None:
                 try:

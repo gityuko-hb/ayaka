@@ -12,6 +12,11 @@
   Phi-4-mini) are refused with the reason. Phi-3-mini-4k is served up to its 2,047-token sliding window.
 - When the first listed backend has no attention kernels for a model's head width (flashinfer: 64, 128 and 256 only),
   attention comes from the next backend in `--backends`, with a log line, instead of failing on the first request.
+- FP8 checkpoints of the Llama, Qwen2, Qwen3 and Phi-3 architectures: Hugging Face `fp8` (e4m3, `weight_block_size`
+  blocks, as in Qwen3-8B-FP8) and `compressed-tensors` 8-bit float weights with per-tensor, per-channel or block scales
+  (as in RedHatAI's FP8 checkpoints). The weights stay 8 bit in memory and each linear layer dequantizes a bounded slice
+  of rows before its product, which is slower than 16-bit weights; `ayaka plan` says so in one line. Activation scales
+  are not used. Any other `quantization_config` is refused with the reason.
 
 ## 0.1.0 (not published on PyPI)
 

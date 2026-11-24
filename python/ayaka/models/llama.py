@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from ayaka.layers.context import ForwardContext
     from ayaka.ops.backend import OpsBackend
     from ayaka.utils.dtypes import DType
+    from ayaka.weights.quant import QuantFormat
 
 __all__ = ["LlamaForCausalLM"]
 
@@ -122,6 +123,9 @@ class LlamaForCausalLM(CausalLM):
 
     #: ``(pattern, replacement)`` pairs from Hugging Face names to parameter names.
     checkpoint_renames: ClassVar[tuple[tuple[str, str], ...]] = _RENAMES
+    #: Every projection of attention and of the MLP takes :attr:`quant_method`; the
+    #: embedding and the output head stay in the compute dtype.
+    quantizable: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -130,8 +134,9 @@ class LlamaForCausalLM(CausalLM):
         ops: OpsBackend,
         dtype: DType,
         device: torch.device | str | None = None,
+        quant: QuantFormat | None = None,
     ) -> None:
-        super().__init__(config, ops=ops, dtype=dtype, device=device)
+        super().__init__(config, ops=ops, dtype=dtype, device=device, quant=quant)
         _check_supported(config)
         torch_dtype = dtype.torch_dtype
         hidden = config.hidden_size
@@ -192,6 +197,7 @@ class LlamaForCausalLM(CausalLM):
             ops=ops,
             dtype=dtype,
             device=device,
+            quant=self.quant_method,
         )
 
     def build_mlp(
@@ -213,6 +219,7 @@ class LlamaForCausalLM(CausalLM):
             ops=ops,
             dtype=dtype,
             device=device,
+            quant=self.quant_method,
         )
 
     @classmethod

@@ -114,7 +114,8 @@ class EnginePlan:
         providers: Which backend serves each op family.
         model_config: The model's architecture.
         group: The KV cache group of the model.
-        weights_bytes: Bytes of the weights in the compute dtype, a shared tensor counted once.
+        weights_bytes: Bytes of the weights as they sit on the device (8-bit weights and their
+            scales for a quantized checkpoint), a shared tensor counted once.
         budget: The memory plan (the same function the engine uses, with the last start-up
             profile measured for this machine and model when there is one).
         kv_blocks: KV blocks the engine allocates (on the CPU, sized for the requests that run).
@@ -125,6 +126,8 @@ class EnginePlan:
             what the memory headroom supports.
         profile_key: The key of the start-up profile.
         profiled: Whether a start-up profile measured before fed the plan.
+        quantization: The label of the checkpoint's 8-bit recipe
+            (:attr:`~ayaka.weights.quant.QuantFormat.name`), or ``None`` for 16- or 32-bit weights.
     """
 
     directory: Path
@@ -143,6 +146,7 @@ class EnginePlan:
     chunk_tokens: int
     profile_key: ProfileKey
     profiled: bool
+    quantization: str | None = None
 
     @property
     def block_size(self) -> int:
@@ -210,6 +214,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         )
     directory, model = describe_model(config.source, device, ops=ops)
     model_config = model.config
+    quant = model.quant_format
 
     groups = model.kv_specs(block_size=config.cache.block_size, layout=ops.kvcache.layout())
     if len(groups) != 1:
@@ -239,7 +244,9 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         )
     key = ProfileKey.build(
         device=f"{info.name} {capabilities.arch}",
-        model=model_config.fingerprint,
+        model=model_config.fingerprint
+        if quant is None
+        else f"{model_config.fingerprint}+{quant.name}",
         dtype=device.dtype.label,
         providers=ops.providers.items(),
         block_size=block_size,
@@ -309,6 +316,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         chunk_tokens=min(config.scheduler.max_tokens_per_step, budget.max_chunk_tokens),
         profile_key=key,
         profiled=previous is not None,
+        quantization=None if quant is None else quant.name,
     )
     return plan, ops, baseline_reserved
 

@@ -66,4 +66,5 @@ class Qwen3ForCausalLM(LlamaForCausalLM):
             ops=ops,
             dtype=dtype,
             device=device,
+            quant=self.quant_method,
         )
