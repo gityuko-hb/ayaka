@@ -61,7 +61,7 @@ class TestCapabilities:
     def test_the_page_is_what_the_generator_writes(self) -> None:
         page = (ROOT / "docs" / "CAPABILITIES.md").read_text(encoding="utf-8")
 
-        assert page == generator.render(generator.load()), (
+        assert page == generator.render(generator.load(), generator.load_quality()), (
             "docs/CAPABILITIES.md was edited by hand or its source changed: "
             "run uv run python tools/generate_capabilities.py"
         )
@@ -103,6 +103,38 @@ class TestCapabilities:
 
         with pytest.raises(ValueError, match=message):
             generator.load(source)
+
+    def test_a_quality_entry_shows_its_kl_and_its_file(self, tmp_path: Path) -> None:
+        for entry in generator.load_quality():
+            page = generator.render([], [entry])
+
+            assert entry["result"] in page
+            assert " nats: " in page
+
+    @pytest.mark.parametrize(
+        ("entry", "message"),
+        [
+            ({}, "reference is required"),
+            ({"reference": "x", "result": "README.md", "speed": "9"}, "unknown keys"),
+            ({"reference": "x", "result": "no/such/file.json"}, "does not exist"),
+            ({"reference": "x", "result": "pyproject.toml"}, "not a quant_kl result"),
+        ],
+    )
+    def test_the_source_refuses_quality_entries_that_break_its_rules(
+        self, tmp_path: Path, entry: dict[str, str], message: str
+    ) -> None:
+        if entry.get("result") == "pyproject.toml":
+            result = tmp_path / "other.json"
+            result.write_text('{"benchmark": "decode"}', encoding="utf-8")
+            entry = {**entry, "result": str(result)}
+        fields = {"model": "m", "precision": "fp8", "machine": "x", "result": "README.md", **entry}
+        body = "\n".join(f'{key} = "{value}"' for key, value in fields.items())
+        row = 'model = "m"\nprecision = "fp16"\nmachine = "x"\nstatus = "untested"'
+        source = tmp_path / "capabilities.toml"
+        source.write_text(f"version = 1\n\n[[row]]\n{row}\n\n[[quality]]\n{body}\n", "utf-8")
+
+        with pytest.raises(ValueError, match=message):
+            generator.load_quality(source)
 
 
 def _links(page: Path) -> list[str]:

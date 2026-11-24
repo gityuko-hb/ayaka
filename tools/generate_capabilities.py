@@ -4,7 +4,9 @@
     uv run python tools/generate_capabilities.py --check   # exit 1 when the file differs
 
 Every number in the table is read from a result file (``ayaka bench``'s ``results.json``) and
-carries that file's path and the Ayaka version and commit that produced it. A row without a result
+carries that file's path and the Ayaka version and commit that produced it. A ``[[quality]]``
+entry names the result of ``benchmarks/e2e/quant_kl.py`` for a quantized checkpoint; the page
+shows its first-token KL against the 16-bit original in a second table. A row without a result
 says ``untested``; a row that does not run says why. Nothing is rounded up: "untested" is never
 shown as "runs".
 """
@@ -33,6 +35,26 @@ _INTRO: Final = (
     "the last two columns are `ayaka bench`'s sanity checks (a forced tool call and a JSON "
     "answer, each checked against its schema)."
 )
+_QUALITY_KEYS: Final = {"model", "precision", "machine", "reference", "result"}
+_QUALITY_INTRO: Final = (
+    "First-token quality of quantized checkpoints against their 16-bit original, from "
+    "`benchmarks/e2e/quant_kl.py`: on fixed prompts rendered with the chat template, the "
+    "distribution of the first generated token, read from Ayaka's own models in turn on the same "
+    "card. KL is in nats, KL(16 bit || quantized), averaged over the prompts (the largest in "
+    "brackets); top-1 is how often the two most likely tokens agree; the threshold is the one "
+    "fixed before the run."
+)
+_QUALITY_HEADER: Final = (
+    "Model",
+    "Precision",
+    "Machine",
+    "Against",
+    "Prompts",
+    "First-token KL",
+    "Top-1 agreement",
+    "Threshold",
+    "Result",
+)
 _HEADER: Final = (
     "Model",
     "Precision",
@@ -53,6 +75,20 @@ def load(path: Path = SOURCE) -> list[dict[str, Any]]:
     Raises:
         ValueError: If the file breaks its own rules.
     """
+    return _load(path)[0]
+
+
+def load_quality(path: Path = SOURCE) -> list[dict[str, Any]]:
+    """The ``[[quality]]`` entries of the source file, checked; empty when it has none.
+
+    Raises:
+        ValueError: If an entry lacks a key, has an unknown one, or names a missing file or one
+            that is not a ``quant_kl`` result.
+    """
+    return _load(path)[1]
+
+
+def _load(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     if data.get("version") != 1:
         raise ValueError(f"{path}: version must be 1")
@@ -78,7 +114,23 @@ def load(path: Path = SOURCE) -> list[dict[str, Any]]:
             raise ValueError(f"{where}: unknown keys {sorted(unknown)}")
         if row.get("result") and not (ROOT / row["result"]).is_file():
             raise ValueError(f"{where}: {row['result']} does not exist")
-    return rows
+    quality = data.get("quality", [])
+    if not isinstance(quality, list):
+        raise ValueError(f"{path}: quality must be a list of [[quality]] tables")
+    for index, entry in enumerate(quality):
+        where = f"{path}: quality {index + 1}"
+        for key in sorted(_QUALITY_KEYS):
+            if not isinstance(entry.get(key), str) or not entry[key]:
+                raise ValueError(f"{where}: {key} is required")
+        unknown = set(entry) - _QUALITY_KEYS
+        if unknown:
+            raise ValueError(f"{where}: unknown keys {sorted(unknown)}")
+        file = ROOT / entry["result"]
+        if not file.is_file():
+            raise ValueError(f"{where}: {entry['result']} does not exist")
+        if json.loads(file.read_text(encoding="utf-8")).get("benchmark") != "quant_kl":
+            raise ValueError(f"{where}: {entry['result']} is not a quant_kl result")
+    return rows, quality
 
 
 def _result(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -133,7 +185,25 @@ def _source(row: dict[str, Any]) -> str:
     return link + (f", {stamp}" if stamp else "")
 
 
-def render(rows: list[dict[str, Any]]) -> str:
+def _quality_cells(entry: dict[str, Any]) -> list[str]:
+    result = json.loads((ROOT / entry["result"]).read_text(encoding="utf-8"))
+    commit = ((result.get("machine") or {}).get("commit") or "")[:7]
+    link = f"[{Path(entry['result']).name}](../{entry['result']})"
+    verdict = "passes" if result["passes"] else "fails"
+    return [
+        entry["model"],
+        entry["precision"],
+        entry["machine"],
+        entry["reference"],
+        str(result["prompts"]),
+        f"{result['mean_kl_nats']:.4f} ({result['max_kl_nats']:.4f})",
+        f"{result['top1_agreement']:.0%}",
+        f"{result['threshold_nats']} nats: {verdict}",
+        link + (f", @ {commit}" if commit else ""),
+    ]
+
+
+def render(rows: list[dict[str, Any]], quality: list[dict[str, Any]] | None = None) -> str:
     """The Markdown page."""
     lines = [
         "# Capabilities",
@@ -152,6 +222,17 @@ def render(rows: list[dict[str, Any]]) -> str:
             status += f": {row['reason']}"
         cells = [row["model"], row["precision"], row["machine"], status, *_cells(row), _source(row)]
         lines.append("| " + " | ".join(cells) + " |")
+    if quality:
+        lines += [
+            "",
+            "## Quantized against 16 bit",
+            "",
+            _QUALITY_INTRO,
+            "",
+            "| " + " | ".join(_QUALITY_HEADER) + " |",
+            "|" + " --- |" * len(_QUALITY_HEADER),
+        ]
+        lines += ["| " + " | ".join(_quality_cells(entry)) + " |" for entry in quality]
     lines.append("")
     return "\n".join(lines)
 
@@ -160,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Write docs/CAPABILITIES.md.")
     parser.add_argument("--check", action="store_true", help="exit 1 when the file differs")
     args = parser.parse_args(argv)
-    page = render(load())
+    page = render(load(), load_quality())
     if args.check:
         current = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
         if current != page:
