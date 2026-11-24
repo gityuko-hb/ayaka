@@ -372,7 +372,8 @@ def test_dflash_real_checkpoints_gates_on_l4(
     # positions with a margin of 0.05, and with none at a margin of 0.25 against float32). A
     # near tie is therefore a float32 top-2 margin below 0.25, two bf16 steps.
     import torch.nn.functional as functional
-    from safetensors import safe_open
+
+    safe_open: Any = pytest.importorskip("safetensors").safe_open
 
     near_tie_margin = 0.25
     raw_weights: dict[str, Any] = {}
