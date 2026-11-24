@@ -1432,7 +1432,7 @@ verify step, the bonus token included.
   (GPU) passes for both: against the vendored reference run in float32, the cosine similarity of
   the hidden states is at least 0.9996 (Qwen3-8B) and 0.9995 (Llama-3.1-8B), and the draft token
   agrees at 1,274 of 1,274 (Qwen3-8B) and 1,315 of 1,315 (Llama-3.1-8B) of the 2,010 (Qwen3-8B) and
-  2,000 (Llama-3.1-8B) positions compared whose float32 margin between the best two logits is at least 0.25. **The test as I first
+  2,007 (Llama-3.1-8B) positions compared whose float32 margin between the best two logits is at least 0.25. **The test as I first
   ran it failed**: it compared the bf16 engine with a bf16 reference at a margin of 0.05 and got
   97.6% (1,784 of 1,828, Qwen3-8B) and 98.2% (1,883 of 1,918, Llama-3.1-8B) against the 99% bar.
   bf16 logits near 16 to 32 move in steps of 0.0625 to 0.125, so a 0.05 margin is below the
