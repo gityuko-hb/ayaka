@@ -132,6 +132,7 @@ class CausalLM(nn.Module, ABC):
         self.compute_dtype = dtype
         self.quant_format = quant
         self.quant_method: QuantMethod = quant_method(quant)
+        self._parts: dict[str, tuple[str, int, int, int]] | None = None
 
     @classmethod
     @abstractmethod
@@ -320,13 +321,10 @@ class CausalLM(nn.Module, ABC):
             rows = out_features
             span, first = int(parameter.shape[0]), 0
         else:
-            fused, start, rows = target
+            fused, _, rows, position = self._part_index()[name]
             parameter = self.get_parameter(fused)
-            parts = [count for _, count in self.stored_parts(fused)]
-            index = [part for part, _ in self.stored_parts(fused)].index(name)
-            spans = method.part_rows(local, parts)
-            span, first = spans[index], sum(spans[:index])
-            del start
+            spans = method.part_rows(local, [count for _, count in self.stored_parts(fused)])
+            span, first = spans[position], sum(spans[:position])
         expected = method.stored_shape(local, rows, in_features)
         if tuple(tensor.shape) != expected:
             raise ModelLoadError(
@@ -353,12 +351,21 @@ class CausalLM(nn.Module, ABC):
 
     def _part_target(self, name: str) -> tuple[str, int, int] | None:
         """``(fused parameter, first row, rows)`` when ``name`` is a part, else ``None``."""
-        if name in dict(self.named_parameters()):
-            return None
-        for fused, _ in self.named_parameters():
-            start = 0
-            for part, rows in self.stored_parts(fused):
-                if part == name:
-                    return fused, start, rows
-                start += rows
-        return None
+        found = self._part_index().get(name)
+        return None if found is None else found[:3]
+
+    def _part_index(self) -> dict[str, tuple[str, int, int, int]]:
+        """Every stored part: its fused parameter, first row, rows and position among the parts.
+
+        Built once, on first use: a model with experts stored one by one has thousands of
+        parts, and a scan of every parameter for each tensor would be quadratic.
+        """
+        if self._parts is None:
+            index: dict[str, tuple[str, int, int, int]] = {}
+            for fused, _ in self.named_parameters():
+                start = 0
+                for position, (part, rows) in enumerate(self.stored_parts(fused)):
+                    index[part] = (fused, start, rows, position)
+                    start += rows
+            self._parts = index
+        return self._parts

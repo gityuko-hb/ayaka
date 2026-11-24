@@ -36,6 +36,7 @@ ALL: tuple[FamilyName, ...] = (
     "kvcache",
     "attention",
     "sampling",
+    "moe",
 )
 LINUX = frozenset({sys.platform})
 
@@ -115,6 +116,7 @@ class TestComposition:
             "kvcache": "full",
             "attention": "full",
             "sampling": "full",
+            "moe": "full",
         }
         assert _owner(ops.norm) == "partial"
         assert _owner(ops.activation) == "full"
@@ -202,7 +204,7 @@ class TestMissingCapabilities:
         assert error.code == "BACKEND_CAPABILITY_MISSING"
         assert error.path == "ops.backends"
         assert (
-            "provides norm, activation, embedding, linear, rope, kvcache, attention, sampling "
+            "provides norm, activation, embedding, linear, rope, kvcache, attention, sampling, moe "
             "for device 'cpu' "
             "and dtype fp32" in str(error)
         )

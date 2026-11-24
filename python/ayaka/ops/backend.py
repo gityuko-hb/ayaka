@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from ayaka.ops.embedding import EmbeddingOps
     from ayaka.ops.kvcache import KVCacheOps
     from ayaka.ops.linear import LinearOps
+    from ayaka.ops.moe import MoeOps
     from ayaka.ops.norm import NormOps
     from ayaka.ops.rope import RopeOps
     from ayaka.ops.sampling import SamplingOps
@@ -59,6 +60,7 @@ type FamilyName = Literal[
     "kvcache",
     "attention",
     "sampling",
+    "moe",
 ]
 """One op family: a field of :class:`OpsBackend` and a key of :class:`BackendFamilies`."""
 
@@ -73,6 +75,7 @@ _FAMILIES: Final[tuple[FamilyName, ...]] = (
     "kvcache",
     "attention",
     "sampling",
+    "moe",
 )
 
 #: The families a captured decode step calls: the model's forward, the cache write,
@@ -96,6 +99,7 @@ class BackendFamilies(TypedDict, total=False):
     kvcache: KVCacheOps
     attention: AttentionOps
     sampling: SamplingOps
+    moe: MoeOps
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +178,7 @@ class OpsBackend:
     kvcache: KVCacheOps
     attention: AttentionOps
     sampling: SamplingOps
+    moe: MoeOps
     providers: Mapping[FamilyName, str]
     graph_safe: bool = False
 
@@ -300,6 +305,7 @@ def load_backend(
         kvcache=cast("KVCacheOps", chosen["kvcache"]),
         attention=cast("AttentionOps", chosen["attention"]),
         sampling=cast("SamplingOps", chosen["sampling"]),
+        moe=cast("MoeOps", chosen["moe"]),
         providers=MappingProxyType(providers),
         graph_safe=cuda_graph,
     )
@@ -389,6 +395,7 @@ def _load_torch() -> BackendFamilies:
         embedding,
         kvcache,
         linear,
+        moe,
         norm,
         rope,
         sampling,
@@ -403,6 +410,7 @@ def _load_torch() -> BackendFamilies:
         "kvcache": kvcache,
         "attention": attention,
         "sampling": sampling,
+        "moe": moe,
     }
 
 
