@@ -15,7 +15,7 @@ with it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import torch
 from torch.nn import functional
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from ayaka.ops.kvcache import KVBuffers
 
 __all__ = [
+    "DECODE_CHUNK_BYTES",
     "TorchAttentionPlan",
     "TorchGraphPlan",
     "attend",
@@ -38,6 +39,11 @@ __all__ = [
     "stage_graph_step",
     "update_graph_metadata",
 ]
+
+#: Bytes of float32 keys a decode step gathers at a time (as many again for the values). A
+#: decode step's table is sized for the longest context a request may reach, which for a
+#: 131,072-token model is gigabytes in float32; the memory plan does not count that scratch.
+DECODE_CHUNK_BYTES: Final = 64 * 2**20
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,30 +250,53 @@ def _attend_decode(
     *,
     scale: float,
 ) -> None:
-    """One row per request, every request's whole table at once; nothing depends on the host.
+    """One row per request, every request's whole table; nothing depends on the host.
 
-    ``keys`` and ``values`` are ``[blocks, block_size, kv_heads, head_dim]`` views. Positions at
-    or past a request's length are masked, so the unused tail of its table (block 0) is never
-    read into the result; a padding request (length 0) gets zeros.
+    ``keys`` and ``values`` are ``[blocks, block_size, kv_heads, head_dim]`` views. The table is
+    sized for the longest context a request may reach, not for this step's lengths, so it is
+    walked in chunks of at most :data:`DECODE_CHUNK_BYTES` of float32 keys per chunk, with an
+    online softmax. The number of chunks follows from the shapes alone, so an eager step and a
+    captured one run the same code. Positions at or past a request's length are masked, so the
+    unused tail of its table (block 0) is never read into the result; a padding request
+    (length 0) gets zeros.
     """
     requests, heads, head_dim = q.shape
-    kv_heads = keys.shape[2]
+    block_size, kv_heads = keys.shape[1], keys.shape[2]
     group = heads // kv_heads
-    blocks = table.long()
-    # [B, max_blocks, block_size, kv_heads, dim] -> [B, context, kv_heads, dim]
-    context_k = keys[blocks].flatten(1, 2).float()
-    context_v = values[blocks].flatten(1, 2).float()
+    width = table.shape[1]
+    per_block = requests * block_size * kv_heads * head_dim * 4
+    step = max(1, min(width, DECODE_CHUNK_BYTES // max(per_block, 1)))
     query = q.float().reshape(requests, kv_heads, group, head_dim)
-    scores = torch.einsum("bkgd,blkd->bkgl", query, context_k) * scale
-    width = context_k.shape[1]
-    visible = torch.arange(width, device=q.device)[None, :] < lengths.long()[:, None]  # [B, L]
-    scores = scores.masked_fill(~visible[:, None, None, :], float("-inf"))
-    weights = torch.softmax(scores, dim=-1)
-    # A padding request masks every position, so its softmax is NaN; it must give zeros.
-    weights = torch.where(visible.any(dim=-1)[:, None, None, None], weights, 0.0)
-    # A slot past the length may hold anything, NaN included, and 0 * NaN is NaN.
-    context_v = torch.where(visible[:, :, None, None], context_v, 0.0)
-    result = torch.einsum("bkgl,blkd->bkgd", weights, context_v)
+    limit = lengths.long()[:, None]
+    shape = (requests, kv_heads, group)
+    running_max = torch.full(shape, float("-inf"), dtype=torch.float32, device=q.device)
+    total = torch.zeros(shape, dtype=torch.float32, device=q.device)
+    acc = torch.zeros((*shape, head_dim), dtype=torch.float32, device=q.device)
+    for first in range(0, width, step):
+        blocks = table[:, first : first + step].long()
+        # [B, step, block_size, kv_heads, dim] -> [B, positions, kv_heads, dim]
+        context_k = keys[blocks].flatten(1, 2).float()
+        context_v = values[blocks].flatten(1, 2).float()
+        start = first * block_size
+        positions = torch.arange(start, start + context_k.shape[1], device=q.device)
+        visible = positions[None, :] < limit  # [B, positions]
+        scores = torch.einsum("bkgd,blkd->bkgl", query, context_k) * scale
+        # A slot past the length may hold anything, NaN included: masked_fill replaces it.
+        scores = scores.masked_fill(~visible[:, None, None, :], float("-inf"))
+        new_max = torch.maximum(running_max, scores.amax(dim=-1))
+        # While every position so far is masked the maximum is -inf; shift by 0 instead, so
+        # that exp(-inf - shift) is 0 and never exp(nan).
+        shift = torch.where(torch.isfinite(new_max), new_max, 0.0)
+        correction = torch.exp(running_max - shift)
+        weights = torch.exp(scores - shift[..., None])
+        # 0 * NaN is NaN, so a masked slot's value is zeroed, not only its weight.
+        context_v = torch.where(visible[:, :, None, None], context_v, 0.0)
+        acc = acc * correction[..., None] + torch.einsum("bkgl,blkd->bkgd", weights, context_v)
+        total = total * correction + weights.sum(dim=-1)
+        running_max = new_max
+    # A padding request masks every position: its total is 0 and it gets zeros.
+    seen = total > 0
+    result = torch.where(seen[..., None], acc / torch.where(seen, total, 1.0)[..., None], 0.0)
     out.copy_(result.reshape(requests, heads, head_dim))
 
 

@@ -27,6 +27,14 @@
   checkpoints, with every expert in device memory. `clip_qkv` and quantized MoE checkpoints are refused with the
   reason. `ModelConfig` reads the expert fields of `config.json`.
 
+### Fixed
+
+- The torch backend's decode attention no longer runs out of GPU memory on long-context models (#122). It gathered
+  every request's whole block table, sized for the model's full context, into float32 at once: for Llama-3.2-1B
+  (131,072 tokens) with 4 requests, a decode step peaked at 3,201 MiB, which the memory plan does not count. It now
+  walks the table in chunks of at most 64 MiB of keys with an online softmax, and the same step peaks at 232 MiB. The
+  flashinfer backend was not affected.
+
 ## 0.1.0 (not published on PyPI)
 
 On an NVIDIA L4 24 GB, Ayaka reads a 4,096-token prompt of Llama-3.1-8B-Instruct in fp16 at 2,393 tok/s and

@@ -167,3 +167,71 @@ class TestRejections:
     def test_sizes_must_be_positive(self) -> None:
         with pytest.raises(BackendError, match="must be positive"):
             _ops().attention.graph_metadata(0, MAX_BLOCKS, BLOCK, torch.device("cpu"))
+
+
+@pytest.mark.parametrize("chunk_blocks", [1, 2, 3, MAX_BLOCKS])
+def test_a_decode_step_walked_in_chunks_equals_one_pass(
+    monkeypatch: pytest.MonkeyPatch, chunk_blocks: int
+) -> None:
+    from ayaka.ops.backends.torch import attention
+
+    ops = _ops()
+    buffers = _cache(KVLayoutKind.NHD)
+    lengths, table = _step([5, 1, 12, 20])
+    padded_lengths = torch.cat([lengths, torch.zeros(2, dtype=torch.int32)])
+    padded_table = torch.cat([table, torch.zeros(2, MAX_BLOCKS, dtype=torch.int32)])
+    # NaN in every slot no request has written: blocks 0 and 12-15, and the tails of 2, 3 and 9.
+    for blocks in (buffers.k, buffers.v):
+        blocks[0] = float("nan")
+        blocks[12:] = float("nan")
+        blocks[2, 1:] = float("nan")
+        blocks[3, 1:] = float("nan")
+    graph = ops.attention.graph_metadata(6, MAX_BLOCKS, BLOCK, torch.device("cpu"))
+    ops.attention.update_graph_metadata(graph, padded_lengths, padded_table)
+    q = torch.randn(6, 4, 8, generator=torch.Generator().manual_seed(2))
+    whole = torch.empty_like(q)
+    ops.attention.attend(q, buffers, graph, whole, scale=0.3)
+    # 6 requests x 4 positions x 2 kv heads x 8 dims x 4 bytes = 1,536 bytes per block.
+    monkeypatch.setattr(attention, "DECODE_CHUNK_BYTES", 1536 * chunk_blocks)
+    chunked = torch.empty_like(q)
+
+    ops.attention.attend(q, buffers, graph, chunked, scale=0.3)
+
+    assert torch.isfinite(chunked).all()
+    assert torch.count_nonzero(chunked[4:]) == 0
+    torch.testing.assert_close(chunked, whole, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.gpu
+def test_a_decode_step_over_a_long_table_stays_within_the_chunk_memory() -> None:
+    """#122: 4 requests whose table covers 131,072 tokens, as Llama-3.2-1B's does.
+
+    Gathering the whole table in float32 peaked at 3,364,814,848 bytes on an NVIDIA L4. The
+    table points at a few real blocks again and again, so the cache itself is small.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    from ayaka.ops.backends.torch import attention
+
+    device = torch.device("cuda")
+    ops = load_backend(["torch"], device="cuda", dtype=DType.FP16)
+    block, kv_heads, dim, width = 16, 8, 64, 131_072 // 16
+    keys = torch.randn(8, block, kv_heads, dim, device=device, dtype=torch.float16)
+    buffers = KVBuffers(keys, torch.randn_like(keys), KVLayoutKind.NHD, RAW_CODEC)
+    table = (torch.arange(4 * width, dtype=torch.int32) % 7 + 1).reshape(4, width)
+    lengths = torch.tensor([131_072, 70_000, 17, 0], dtype=torch.int32)  # the host's copy
+    graph = ops.attention.graph_metadata(4, width, block, device)
+    ops.attention.update_graph_metadata(graph, lengths, table)
+    q = torch.randn(4, 32, dim, device=device, dtype=torch.float16)
+    out = torch.empty_like(q)
+    torch.cuda.synchronize()
+    before = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+
+    ops.attention.attend(q, buffers, graph, out, scale=dim**-0.5)
+    torch.cuda.synchronize()
+
+    peak = torch.cuda.max_memory_allocated() - before
+    assert peak < 8 * attention.DECODE_CHUNK_BYTES, f"decode scratch peaked at {peak} bytes"
+    assert torch.isfinite(out).all()
+    assert torch.count_nonzero(out[3]) == 0
