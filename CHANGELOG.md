@@ -35,6 +35,12 @@
   walks the table in chunks of at most 64 MiB of keys with an online softmax, and the same step peaks at 232 MiB. The
   flashinfer backend was not affected.
 
+- The start-up memory check no longer fails for an engine built in a process that already used the GPU (#123). The
+  start-up run read the allocator while it still cached the run's freed scratch and counted that cache as workspace;
+  capturing CUDA graphs then gave it back, so the allocator held less than the ledger. On an NVIDIA L4 the sixth
+  engine built in one test process was 402 MiB short against a 336 MiB tolerance. The cache is now released before
+  the reading, as the capture does.
+
 ## 0.1.0 (not published on PyPI)
 
 On an NVIDIA L4 24 GB, Ayaka reads a 4,096-token prompt of Llama-3.1-8B-Instruct in fp16 at 2,393 tok/s and

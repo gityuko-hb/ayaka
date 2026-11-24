@@ -12,8 +12,9 @@ written into cache blocks that no request holds yet, and reads the device:
                             loaded on first use, library handles
 ``activation_peak_bytes``   the peak the allocator reached during the prefill, above
                             what it held before: scratch of the largest step
-``workspace_bytes``         what the allocator holds after the warm-up beyond weights
-                            and KV: activations, library workspaces, rounding
+``workspace_bytes``         what the allocator holds after the warm-up, its cache of
+                            freed scratch released, beyond weights and KV: library
+                            workspaces, rounding; at least the activation peak
 ``prefill_seconds``         that prefill
 ``decode_seconds``          one eager decode step per bucket
 ==========================  =========================================================
@@ -144,8 +145,9 @@ class StartupProfile:
         runtime_bytes: Device memory taken outside the allocator.
         activation_tokens: Rows of the measured prefill step.
         activation_peak_bytes: Allocator peak during that step, above what it held before.
-        workspace_bytes: What the allocator holds after the warm-up beyond weights and KV: the
-            activations, the matrix libraries' workspaces and the allocator's rounding.
+        workspace_bytes: What the allocator holds after the warm-up, once its cache of freed
+            scratch is released, beyond weights and KV: the matrix libraries' workspaces and the
+            allocator's rounding; never less than ``activation_peak_bytes``.
         reused_bytes: Weights and KV that landed in memory the process's allocator held before
             the baseline was read; 0 in a fresh process. The device never lost those bytes.
         graph_bytes: Memory the captured graphs took; 0 without graphs.
@@ -458,6 +460,11 @@ def measure_startup(
             step([1] * count, [1] * count, tables)
             device.synchronize()
             decode[bucket] = time.monotonic() - started
+    # The steps' scratch is free now but still cached. Capturing CUDA graphs, which comes next,
+    # gives that cache back to the driver (torch.cuda.graph empties the cache when it starts), so
+    # it is given back here too: the reading below and the reconciliation after the capture then
+    # see the allocator in the same state. The peak above already counts the scratch.
+    device.release_cache()
     # After the warm-up: everything the device lost since the baseline that this engine's
     # allocator does not hold. The CUDA context, kernel modules loaded on first use, library
     # handles and, under WSL2, the gap between what NVML (the baseline) and CUDA report free.
