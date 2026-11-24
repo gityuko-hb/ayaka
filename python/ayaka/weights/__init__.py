@@ -16,23 +16,35 @@ from typing import TYPE_CHECKING
 from ayaka.utils.lazy_exports import build_lazy_exports
 
 if TYPE_CHECKING:
+    from ayaka.weights.gguf import GGMLType, GGUFFile, GGUFTensor, gguf_hf_config, read_gguf
     from ayaka.weights.manifest import WeightManifest
     from ayaka.weights.mapping import WeightMapping
+    from ayaka.weights.quant import QuantFormat, ScaleLayout, read_quant_format
     from ayaka.weights.safetensors import SafetensorsFile
     from ayaka.weights.spec import TensorSpec
     from ayaka.weights.tensor import TensorRef
 
 __all__ = [
+    "GGMLType",
+    "GGUFFile",
+    "GGUFTensor",
+    "QuantFormat",
     "SafetensorsFile",
+    "ScaleLayout",
     "TensorRef",
     "TensorSpec",
     "WeightManifest",
     "WeightMapping",
+    "gguf_hf_config",
+    "read_gguf",
+    "read_quant_format",
 ]
 
 _EXPORTS = {
+    "gguf": ("GGMLType", "GGUFFile", "GGUFTensor", "gguf_hf_config", "read_gguf"),
     "manifest": ("WeightManifest",),
     "mapping": ("WeightMapping",),
+    "quant": ("QuantFormat", "ScaleLayout", "read_quant_format"),
     "safetensors": ("SafetensorsFile",),
     "spec": ("TensorSpec",),
     "tensor": ("TensorRef",),

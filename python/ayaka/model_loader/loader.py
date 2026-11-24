@@ -47,6 +47,7 @@ from ayaka.ops.backend import load_backend
 from ayaka.utils.dtypes import DType
 from ayaka.utils.parsing import parse_json_strict
 from ayaka.utils.torch_utils import resolve_device
+from ayaka.weights.gguf import gguf_hf_config, read_gguf
 from ayaka.weights.manifest import WeightManifest
 from ayaka.weights.quant import read_quant_format
 from ayaka.weights.safetensors import SafetensorsFile
@@ -62,7 +63,13 @@ if TYPE_CHECKING:
     from ayaka.weights.quant import QuantFormat
     from ayaka.weights.tensor import TensorRef
 
-__all__ = ["describe_model", "load_model", "load_weights", "read_model_config"]
+__all__ = [
+    "describe_model",
+    "load_model",
+    "load_weights",
+    "read_model_config",
+    "stored_weights",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +113,13 @@ def load_model(
             is not available.
     """
     _require_readable_format(source)
+    gguf = _gguf_path(source)
+    if gguf is not None:
+        raise ModelLoadError(
+            f"{gguf}: running GGUF tensors is not implemented; `ayaka plan` reads the file's "
+            "header and plans it, but the engine loads safetensors checkpoints only",
+            context={"path": str(gguf), "format": "gguf"},
+        )
     started = time.monotonic()
     directory = resolve_source(source)
     config, quant = _read_checkpoint_config(directory)
@@ -149,8 +163,12 @@ def describe_model(
         As :func:`load_model`, except for errors that need the tensors.
     """
     _require_readable_format(source)
-    directory = resolve_source(source)
-    config, quant = _read_checkpoint_config(directory)
+    gguf = _gguf_path(source)
+    if gguf is not None:
+        directory, config, quant = gguf, _gguf_config(gguf), None
+    else:
+        directory = resolve_source(source)
+        config, quant = _read_checkpoint_config(directory)
     model_class = resolve_model(config.architecture)
     backend = ops or load_backend(
         device.backends, device=device.device_type, dtype=device.dtype, head_dim=config.head_dim
@@ -176,7 +194,39 @@ def read_model_config(source: ModelSourceConfig) -> ModelConfig:
         As :func:`describe_model`.
     """
     _require_readable_format(source)
+    gguf = _gguf_path(source)
+    if gguf is not None:
+        return _gguf_config(gguf)
     return _read_checkpoint_config(resolve_source(source))[0]
+
+
+def stored_weights(source: ModelSourceConfig) -> tuple[int, dict[str, int]] | None:
+    """The bytes of a GGUF file's tensors and how many tensors each GGML type stores.
+
+    A GGUF file mixes quantization types whose blocks have no PyTorch dtype, so its size comes
+    from the tensor table (:attr:`~ayaka.weights.gguf.GGUFFile.weights_bytes`), not from a model.
+    ``None`` for a safetensors checkpoint, whose weights are the model's parameters.
+
+    Raises:
+        ModelLoadError: If the GGUF header is not valid.
+    """
+    gguf = _gguf_path(source)
+    if gguf is None:
+        return None
+    file = read_gguf(gguf)
+    return file.weights_bytes, file.type_counts()
+
+
+def _gguf_path(source: ModelSourceConfig) -> Path | None:
+    """The file, when ``source.model`` names a local ``.gguf`` file and the format is ``auto``."""
+    if source.format is not RequestFormat.AUTO:
+        return None
+    path = Path(source.model).expanduser()
+    return path if path.suffix.lower() == ".gguf" and path.is_file() else None
+
+
+def _gguf_config(path: Path) -> ModelConfig:
+    return ModelConfig.from_hf_config(gguf_hf_config(read_gguf(path)))
 
 
 def load_weights(model: CausalLM, directory: str | Path) -> None:

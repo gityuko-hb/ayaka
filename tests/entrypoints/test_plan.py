@@ -420,3 +420,63 @@ class TestQuantizedPlan:
         assert plan.quantization == "fp8_e4m3/block-16x16"
         assert plan.weights_bytes == sum(p.numel() * p.element_size() for p in model.parameters())
         assert "+fp8_e4m3/block-16x16" in plan.profile_key.model
+
+
+class TestGGUFPlan:
+    @staticmethod
+    def _gguf(directory: Path) -> Path:
+        from ayaka.weights.gguf import GGMLType
+        from gguf_files import llama_metadata, write_gguf
+
+        entries = [
+            ("token_embd.weight", [256, 256], GGMLType.Q6_K),
+            ("output.weight", [256, 256], GGMLType.Q4_K),
+            ("output_norm.weight", [32], GGMLType.F32),
+            ("blk.0.attn_q.weight", [32, 32], GGMLType.Q8_0),
+            ("blk.0.ffn_down.weight", [64, 32], GGMLType.Q4_0),
+        ]
+        table, offset = [], 0
+        for name, ne, ggml in entries:
+            table.append((name, ne, ggml.type_id, offset))
+            offset += -(-ggml.nbytes(tuple(reversed(ne))) // 32) * 32
+        directory.mkdir(parents=True)
+        return write_gguf(
+            directory / "tiny-Q4_K_M.gguf", llama_metadata(), table, data_bytes=offset
+        )
+
+    def test_the_weights_are_the_sum_of_the_header_sizes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from ayaka.weights.gguf import read_gguf
+
+        path = self._gguf(tmp_path / "gguf")
+
+        code = main(["plan", str(path), "--output", "json"])
+
+        report = json.loads(capsys.readouterr().out)
+        assert code == EXIT_OK
+        assert report["memory"]["weights_bytes"] == read_gguf(path).weights_bytes
+        assert report["gguf_types"] == {"F32": 1, "Q4_0": 1, "Q4_K": 1, "Q6_K": 1, "Q8_0": 1}
+        assert report["architecture"] == "LlamaForCausalLM"
+
+    def test_the_table_names_the_types_and_says_it_does_not_run(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = self._gguf(tmp_path / "gguf")
+
+        code = main(["plan", str(path)])
+
+        out = capsys.readouterr().out
+        assert code == EXIT_OK
+        assert "GGUF header read; no tensor read" in out
+        assert "GGUF tensors: 1 F32, 1 Q4_0, 1 Q4_K, 1 Q6_K, 1 Q8_0" in out
+        assert "running GGUF tensors is not implemented" in out
+
+    def test_loading_a_gguf_file_is_refused_with_the_reason(self, tmp_path: Path) -> None:
+        from ayaka.configs.model_source import ModelSourceConfig
+        from ayaka.core.errors import ModelLoadError
+
+        path = self._gguf(tmp_path / "gguf")
+
+        with pytest.raises(ModelLoadError, match="running GGUF tensors is not implemented"):
+            loader.load_model(ModelSourceConfig(str(path)), DeviceConfig())

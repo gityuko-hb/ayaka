@@ -17,6 +17,9 @@
   (as in RedHatAI's FP8 checkpoints). The weights stay 8 bit in memory and each linear layer dequantizes a bounded slice
   of rows before its product, which is slower than 16-bit weights; `ayaka plan` says so in one line. Activation scales
   are not used. Any other `quantization_config` is refused with the reason.
+- `ayaka plan <file>.gguf` plans a `llama` GGUF file from its header: the weights are the sum of the tensor sizes the
+  header gives (any mix of GGML quantization types), and the KV cache follows the metadata. The engine does not run
+  GGUF tensors and refuses such a file with the reason.
 
 ## 0.1.0 (not published on PyPI)
 

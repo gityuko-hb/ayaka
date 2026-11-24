@@ -413,10 +413,10 @@ def _plan_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "plan",
         help="print whether a model fits this machine and how memory would be divided",
         description="Plan the memory of a model on this machine with the planner a start-up "
-        "runs: weights, KV cache, context per request, requests at once. Reads config.json only: "
-        "no weight is loaded and nothing is downloaded. Exits 5 when it does not fit.",
+        "runs: weights, KV cache, context per request, requests at once. Reads config.json or a "
+        "GGUF header only: no weight is loaded, nothing is downloaded. Exits 5 if it does not fit.",
     )
-    plan.add_argument("model", help="a local model directory or a cached Hugging Face repo id")
+    plan.add_argument("model", help="a model directory, a .gguf file or a cached Hub repo id")
     plan.add_argument(
         "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
     )
