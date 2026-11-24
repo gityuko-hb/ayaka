@@ -157,9 +157,7 @@ class EnginePlan:
     @property
     def max_context_tokens(self) -> int:
         """The longest context one request can reach here: the model's or the cache's limit."""
-        return min(
-            self.model_config.max_position_embeddings, (self.kv_blocks - 1) * self.block_size
-        )
+        return min(self.model_config.context_length, (self.kv_blocks - 1) * self.block_size)
 
 
 def plan_engine(config: EngineConfig) -> EnginePlan:
@@ -218,7 +216,16 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         )
     [group] = groups
     block_size = group.spec.block_size
-    context = model_config.max_position_embeddings
+    context = model_config.context_length
+    if context < model_config.max_position_embeddings:
+        logger.warning(
+            "%s was trained on %d tokens but uses a %d-token sliding window, which this "
+            "engine does not implement: serving at most %d tokens per request",
+            model_config.architecture,
+            model_config.max_position_embeddings,
+            context,
+            context,
+        )
     reserve_tokens = config.cache.kv_reserve_tokens or context
     if reserve_tokens > context:
         raise ConfigError(
@@ -391,7 +398,7 @@ def build_engine(
     model_config = engine_plan.model_config
     group = engine_plan.group
     block_size = engine_plan.block_size
-    context = model_config.max_position_embeddings
+    context = model_config.context_length
     plan = engine_plan.budget
     key = engine_plan.profile_key
     baseline = engine_plan.baseline_bytes

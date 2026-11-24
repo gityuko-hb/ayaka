@@ -18,14 +18,23 @@ if TYPE_CHECKING:
     from ayaka.models.base import CausalLM
     from ayaka.models.gpt2 import GPT2LMHeadModel
     from ayaka.models.llama import LlamaForCausalLM
+    from ayaka.models.qwen2 import Qwen2ForCausalLM
     from ayaka.models.registry import register_model, resolve_model
 
-__all__ = ["CausalLM", "GPT2LMHeadModel", "LlamaForCausalLM", "register_model", "resolve_model"]
+__all__ = [
+    "CausalLM",
+    "GPT2LMHeadModel",
+    "LlamaForCausalLM",
+    "Qwen2ForCausalLM",
+    "register_model",
+    "resolve_model",
+]
 
 _EXPORTS = {
     "base": ("CausalLM",),
     "gpt2": ("GPT2LMHeadModel",),
     "llama": ("LlamaForCausalLM",),
+    "qwen2": ("Qwen2ForCausalLM",),
     "registry": ("register_model", "resolve_model"),
 }
 
