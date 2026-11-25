@@ -91,7 +91,7 @@ def startup_run(
     budget.reserve("workspace", min(profile.workspace_bytes, budget.free_bytes))
     budget.reserve("reserve", min(profile.sampling_peak_bytes, budget.free_bytes))
     captured = ()
-    if config.device.cuda_graph:
+    if config.device.uses_cuda_graph:
         windows = verify_buckets(config, runner)
         captured = tuple(runner.capture_graphs(buckets, verify_buckets=windows))
         graph_bytes = sum(item.bytes for item in captured) + runner.extra_graph_bytes

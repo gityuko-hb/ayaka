@@ -137,7 +137,7 @@ def _run(args: argparse.Namespace) -> int:
     )
     config = _engine_config(args)
     if not args.quiet:
-        graphs = ", decode in CUDA graphs" if config.device.cuda_graph else ""
+        graphs = ", decode in CUDA graphs" if config.device.uses_cuda_graph else ""
         spec = f", speculative={config.speculative.method}" if config.speculative.enabled else ""
         say(
             f"running {args.model} on {config.device.device} in {config.device.dtype.label} "

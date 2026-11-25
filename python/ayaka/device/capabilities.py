@@ -87,6 +87,8 @@ class DeviceCapabilities:
         if config.dtype not in self.dtypes:
             supported = sorted(dtype.label for dtype in self.dtypes)
             found.append(f"{self.arch} has no {config.dtype.label} arithmetic (it has {supported})")
+        # Only an explicit request is checked: the default (unset) asks nothing of the device,
+        # and every GPU CUDA 13 runs on (sm_75 and newer) captures graphs.
         if config.cuda_graph and not self.cuda_graph:
             found.append(f"{self.describe()} cannot capture CUDA graphs")
         return found

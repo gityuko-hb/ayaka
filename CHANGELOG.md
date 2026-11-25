@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- CUDA graphs are on by default on a GPU: `DeviceConfig.cuda_graph` is `None` unless set, which means on for a CUDA
+  device and off on the CPU (`DeviceConfig.uses_cuda_graph`), and `--cuda-graph` became `--cuda-graph` /
+  `--no-cuda-graph`. Replaying graphs made batch-1 fp16 decode steps 2.13× (Llama-3.2-1B) to 9.09× (SmolLM2-135M)
+  faster than eager ones on an NVIDIA L4 (#99), above that gate's 1.5×. Pass `--no-cuda-graph` (or `cuda_graph=False`) for the eager path.
+
 ### Added
 
 - Qwen2 and Qwen2.5 checkpoints (`Qwen2ForCausalLM`). A model whose sliding window is shorter than its trained context

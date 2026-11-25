@@ -42,9 +42,11 @@ class DeviceConfig(ConfigMixin):
             first backend that serves it. Whether a name is registered is checked
             there, not here.
         cuda_graph: Capture plain decode steps in CUDA graphs at start-up and replay them
-            (``ayaka.execution.graph``). Requires a CUDA device, and every op family then comes
-            from a backend that declares it graph-safe. Off by default until the step time on
-            the dev machine says otherwise.
+            (``ayaka.execution.graph``); every op family then comes from a backend that declares
+            it graph-safe. ``None`` (the default) means on for a CUDA device and off on the CPU,
+            which :attr:`uses_cuda_graph` resolves; ``True`` requires a CUDA device. On by
+            default since replaying graphs made batch-1 fp16 decode steps 2.13x (Llama-3.2-1B) to
+            9.09x (SmolLM2-135M) faster than eager ones on an NVIDIA L4 (#99, a gate of 1.5x).
         graph_buckets: Decode batch sizes a graph is captured for, ascending and without
             duplicates; sizes above the engine's running requests are dropped. A decode step
             replays the smallest bucket that holds it. Validated even when ``cuda_graph`` is off.
@@ -63,7 +65,7 @@ class DeviceConfig(ConfigMixin):
     device: str = "cpu"
     dtype: DType = DType.FP32
     backends: tuple[str, ...] = ("torch",)
-    cuda_graph: bool = False
+    cuda_graph: bool | None = None
     graph_buckets: tuple[int, ...] = (1, 2, 4, 8)
     vision_load: Literal["eager", "lazy"] = "eager"
 
@@ -91,7 +93,8 @@ class DeviceConfig(ConfigMixin):
             require_text(name, "device.backends entry")
         if len(set(self.backends)) != len(self.backends):
             raise ValueError("device.backends must not repeat a name")
-        require_bool(self.cuda_graph, "device.cuda_graph")
+        if self.cuda_graph is not None:
+            require_bool(self.cuda_graph, "device.cuda_graph")
         validate_buckets(self.graph_buckets)
         if self.vision_load not in ("eager", "lazy"):
             raise ConfigError(
@@ -105,6 +108,11 @@ class DeviceConfig(ConfigMixin):
                 "GRAPH_NEEDS_CUDA",
                 f"CUDA graphs need a CUDA device, got {self.device!r}",
             )
+
+    @property
+    def uses_cuda_graph(self) -> bool:
+        """Whether decode steps run in CUDA graphs: ``cuda_graph``, or a CUDA device when unset."""
+        return self.device_type == "cuda" if self.cuda_graph is None else self.cuda_graph
 
     @property
     def device_type(self) -> str:
