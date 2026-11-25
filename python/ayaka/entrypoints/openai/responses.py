@@ -282,7 +282,9 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object
 
     The constrained choice is ``"auto"``, ``"required"`` or the one function's name. Only an
     explicit ``strict: true`` constrains the arguments to the schema: a tool's schema may use
-    something the grammar compiler refuses, and a default must not fail the request.
+    something the grammar compiler refuses, and a default must not fail the request. With
+    ``tool_choice: "none"`` the tools are still written into the prompt, so it keeps the
+    prefix-cache blocks of the same conversation with ``"auto"``; the model may not call them.
     """
     choice: object = body.raw("tool_choice") or "auto"
     echoed = choice
@@ -297,10 +299,8 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object
     elif choice not in ("auto", "none"):
         raise _invalid("tool_choice", "must be auto, none, required or a tool")
     tools = body.objects("tools")
-    if choice == "none" or not tools:
-        if constrained != "auto":
-            raise _invalid("tool_choice", "forces a call but the request has no function tools")
-        return False, echoed, "auto", False
+    if not tools and constrained != "auto":
+        raise _invalid("tool_choice", "forces a call but the request has no function tools")
     offered = False
     strict = False
     for tool in tools:
@@ -311,6 +311,8 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object
         parameters = tool.child("parameters") or JsonObject({})
         builder.tool(ToolSpec(tool.text("name"), tool.string("description"), parameters.data))
         offered = True
+    if choice == "none":
+        return False, echoed, "auto", False
     return offered, echoed, constrained, strict
 
 
@@ -629,6 +631,7 @@ async def create_response(request: web.Request) -> web.StreamResponse:
         sampling,
         public_id=public_id,
         tools=responses.tools,
+        tools_in_prompt=bool(conversation.tools),
         parallel_tool_calls=responses.parallel_tool_calls,
         structured=serving.constraint(
             responses.output,

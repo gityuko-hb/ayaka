@@ -480,12 +480,17 @@ class Serving:
         *,
         public_id: str,
         tools: bool,
+        tools_in_prompt: bool = False,
         parallel_tool_calls: bool = True,
         structured: StructuredParams | None = None,
         images: tuple[ImageInput, ...] = (),
         image_spans: tuple[ImageSpan, ...] = (),
     ) -> Generation:
         """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
+
+        ``tools_in_prompt`` without ``tools`` is ``tool_choice: none``: the prompt shows the tools
+        but the model may not call them, so the answer ends where it opens a call (see
+        :meth:`_stop_at_tool_call`).
 
         Raises:
             UnsupportedFeatureError, InvalidRequestError, OverloadedError: As the engine's
@@ -499,6 +504,8 @@ class Serving:
                 "start it with --tool-call-parser",
                 context={"features": ("tools",), "param": "tools"},
             )
+        if tools_in_prompt and not tools:
+            sampling = self._stop_at_tool_call(sampling)
         request_id = RequestId(f"ayaka-{public_id}")
         request = GenerateRequest(
             request_id=request_id,
@@ -534,6 +541,14 @@ class Serving:
         parser: EventParser = parsers[0] if sampling.n == 1 else ChoicesParser(parsers)
         self.metrics.running.inc()
         return Generation(request_id, public_id, len(prompt), stream, parser)
+
+    def _stop_at_tool_call(self, sampling: SamplingParams) -> SamplingParams:
+        """Stop at the single-token opening call marker, keeping decode inside CUDA graphs."""
+        markers = self.output_format.tool_markers
+        opening = markers[0].token_id if markers is not None else None
+        if opening is None:
+            return sampling
+        return replace(sampling, stop_token_ids=sampling.stop_token_ids | {opening})
 
     async def stream(
         self, request: web.Request, generation: Generation, encoder: StreamEncoder

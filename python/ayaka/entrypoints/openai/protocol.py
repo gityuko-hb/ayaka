@@ -340,7 +340,10 @@ def _chat_tool_call(call: JsonObject) -> ToolCall:
 def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, str, bool]:
     """Add the request's tools; return whether the model may call them, the choice and strict.
 
-    The choice is ``"auto"``, ``"required"`` or the name of the one function to call.
+    The choice is ``"auto"``, ``"required"`` or the name of the one function to call. With
+    ``tool_choice: "none"`` the tools are still written into the prompt, so the prompt keeps the
+    bytes (and the prefix-cache blocks) of the same conversation with ``"auto"``; the model may
+    not call them.
     """
     tools = body.objects("tools")
     raw = body.raw("tool_choice")
@@ -358,13 +361,11 @@ def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, s
         choice = "required"
     elif raw not in (None, "auto", "none"):
         raise InvalidRequestError("tool_choice: must be auto, none, required or a function")
-    if not tools or raw == "none":
-        if choice != "auto":
-            raise InvalidRequestError(
-                "tool_choice: forces a call but the request has no tools",
-                context={"param": "tool_choice"},
-            )
-        return False, "auto", False
+    if not tools and choice != "auto":
+        raise InvalidRequestError(
+            "tool_choice: forces a call but the request has no tools",
+            context={"param": "tool_choice"},
+        )
     strict = False
     for tool in tools:
         if tool.string("type") != "function":
@@ -380,7 +381,9 @@ def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, s
                 parameters=(function.child("parameters") or JsonObject({})).data,
             )
         )
-    return True, choice, strict
+    if raw == "none":
+        return False, "auto", False
+    return bool(tools), choice, strict
 
 
 # -- completions ------------------------------------------------------------------------------
