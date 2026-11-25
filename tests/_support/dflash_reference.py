@@ -1,7 +1,8 @@
 """Clean local reference implementation of z-lab/dflash forward & decode loop.
 
 Derived directly from inspected ``dflash.py`` and ``utils.py`` inside ``z-lab/Qwen3-8B-DFlash-b16``
-(no ``trust_remote_code`` execution). Used for Gate 1 reference parity and external comparisons.
+(no ``trust_remote_code`` execution). The GPU test compares the engine's drafts with it, and the
+external comparison benchmark runs its decode loop.
 """
 
 from __future__ import annotations

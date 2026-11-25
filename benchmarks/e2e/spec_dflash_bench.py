@@ -1,4 +1,4 @@
-"""Suite 4: DFlash block drafter benchmark across Qwen3-8B and Llama-3.1-8B (#129)."""
+"""The DFlash block drafters of Qwen3-8B and Llama-3.1-8B against plain decoding (#129)."""
 
 from __future__ import annotations
 

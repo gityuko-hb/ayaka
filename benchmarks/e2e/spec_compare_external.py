@@ -1,4 +1,4 @@
-"""Suite 5: Apple-to-apple external library comparison on L4 GPU.
+"""Ayaka's speculative decoding against transformers and the z-lab DFlash loop, same prompts.
 
 Compares on identical prompts (greedy, max_new_tokens=128):
   - Ayaka plain baseline vs Ayaka speculative (lookup / mtp / dflash)

@@ -204,7 +204,7 @@ def _generate_tokens(cfg: EngineConfig, prompts: list[tuple[int, ...]]) -> list[
 def _run_dflash_and_collect(
     cfg: EngineConfig, prompts: list[tuple[int, ...]], draft_id: str
 ) -> tuple[list[tuple[int, ...]], float, dict[str, Any]]:
-    """Run the DFlash engine, then return its tokens, tau and the Gate 1 payload on the CPU.
+    """Run the DFlash engine, then return its tokens, tau and its drafts on the CPU.
 
     Everything that holds GPU memory (engine, runner, target and draft model, K/V) is local to
     this function, so it is all unreachable when it returns and the caller can load the reference
@@ -304,10 +304,16 @@ def _run_dflash_and_collect(
         ("unsloth/Llama-3.1-8B-Instruct", "z-lab/LLaMA3.1-8B-Instruct-DFlash-UltraChat", 9, 2.0),
     ],
 )
-def test_dflash_real_checkpoints_gates_on_l4(
+def test_dflash_real_checkpoints_draft_like_the_reference_without_changing_the_ids(
     target_id: str, draft_id: str, max_k: int, min_tau: float
 ) -> None:
-    """Gates 1-4 for Qwen3-8B and Llama-3.1-8B DFlash on L4 GPU."""
+    """The z-lab drafters of Qwen3-8B and Llama-3.1-8B-Instruct, on any CUDA GPU.
+
+    Checks that the plan loads the drafter, that the greedy ids equal plain decoding's, that at
+    least ``min_tau`` tokens are accepted per round, and that the engine's drafts agree with the
+    vendored reference run in float32: hidden-state cosine at least 0.995 and the same draft token
+    at 99% of at least 1,000 positions whose float32 margin is at least 0.25.
+    """
     tokenizers: Any = pytest.importorskip("tokenizers")  # tests/tokenizers shadows it for pyright
 
     target_dir = resolve_source(ModelSourceConfig(target_id, offline=True))
@@ -363,9 +369,9 @@ def test_dflash_real_checkpoints_gates_on_l4(
     gc.collect()
     torch.cuda.empty_cache()
     assert spec_tokens == plain_tokens
-    assert tau >= min_tau, f"{draft_id} Gate 2 tau={tau:.2f} < {min_tau}"
+    assert tau >= min_tau, f"{draft_id} accepted per round {tau:.2f} < {min_tau}"
 
-    # Gate 1: compare Ayaka's bf16 draft against the vendored reference run in float32, across
+    # Compare Ayaka's bf16 draft against the vendored reference run in float32, across
     # >= 2,000 positions. The reference is float32 on purpose: bf16 logits near 16-32 move in steps
     # of 0.0625-0.125, so a bf16 reference cannot say which of two tokens closer than that is the
     # right one (measured on L4: a bf16 reference disagrees with Ayaka at 2.4% and 1.8% of the
@@ -412,16 +418,16 @@ def test_dflash_real_checkpoints_gates_on_l4(
                 agreed_non_tie += int(
                     ((ay_ids_cpu.to("cuda") == logits_ref.argmax(-1)) & non_tie).sum().item()
                 )
-        assert min_cos >= 0.995, f"{draft_id} Gate 1 min cosine {min_cos:.4f} < 0.995"
+        assert min_cos >= 0.995, f"{draft_id} hidden-state cosine {min_cos:.4f} < 0.995"
         assert evaluated_non_tie >= 1000
         agree = agreed_non_tie / evaluated_non_tie
         print(
-            f"{draft_id} Gate 1: min cosine {min_cos:.4f}, parity {agree:.4f} "
+            f"{draft_id}: hidden-state cosine {min_cos:.4f}, draft agreement {agree:.4f} "
             f"({agreed_non_tie}/{evaluated_non_tie} positions with a float32 margin >= "
             f"{near_tie_margin}), tau {tau:.2f}"
         )
         assert agree >= 0.99, (
-            f"{draft_id} Gate 1 parity {agree:.4f} ({agreed_non_tie}/{evaluated_non_tie}) < 0.99"
+            f"{draft_id} draft agreement {agree:.4f} ({agreed_non_tie}/{evaluated_non_tie}) < 0.99"
         )
     finally:
         gate1_payload.clear()
