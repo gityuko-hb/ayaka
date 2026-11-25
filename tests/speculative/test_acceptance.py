@@ -1,4 +1,4 @@
-"""Gate 1.4 & 1.5 statistical and unit tests for one-point acceptance."""
+"""The one-point acceptance rule: statistical tests of its distribution, and its unit tests."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def test_accept_one_point_batch() -> None:
     ],
 )
 def test_one_point_rule_exact_distribution_chi_square(probs: tuple[float, ...], draft: int) -> None:
-    """Gate 1.4: six (p, d) cases over 2e6 draws match P(accept)=p(d) and Y~p (chi2 p>0.001)."""
+    """Six (p, d) cases over 2e6 draws match P(accept)=p(d) and Y~p (chi2 p>0.001)."""
     n_draws = 2_000_000
     rng = np.random.default_rng(12345 + draft + int(probs[0] * 1000))
     p_arr = np.asarray(probs, dtype=np.float64)
@@ -89,7 +89,7 @@ def test_one_point_rule_exact_distribution_chi_square(probs: tuple[float, ...], 
 
 
 def test_lookup_point_mass_accepted_at_target_probability_not_always_rejected() -> None:
-    """Gate 1.5: a lookup draft with no candidate list is accepted with frequency p(d) at T>0."""
+    """A lookup draft with no candidate list is accepted with frequency p(d) at T>0."""
     n_draws = 200_000
     p_target = np.asarray([0.15, 0.55, 0.30], dtype=np.float64)
     draft = 1

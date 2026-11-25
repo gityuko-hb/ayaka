@@ -1,4 +1,4 @@
-"""Gate 2 tests for NgramIndex, LookupProposer, and TokenRecyclingProposer."""
+"""What the lookup drafters propose: NgramIndex, LookupProposer and TokenRecyclingProposer."""
 
 from __future__ import annotations
 

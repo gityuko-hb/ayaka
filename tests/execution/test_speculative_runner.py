@@ -1,4 +1,4 @@
-"""End-to-end speculative verification tests on the tiny model (Gate 1.1, 1.2, 1.3, 1.6)."""
+"""Speculative decoding end to end on the tiny model: the ids, the KV and the draft accounting."""
 
 from __future__ import annotations
 

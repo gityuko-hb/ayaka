@@ -446,7 +446,7 @@ def test_engines_that_capture_graphs_leave_no_memory_behind() -> None:
 def test_verify_graph_replay_matches_eager_and_one_sync(
     backends: tuple[str, ...], dtype: DType
 ) -> None:
-    """Gate 3: captured verify buckets replay ragged steps identically to eager with 1 D2H sync."""
+    """Captured verify buckets replay ragged steps as eager does, with one device-to-host sync."""
     from adversarial_proposers import RandomProposer
     from ayaka.configs.speculative import SpeculativeConfig
     from ayaka.speculative.policy import FixedController

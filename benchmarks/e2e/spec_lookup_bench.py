@@ -1,4 +1,4 @@
-"""Suite 2: N-gram lookup, cost vs fixed controller, Token Recycling, and Predicted Outputs."""
+"""Lookup drafting against plain decoding: both controllers, token recycling, predicted outputs."""
 
 from __future__ import annotations
 

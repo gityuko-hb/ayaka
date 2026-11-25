@@ -1,4 +1,4 @@
-"""Suite 1: Verify step latency cost table T(B, k) across batch sizes and draft lengths."""
+"""What a verify step costs: the step time T(B, k) of B requests with k draft rows each."""
 
 from __future__ import annotations
 

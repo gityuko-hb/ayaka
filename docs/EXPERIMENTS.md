@@ -786,7 +786,7 @@ The raw files of the three sections above record the revisions they ran by the h
 branches were rewritten to correct the commit author (same trees): `c6259e7` is `002bf86`, `4906553` is `e3ac2fc`,
 `ac99081` is `264e068`, `25b195c` is `3e5cf60`, `745760b` is `dd44f6b`.
 
-## M1 decision gates and FP8 KV check on NVIDIA L4 24 GB (`sm_89`, native Linux) (#62)
+## GPU execution decision gates and FP8 KV check on NVIDIA L4 24 GB (`sm_89`, native Linux) (#62)
 
 ### Setup and thresholds, written before the run
 
@@ -845,9 +845,9 @@ Pre-registration commit: `07a85e3` (before any run below). Raw JSON files:
 | prefill | 64 | 256 / 2048 | 2.79e-4 | 0.03889 | 0.1336 | 0.1679 | 1.26× |
 | prefill | 128 | 256 / 2048 | 2.80e-4 | 0.03830 | 0.2125 | 0.2109 | 0.99× |
 
-  **Implication for 0.2 / M3:** FlashInfer `0.7.4` on `sm_89` can read `e4m3fn` KV for capacity
-  (halving KV memory, opt-in with quality gating in M6), but it is slower than `fp16` KV at batch 1
-  up to 8K context, so the 0.2 release statement keeps the host-tier conversation-switching claim
+  **Implication for 0.2 and the models and quantization milestone:** FlashInfer `0.7.4` on
+  `sm_89` can read `e4m3fn` KV for capacity (halving KV memory, opt-in with quality gating in the
+  fast quantized kernels milestone), but it is slower than `fp16` KV at batch 1 up to 8K context, so the 0.2 release statement keeps the host-tier conversation-switching claim
   rather than promising an 8-bit KV speedup before `kops`.
 
 **2. Attention per op (`attention-fp16.json`, `attention-bf16.json`, warmup 5, repeat 50, ms):**
