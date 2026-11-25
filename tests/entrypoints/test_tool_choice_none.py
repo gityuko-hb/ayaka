@@ -257,38 +257,28 @@ class TestPrompt:
 
 
 class TestPrefixCache:
-    @pytest.mark.parametrize(("route", "auto", "none", "cached"), _PROTOCOLS)
-    def test_switching_auto_to_none_reads_the_prompt_from_the_cache(
-        self,
-        checkpoint: Path,
-        route: str,
-        auto: dict[str, Any],
-        none: dict[str, Any],
-        cached: tuple[str, ...],
-    ) -> None:
+    def test_switching_auto_to_none_reads_the_prompt_from_the_cache(self, checkpoint: Path) -> None:
+        """On the real engine. The random model may draw an id no test tokenizer decodes, so the
+        answer is pinned to one byte with a logit bias, which only Chat Completions has; the
+        other two protocols send the same prompt ids for auto and none (TestPrompt)."""
+        pinned = {"logit_bias": {"65": 100}}  # 65 is "A" in the byte tokenizer
+
         async def main() -> None:
-            # The byte tokenizer decodes all 300 ids of the tiny model; ToolTokenizer knows 262
-            # and the random model may draw one past them. The cache needs no marker token.
             async with serve(
                 checkpoint,
                 output_format=OutputFormat.resolve(tool_calls="hermes", tokenizer=FakeTokenizer()),
                 num_blocks=600,
             ) as (client, _, _):
-                answers = []
+                cached: list[int] = []
                 # auto, then none, then auto again: none must read as much of the prompt from
                 # the cache as a repeat of the same auto request does.
-                for request in (auto, none, auto):
-                    response = await client.post(route, json=request)
+                for request in (_chat("auto"), _chat("none"), _chat("auto")):
+                    response = await client.post("/v1/chat/completions", json=request | pinned)
                     assert response.status == 200, await response.text()
-                    answers.append(await response.json())
+                    usage = (await response.json())["usage"]
+                    cached.append(usage["prompt_tokens_details"]["cached_tokens"])
 
-            def read(answer: dict[str, Any]) -> int:
-                value: Any = answer
-                for key in cached:
-                    value = value[key]
-                return int(value)
-
-            first, switched, repeated = (read(answer) for answer in answers)
+            first, switched, repeated = cached
             assert first == 0
             assert repeated > 0
             assert switched == repeated
