@@ -127,8 +127,12 @@ def compute_budget(
             kv_blocks_override=config.cache.num_blocks,
             late_alloc_bytes=late_alloc_bytes,
             activation_bytes_per_token=previous.activation_bytes_per_token if previous else 0,
+            # The widest sampling step's peak is kept free next to the workspace.
             activation_fixed_bytes=(
-                max(previous.workspace_bytes - previous.activation_peak_bytes, 0) if previous else 0
+                max(previous.workspace_bytes - previous.activation_peak_bytes, 0)
+                + previous.sampling_peak_bytes
+                if previous
+                else 0
             ),
             graph_bytes_estimate=(
                 previous.graph_bytes if previous and config.device.cuda_graph else 0

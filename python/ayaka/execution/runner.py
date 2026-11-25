@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import gc
 import hashlib
-import logging
 import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Final, cast
@@ -57,6 +56,7 @@ from ayaka.execution.drafts import (
 )
 from ayaka.execution.graph import GraphRunner
 from ayaka.execution.inputs import InputBuilder
+from ayaka.execution.measurement import draw_for_measurement
 from ayaka.execution.speculation import SpeculationState
 from ayaka.kvcache.storage.pool import KVPool, LatentKVPool
 from ayaka.layers.context import ForwardContext, StateCheckpointCapture
@@ -93,8 +93,6 @@ if TYPE_CHECKING:
 __all__ = ["ModelRunner"]
 
 _MAX_VISION_CACHE: Final = 16
-
-_LOG = logging.getLogger(__name__)
 
 
 class ModelRunner:
@@ -237,6 +235,10 @@ class ModelRunner:
         """The running output constraints of the requests that have one."""
         return self._constraints
 
+    def draw_for_measurement(self, logits: torch.Tensor) -> None:
+        """Sample ``logits`` at the sampler's costliest, for the start-up run's measured peak."""
+        draw_for_measurement(self._sampler, logits, device=self._device, eos_token_ids=self._eos)
+
     @property
     def graph(self) -> GraphRunner | None:
         """The decode graphs, once :meth:`capture_graphs` has run."""
@@ -269,14 +271,8 @@ class ModelRunner:
         captured = graph.capture()
         self._graph = graph
         self._extra_graph_bytes = 0
-        controller = self._spec.controller
-        if verify_buckets and controller is not None:
-            if graph.max_verify_rows > 0:
-                controller.max_allowed_rows = graph.max_verify_rows
-            else:
-                _LOG.warning(
-                    "no verify CUDA graph bucket could be captured; verify steps will run eagerly"
-                )
+        if verify_buckets:
+            self._spec.verify_graphs_captured(graph.max_verify_rows)
         return captured
 
     def release(self) -> None:

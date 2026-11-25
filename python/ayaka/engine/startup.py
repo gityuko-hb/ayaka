@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from ayaka.kvcache.storage.pool import KVPool, LatentKVPool, RecurrentStatePool
     from ayaka.memory.budget import BudgetPlan
 
-__all__ = ["startup_run", "verify_buckets"]
+__all__ = ["sampled_rows", "startup_run", "verify_buckets"]
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,8 @@ def startup_run(
         state_buffers=getattr(runner, "state_buffers", {}),
         group_layers=getattr(runner, "group_layers", ()),
         state_bytes=state_bytes,
+        sampled_rows=sampled_rows(config, runner, running),
+        draw=runner.draw_for_measurement,
     )
     budget = MemoryBudget(baseline)
     budget.reserve("weights", profile.weights_bytes)
@@ -87,6 +89,7 @@ def startup_run(
         budget.reserve("state", min(state_bytes, budget.free_bytes))
     budget.reserve("runtime", min(profile.runtime_bytes, budget.free_bytes))
     budget.reserve("workspace", min(profile.workspace_bytes, budget.free_bytes))
+    budget.reserve("reserve", min(profile.sampling_peak_bytes, budget.free_bytes))
     captured = ()
     if config.device.cuda_graph:
         windows = verify_buckets(config, runner)
@@ -127,8 +130,23 @@ def startup_run(
     )
 
 
+def sampled_rows(config: EngineConfig, runner: ModelRunner, running: int) -> int:
+    """Most logit rows one step samples: a full verify window per request, else one per request.
+
+    A prefill step samples only the last row of each request, so its chunk does not count.
+    """
+    if not config.speculative.enabled or runner.proposer is None:
+        return running
+    return min(runner.builder.max_rows, running * (1 + config.speculative.max_draft_tokens))
+
+
 def verify_buckets(config: EngineConfig, runner: ModelRunner) -> tuple[int, ...]:
-    """Total-row CUDA graph buckets to capture when speculative decoding is active."""
+    """Total-row CUDA graph buckets to capture when speculative decoding is active.
+
+    A step wider than every bucket runs eagerly; the scratch of its draw is measured at start-up
+    (:func:`sampled_rows`). Capturing the widest window instead would hold that scratch a second
+    time in the graph pool: 545 MB for 8 requests of 16 rows on Qwen3-8B.
+    """
     if not config.speculative.enabled or runner.proposer is None:
         return ()
     max_rows = runner.builder.max_rows

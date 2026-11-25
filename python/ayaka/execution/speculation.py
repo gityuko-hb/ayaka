@@ -106,6 +106,15 @@ class SpeculationState:
         self.pending_disabled.clear()
         self._configure_hooks()
 
+    def verify_graphs_captured(self, max_rows: int) -> None:
+        """Let the controller choose windows up to the widest captured verify graph."""
+        if self.controller is None:
+            return
+        if max_rows > 0:
+            self.controller.max_allowed_rows = max_rows
+        else:
+            _LOG.warning("no verify CUDA graph bucket could be captured; verify steps run eagerly")
+
     def fail(self, where: str, exc: Exception) -> None:
         """Stop using the proposer for the life of the process; requests go on without drafts."""
         _LOG.warning("disabling speculative proposer after %s error: %s", where, exc)
