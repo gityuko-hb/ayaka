@@ -535,6 +535,7 @@ class Serving:
                 call_id_prefix=f"call_{public_id[:24]}" + (f"_{index}" if sampling.n > 1 else ""),
                 tools=tools,
                 parallel_tool_calls=parallel_tool_calls,
+                withhold_call=tools_in_prompt and not tools,
             )
             for index in range(sampling.n)
         ]

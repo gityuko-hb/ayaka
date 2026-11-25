@@ -22,7 +22,7 @@ from ayaka.entrypoints.openai.protocol import parse_chat_request
 from ayaka.entrypoints.openai.responses import parse_responses_request
 from ayaka.entrypoints.parsers.output import OutputFormat
 from ayaka.entrypoints.wire.reader import JsonObject
-from serving_support import serve, write_long_gpt2
+from serving_support import script, serve, write_long_gpt2
 from tokenizer_fakes import FakeTokenizer, ToolTokenizer, loaded_for
 
 if TYPE_CHECKING:
@@ -144,6 +144,7 @@ def _with_fake_engine(
     checkpoint: Path,
     *,
     tool_calls: str,
+    scripts: list[Any] | None = None,
 ) -> None:
     async def main() -> None:
         tokenizer = ToolTokenizer()
@@ -151,7 +152,7 @@ def _with_fake_engine(
             checkpoint,
             tokenizer=loaded_for(tokenizer, stream=False),
             output_format=OutputFormat.resolve(tool_calls=tool_calls, tokenizer=tokenizer),
-            scripts=[],
+            scripts=scripts or [],
             num_blocks=600,  # the long GPT-2 reserves its whole 1024-token context
         ) as (client, _, engine):
             await body(client, engine)
@@ -210,6 +211,39 @@ class TestPrompt:
             assert _OPENER in with_none.sampling.stop_token_ids
 
         _with_fake_engine(body, checkpoint, tool_calls="hermes")
+
+    @pytest.mark.parametrize(
+        ("route", "none", "text_of"),
+        [
+            (
+                "/v1/chat/completions",
+                _chat("none"),
+                lambda a: a["choices"][0]["message"]["content"],
+            ),
+            ("/v1/messages", _messages({"type": "none"}), lambda a: a["content"][0]["text"]),
+            ("/v1/responses", _responses("none"), lambda a: a["output"][0]["content"][0]["text"]),
+        ],
+        ids=["chat", "messages", "responses"],
+    )
+    def test_the_marker_the_answer_stopped_at_is_not_in_its_text(
+        self,
+        checkpoint: Path,
+        route: str,
+        none: dict[str, Any],
+        text_of: Callable[[dict[str, Any]], str],
+    ) -> None:
+        # What Qwen3-8B did under tool_choice none: some text, then <tool_call>, a token that is
+        # not special, so the detokenizer writes it; the request stops there.
+        answer = script("Let me look. ", (_OPENER, "<tool_call>"), stop=_OPENER)
+
+        async def body(client: TestClient[Any, Any], engine: FakeEngine) -> None:
+            del engine
+            response = await client.post(route, json=none)
+            assert response.status == 200, await response.text()
+
+            assert text_of(await response.json()) == "Let me look. "
+
+        _with_fake_engine(body, checkpoint, tool_calls="hermes", scripts=[answer])
 
     def test_a_format_without_a_marker_token_adds_no_stop(self, checkpoint: Path) -> None:
         # llama3_json opens a call with a bare JSON object: no one token marks it.
