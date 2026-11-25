@@ -7,7 +7,9 @@ the GPU clock lands on both arms. Every run records its throughput, every token 
 the controller made and accepted.
 
 ``--context-tokens N`` puts about ``N`` tokens of repository code in a system message before every
-prompt, the shape of a coding agent's request; the default 0 sends the prompts alone.
+prompt, the shape of a coding agent's request; the default 0 sends the prompts alone. That context
+is the same for every request, so the prefix cache serves it after the first; ``--no-prefix-cache``
+turns the cache off in both engines of every pair, so every prompt is computed.
 
 The four prompt classes are rendered through the model's own chat template:
 
@@ -178,7 +180,10 @@ def _engine(args: argparse.Namespace, snapshot: Path, speculative: SpeculativeCo
                 cuda_graph=True,
             ),
             cache=CacheConfig(
-                block_size=16, num_blocks=args.num_blocks, kv_reserve_tokens=args.kv_reserve
+                block_size=16,
+                num_blocks=args.num_blocks,
+                kv_reserve_tokens=args.kv_reserve,
+                prefix_cache=args.prefix_cache,
             ),
             scheduler=SchedulerConfig(max_running=max(args.concurrency), max_tokens_per_step=512),
             speculative=speculative,
@@ -230,6 +235,7 @@ def main() -> None:
     parser.add_argument("--num-blocks", type=int, default=1024)
     parser.add_argument("--kv-reserve", type=int, default=8192)
     parser.add_argument("--context-tokens", type=int, default=0)
+    parser.add_argument("--no-prefix-cache", dest="prefix_cache", action="store_false")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     args.concurrency = [int(c) for c in args.concurrency.split(",")]
@@ -248,6 +254,7 @@ def main() -> None:
             "pairs": args.pairs,
             "order": "pair p: fresh engines, plain first when p is even, the arm first when odd",
             "context_tokens": args.context_tokens,
+            "prefix_cache": args.prefix_cache,
             "max_tokens": args.max_tokens,
             "greedy": True,
             "dtype": "bf16",
