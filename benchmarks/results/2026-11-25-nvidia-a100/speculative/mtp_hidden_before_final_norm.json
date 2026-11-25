@@ -1,0 +1,328 @@
+{
+ "machine": {
+  "date": "2026-11-25T20:37:08+00:00",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "capability": [
+   8,
+   0
+  ],
+  "driver": "580.82.07",
+  "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+  "wsl2": false,
+  "python": "3.13.16",
+  "torch": "2.14.1+cu130",
+  "torch_cuda": "13.0",
+  "flashinfer": "0.7.4",
+  "ayaka": "0.1.0",
+  "commit": "d5af22c42bb4710e46e53a6218dff3c53d53835a-dirty"
+ },
+ "model": "XiaomiMiMo/MiMo-7B-RL",
+ "protocol": {
+  "pairs": 3,
+  "order": "pair p: fresh engines, plain first when p is even, the arm first when odd",
+  "context_tokens": 1000,
+  "max_tokens": 256,
+  "greedy": true,
+  "dtype": "bf16",
+  "backends": [
+   "flashinfer",
+   "torch"
+  ],
+  "cuda_graph": true,
+  "num_blocks": 1024,
+  "prompt_tokens": {
+   "code_edit": [
+    1248
+   ],
+   "prose": [
+    1088
+   ],
+   "json_tools": [
+    1200
+   ],
+   "random": [
+    1302
+   ]
+  }
+ },
+ "arms": {
+  "mtp": {
+   "enabled": true,
+   "method": "mtp",
+   "max_draft_tokens": 1,
+   "controller": "fixed",
+   "fixed_k": 1,
+   "min_gain": 0.05,
+   "ema": 0.05,
+   "lookup_min_match": 3,
+   "lookup_max_match": 32,
+   "lookup_candidates": 4,
+   "accept_prediction": true,
+   "mtp_depth": 1,
+   "mtp_vocab_limit": 0,
+   "lookup_override_match": 0
+  }
+ },
+ "results": {
+  "mtp": {
+   "code_edit/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.45,
+      "arm_tok_per_sec": 93.7,
+      "ratio": 1.4316,
+      "drafted": 142,
+      "accepted": 112,
+      "rounds": 142,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 253
+       }
+      ]
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 65.09,
+      "arm_tok_per_sec": 93.46,
+      "ratio": 1.4359,
+      "drafted": 142,
+      "accepted": 112,
+      "rounds": 142,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 253
+       }
+      ]
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.28,
+      "arm_tok_per_sec": 93.06,
+      "ratio": 1.4256,
+      "drafted": 142,
+      "accepted": 112,
+      "rounds": 142,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 253
+       }
+      ]
+     }
+    ],
+    "ratio": 1.4317,
+    "worst_pair": 1.4256,
+    "best_pair": 1.4359,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.28,
+    "median_arm_tok_per_sec": 93.46,
+    "acceptance_rate": 0.7887,
+    "accepted_per_round": 0.789,
+    "requests_differing_from_plain": 3,
+    "requests_compared": 3
+   },
+   "prose/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.45,
+      "arm_tok_per_sec": 87.8,
+      "ratio": 1.3415,
+      "drafted": 151,
+      "accepted": 104,
+      "rounds": 151,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 150
+       }
+      ]
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 65.27,
+      "arm_tok_per_sec": 87.41,
+      "ratio": 1.3392,
+      "drafted": 151,
+      "accepted": 104,
+      "rounds": 151,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 150
+       }
+      ]
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.3,
+      "arm_tok_per_sec": 87.14,
+      "ratio": 1.3345,
+      "drafted": 151,
+      "accepted": 104,
+      "rounds": 151,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 150
+       }
+      ]
+     }
+    ],
+    "ratio": 1.3386,
+    "worst_pair": 1.3345,
+    "best_pair": 1.3415,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.3,
+    "median_arm_tok_per_sec": 87.41,
+    "acceptance_rate": 0.6887,
+    "accepted_per_round": 0.689,
+    "requests_differing_from_plain": 3,
+    "requests_compared": 3
+   },
+   "json_tools/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.48,
+      "arm_tok_per_sec": 96.33,
+      "ratio": 1.4711,
+      "drafted": 138,
+      "accepted": 116,
+      "rounds": 138,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 199
+       }
+      ]
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 65.31,
+      "arm_tok_per_sec": 96.35,
+      "ratio": 1.4753,
+      "drafted": 138,
+      "accepted": 116,
+      "rounds": 138,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 199
+       }
+      ]
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.06,
+      "arm_tok_per_sec": 96.44,
+      "ratio": 1.4823,
+      "drafted": 138,
+      "accepted": 116,
+      "rounds": 138,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 199
+       }
+      ]
+     }
+    ],
+    "ratio": 1.4753,
+    "worst_pair": 1.4711,
+    "best_pair": 1.4823,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.31,
+    "median_arm_tok_per_sec": 96.35,
+    "acceptance_rate": 0.8406,
+    "accepted_per_round": 0.841,
+    "requests_differing_from_plain": 3,
+    "requests_compared": 3
+   },
+   "random/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.37,
+      "arm_tok_per_sec": 106.14,
+      "ratio": 1.6237,
+      "drafted": 128,
+      "accepted": 126,
+      "rounds": 128,
+      "requests_differing_from_plain": []
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 64.99,
+      "arm_tok_per_sec": 105.56,
+      "ratio": 1.6242,
+      "drafted": 128,
+      "accepted": 126,
+      "rounds": 128,
+      "requests_differing_from_plain": []
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.06,
+      "arm_tok_per_sec": 105.76,
+      "ratio": 1.6256,
+      "drafted": 128,
+      "accepted": 126,
+      "rounds": 128,
+      "requests_differing_from_plain": []
+     }
+    ],
+    "ratio": 1.6256,
+    "worst_pair": 1.6237,
+    "best_pair": 1.6256,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.06,
+    "median_arm_tok_per_sec": 105.76,
+    "acceptance_rate": 0.9844,
+    "accepted_per_round": 0.984,
+    "requests_differing_from_plain": 0,
+    "requests_compared": 3
+   }
+  }
+ },
+ "variant": "an experiment not kept: the prediction layer read the residual stream after decoder layer 35 (the feature sink), the diff is quoted in #128; acceptance fell on every class, so it was reverted"
+}
