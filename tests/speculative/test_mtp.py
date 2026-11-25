@@ -219,8 +219,13 @@ def test_engine_mtp_matches_plain_and_prefix_cache(
 
 
 @pytest.mark.gpu
-def test_mimo_7b_rl_mtp_gates_on_l4() -> None:
-    """Gates 1-4 on XiaomiMiMo/MiMo-7B-RL: >=99% parity, >=0.70 acc, bit-exact, reconcile."""
+def test_mimo_7b_rl_drafts_from_its_prediction_layer_without_changing_the_ids() -> None:
+    """XiaomiMiMo/MiMo-7B-RL with its prediction layer as the drafter, three prompts, 48 tokens.
+
+    Checks that the plan loads the drafter, that start-up reconciliation matches, that the greedy
+    ids equal plain decoding's, that at least 70% of the drafts are accepted, and that the draft
+    step replays its graph. It does not compare the draft ids with a reference implementation.
+    """
     tokenizers: Any = pytest.importorskip("tokenizers")  # tests/tokenizers shadows it for pyright
 
     model_id = "XiaomiMiMo/MiMo-7B-RL"

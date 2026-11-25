@@ -1,4 +1,4 @@
-"""Suite 3: MiMo-7B-RL Multi-Token Prediction (MTP) ablation benchmark (#128)."""
+"""MiMo-7B-RL drafting with its multi-token-prediction layer, against plain decoding (#128)."""
 
 from __future__ import annotations
 
