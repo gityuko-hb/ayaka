@@ -188,6 +188,16 @@ class ModelRunner:
         self._graph = graph
         return captured
 
+    def rebind_kv_pools(self, pools: Sequence[KVPool]) -> None:
+        """Point the runner at freshly reallocated KV pools and drop stale graph/table caches."""
+        buffers: dict[int, KVBuffers] = {}
+        for pool in pools:
+            for layer_id in pool.group.layer_ids:
+                buffers[layer_id] = pool.buffers(layer_id)
+        self._buffers = buffers
+        self._graph = None
+        self._builder.mark_stale()
+
     def plan_lookahead(self) -> Mapping[RequestId, int]:
         """Ask for draft rows per request; none, because no draft proposer exists yet."""
         return {}

@@ -24,6 +24,7 @@ from typing import cast
 from ayaka.configs.base import ConfigMixin
 from ayaka.configs.cache import CacheConfig
 from ayaka.configs.device import DeviceConfig
+from ayaka.configs.host_memory import HostMemoryConfig
 from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.scheduler import SchedulerConfig
 from ayaka.configs.tokenizer import TokenizerConfig, tokenizer_config_from_source
@@ -61,6 +62,7 @@ class EngineConfig(ConfigMixin):
     device: DeviceConfig = field(default_factory=DeviceConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    host_memory: HostMemoryConfig = field(default_factory=HostMemoryConfig)
 
     def __post_init__(self) -> None:
         for name, kind in (
@@ -68,6 +70,7 @@ class EngineConfig(ConfigMixin):
             ("device", DeviceConfig),
             ("cache", CacheConfig),
             ("scheduler", SchedulerConfig),
+            ("host_memory", HostMemoryConfig),
         ):
             if not isinstance(cast("object", getattr(self, name)), kind):
                 raise TypeError(f"engine.{name} must be a {kind.__name__}")

@@ -22,7 +22,7 @@ from ayaka.core.errors import CapacityError, EngineError
 from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from numpy.typing import NDArray
 
@@ -169,6 +169,22 @@ class BlockTable:
         self._rows[group, row, start:stop] = block_ids
         self._lengths[group, row] = stop
         self._dirty.append((group, row, start, stop))
+
+    def remap_blocks(self, group: int, remap: Mapping[int, int]) -> None:
+        """Rewrite live block ids in ``group`` after pool compaction/resize and mark rows dirty."""
+        for row in self._row_of.values():
+            used = int(self._lengths[group, row])
+            if not used:
+                continue
+            changed = False
+            for col in range(used):
+                old_id = int(self._rows[group, row, col])
+                new_id = remap[old_id]
+                if new_id != old_id:
+                    self._rows[group, row, col] = new_id
+                    changed = True
+            if changed:
+                self._dirty.append((group, row, 0, used))
 
     def gather(self, group: int, request_ids: Sequence[RequestId]) -> NDArray[np.int32]:
         """Copy the rows of the given requests, in order, as a ``[B, max_blocks]`` int32 array.

@@ -2,7 +2,7 @@
 
 - **Goal:** Running out of VRAM never stops or corrupts the server, and evicted conversations are
   preserved in host RAM instead of lost.
-- **Status:** Next (not filed yet)
+- **Status:** Implemented & verified on CPU (PR 1 #141 & stacked PR 2); GPU benchmark gates pending CUDA runs on L4 & WSL2 RTX 3050.
 - **Target Checkpoint:** `v0.2.0-a3` (internal tag on the road to `0.2.0` GA)
 - **Structure:** Two waves — Wave 1 makes the server unkillable under OOM/pressure; Wave 2 adds
   host-RAM KV tiering, atomic pool resize, and recorded session replay.
@@ -32,7 +32,7 @@
 ### Wave 1 — Crash Resilience, Preemption & Diagnostics
 
 #### `M6-N01` — `ayaka doctor` Diagnostic CLI
-- **Status:** `BLOCKED`
+- **Status:** `DONE (CPU/unit verified; L4/RTX 3050 live CUDA reports pending)`
 - **Depends On:** `M5-N12`
 - **Hardware:** `CPU` + `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/entrypoints/doctor.py`, `python/ayaka/entrypoints/cli.py`, `python/ayaka/device/`, `python/ayaka/memory/`, `tests/entrypoints/`, `docs/TROUBLESHOOTING.md`
@@ -45,7 +45,7 @@
   green; `tests/test_docs.py` verifies `ayaka doctor` flags.
 
 #### `M6-N02` — Memory Wire Error Codes & Over-Long Conversation Policy
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Depends On:** `M6-N01`
 - **Hardware:** `CPU`
 - **Touches:** `python/ayaka/core/errors.py`, `python/ayaka/entrypoints/wire/`, `python/ayaka/engine/`, `docs/AI_REFERENCE.md`, `tests/entrypoints/`
@@ -57,7 +57,7 @@
   `tests/test_docs.py` wire-reference drift test passes.
 
 #### `M6-N03` — Pressure Watermarks & Scheduler Preemption
-- **Status:** `BLOCKED`
+- **Status:** `DONE (CPU/unit verified)`
 - **Depends On:** `M6-N02`
 - **Hardware:** `CPU` + `GPU-L4`
 - **Touches:** `python/ayaka/scheduler/`, `python/ayaka/kvcache/`, `python/ayaka/metrics/`, `tests/scheduler/`, `tests/kvcache/`
@@ -69,7 +69,7 @@
   preemption/resume cycle; Prometheus preemption counters exposed.
 
 #### `M6-N04` — Step-Level CUDA OOM Recovery
-- **Status:** `BLOCKED`
+- **Status:** `DONE (synthetic OOM/unit & E2E verified on CPU; live CUDA GPU run pending)`
 - **Depends On:** `M6-N03`
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/execution/runner.py`, `python/ayaka/engine/`, `python/ayaka/scheduler/`, `tests/engine/`
@@ -81,7 +81,7 @@
   and passes `check_integrity()`.
 
 #### `M6-N05` — Wave 1 Fault-Injection Suite
-- **Status:** `BLOCKED`
+- **Status:** `DONE (CPU fault-injection suite passing; @pytest.mark.gpu smoke test pending GPU)`
 - **Depends On:** `M6-N04`
 - **Hardware:** `CPU` + `GPU-L4`
 - **Touches:** `tests/e2e/test_memory_faults.py`, `tests/engine/`
@@ -95,7 +95,7 @@
 ### Wave 2 — Host-RAM KV Tier, Atomic Resize & Session Replay
 
 #### `M6-N06` — Host Memory Policy & Linux/WSL2 Pinning Probe
-- **Status:** `BLOCKED`
+- **Status:** `IMPLEMENTED (config/policy/probe verified on CPU; L4 & WSL2 RTX 3050 CUDA measurements pending)`
 - **Depends On:** `M6-N01`
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/configs/`, `python/ayaka/memory/`, `benchmarks/memory/`, `docs/EXPERIMENTS.md`
@@ -107,7 +107,7 @@
   green.
 
 #### `M6-N07` — Host-RAM KV Store, Async Write-Behind, Promotion & Prefix Pinning
-- **Status:** `BLOCKED`
+- **Status:** `DONE (CPU unit & race tests verified; CUDA transfer timing pending)`
 - **Depends On:** `M6-N03`, `M6-N06`
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/kvcache/`, `python/ayaka/memory/`, `python/ayaka/scheduler/`, `tests/kvcache/`
@@ -119,7 +119,7 @@
   runs; concurrency race/stress tests pass; `check_integrity()` clean.
 
 #### `M6-N08` — Wait for In-Flight Prefixes & Prewarm
-- **Status:** `BLOCKED`
+- **Status:** `DONE (CPU scheduler & EngineCore.prewarm verified)`
 - **Depends On:** `M6-N07`
 - **Hardware:** `CPU` + `GPU-L4`
 - **Touches:** `python/ayaka/kvcache/`, `python/ayaka/scheduler/`, `tests/scheduler/`
@@ -130,7 +130,7 @@
   both complete with exact tokens and `cached_tokens > 0` on the waiter.
 
 #### `M6-N09` — Atomic Runtime KV Pool Resize
-- **Status:** `BLOCKED`
+- **Status:** `DONE (grow, shrink compaction, OOM rollback & EngineCore resize verified on CPU)`
 - **Depends On:** `M6-N07`
 - **Hardware:** `GPU-L4`
 - **Touches:** `python/ayaka/kvcache/`, `python/ayaka/engine/`, `tests/kvcache/`
@@ -141,7 +141,7 @@
   clean `check_integrity()`.
 
 #### `M6-N10` — Session Replay (`entrypoints/replay.py`), Host-Tier Gate & `v0.2.0-a3`
-- **Status:** `BLOCKED`
+- **Status:** `IMPLEMENTED (ayaka replay & bench_host_kv_tier.py verified on CPU; GPU <0.5x TTFT / <=2% overhead gates & v0.2.0-a3 tag pending real GPU runs)`
 - **Depends On:** `M6-N05`, `M6-N08`, `M6-N09`
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/entrypoints/replay.py`, `benchmarks/e2e/`, `docs/EXPERIMENTS.md`, `docs/CAPABILITIES.md`, `docs/ROADMAP/decisions.md`

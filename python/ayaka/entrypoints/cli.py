@@ -10,6 +10,7 @@
     ayaka config show
     ayaka connect claude-code [--write | --check | --observe]
     ayaka bench MODEL [--quick] [--out DIR] [--record DIR]
+    ayaka replay SESSION --model MODEL [--host-kv] [--output text|json]
 
 Exit codes are the contract of the command; :mod:`ayaka.entrypoints.console` lists them (0 done,
 1 a bug or failed diagnostic, 2 a wrong argument or request, 3 a model that does not load, 4
@@ -31,6 +32,7 @@ from typing import TYPE_CHECKING, Final, TextIO
 from ayaka.configs.cache import CacheConfig
 from ayaka.configs.device import DeviceConfig
 from ayaka.configs.engine import EngineConfig
+from ayaka.configs.host_memory import HostMemoryConfig
 from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.scheduler import SchedulerConfig
 from ayaka.core.errors import (
@@ -118,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "config": _config_show,
             "connect": _connect,
             "bench": _bench,
+            "replay": _replay,
         }[args.command]
         return handler(args)
     except KeyboardInterrupt:
@@ -144,6 +147,13 @@ def _doctor(args: argparse.Namespace) -> int:
     from ayaka.entrypoints.doctor import doctor_command
 
     return doctor_command(args)
+
+
+def _replay(args: argparse.Namespace) -> int:
+    """Replay a recorded session trace and verify token parity and cache hit rate."""
+    from ayaka.entrypoints.replay import replay_command
+
+    return replay_command(args, _engine_config(args, max_running=args.max_running))
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -178,6 +188,9 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
     cache = CacheConfig(kv_reserve_tokens=args.kv_reserve_tokens, prefix_cache=args.prefix_cache)
     if args.memory_ratio is not None:
         cache = dataclasses.replace(cache, memory_ratio=args.memory_ratio)
+    host_kv = bool(getattr(args, "host_kv", False))
+    ram_keep = float(getattr(args, "ram_keep", 0.20))
+    host_kv_max_mb = getattr(args, "host_kv_max_mb", None)
     return EngineConfig(
         source=ModelSourceConfig(
             args.model, revision=args.revision, tokenizer=args.tokenizer, offline=args.offline
@@ -190,6 +203,12 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
         ),
         cache=cache,
         scheduler=SchedulerConfig(max_running=max_running),
+        host_memory=HostMemoryConfig(
+            enabled=host_kv,
+            ram_keep_fraction=ram_keep,
+            max_host_kv_mb=host_kv_max_mb,
+            allow_pageable=(args.device == "cpu"),
+        ),
     )
 
 

@@ -19,8 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ayaka.core.errors import EngineError
+from ayaka.core.errors import EngineError, OutOfMemoryError
 from ayaka.kvcache.blocks import BlockPool
+from ayaka.kvcache.prefix.base import PrefixMatch
+from ayaka.kvcache.resize import plan_pool_resize
 from ayaka.kvcache.table import BlockTable
 from ayaka.utils.math_utils import div_ceil
 from ayaka.utils.validation import require_int
@@ -29,7 +31,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ayaka.core.types import RequestId, TokenId
-    from ayaka.kvcache.prefix.base import PrefixCache, PrefixMatch
+    from ayaka.kvcache.host_store import HostKVStore
+    from ayaka.kvcache.prefix.base import PrefixCache
+    from ayaka.kvcache.storage.pool import KVPool
     from ayaka.kvcache.storage.spec import KVGroup
 
 __all__ = ["KVCacheManager", "KVCacheStats"]
@@ -115,6 +119,8 @@ class KVCacheManager:
         max_requests: int,
         max_blocks_per_request: int,
         prefix: PrefixCache | None = None,
+        host_store: HostKVStore | None = None,
+        pools: Sequence[KVPool] | None = None,
     ) -> None:
         if not groups:
             raise ValueError("at least one KV group is required")
@@ -132,13 +138,66 @@ class KVCacheManager:
                 f"the prefix cache hashes blocks of {prefix.block_size} tokens, "
                 f"the groups use {self._block_size}"
             )
+        if pools is not None and len(pools) != len(groups):
+            raise ValueError(
+                f"{len(groups)} groups need {len(groups)} storage pools, got {len(pools)}"
+            )
         self._pools = tuple(BlockPool(count) for count in num_blocks)
+        self._storage_pools: tuple[KVPool, ...] | None = tuple(pools) if pools is not None else None
+        self._host_store: HostKVStore | None = host_store
         self._table = BlockTable(len(self._groups), max_requests, max_blocks_per_request)
         self._committed: dict[RequestId, int] = {}
         self._prefix = prefix
         self._chains: dict[RequestId, _Chain] = {}
         self._lookups = 0
         self._hit_tokens = 0
+        self._wire_eviction_hooks()
+
+    def _wire_eviction_hooks(self) -> None:
+        if self._host_store is None or self._storage_pools is None:
+            for pool in self._pools:
+                pool.set_eviction_hook(None)
+            return
+        host_store = self._host_store
+        for group_idx, (pool, kv_pool) in enumerate(
+            zip(self._pools, self._storage_pools, strict=True)
+        ):
+
+            def _hook(
+                block_id: int,
+                digest: bytes,
+                g: int = group_idx,
+                src: KVPool = kv_pool,
+            ) -> None:
+                host_store.offload(g, block_id, digest, src)
+
+            pool.set_eviction_hook(_hook)
+
+    def attach_storage(
+        self,
+        pools: Sequence[KVPool],
+        host_store: HostKVStore | None = None,
+    ) -> None:
+        """Bind storage pools (and optional host-RAM tier) to this manager."""
+        if len(pools) != len(self._groups):
+            raise ValueError(
+                f"{len(self._groups)} groups need {len(self._groups)} storage pools, "
+                f"got {len(pools)}"
+            )
+        self._storage_pools = tuple(pools)
+        if host_store is not None:
+            self._host_store = host_store
+        self._wire_eviction_hooks()
+
+    @property
+    def host_store(self) -> HostKVStore | None:
+        """Attached host-RAM KV cache store, or ``None`` when disabled."""
+        return self._host_store
+
+    @property
+    def storage_pools(self) -> tuple[KVPool, ...] | None:
+        """Attached tensor storage pools, or ``None`` for bookkeeping-only instances."""
+        return self._storage_pools
 
     # -- reading ---------------------------------------------------------------------------
 
@@ -259,6 +318,94 @@ class KVCacheManager:
         if self._prefix is None:
             return None
         return self._prefix.match(self._pools, token_ids, salt)
+
+    def match_and_promote_prefix(
+        self, token_ids: Sequence[TokenId], salt: str | None
+    ) -> PrefixMatch | None:
+        """Match prefix blocks in VRAM and promote contiguous suffix blocks from host RAM.
+
+        Falls back identically to :meth:`match_prefix` when no host store is attached or when
+        host promotion cannot proceed (no free VRAM block or missing digest).
+        """
+        match = self.match_prefix(token_ids, salt)
+        if match is None or self._host_store is None or self._storage_pools is None:
+            return match
+        digests = match.digests
+        limit = (
+            len(digests) - 1 if len(digests) * self._block_size >= len(token_ids) else len(digests)
+        )
+        matched = [list(ids) for ids in match.blocks]
+        to_release: list[tuple[BlockPool, int]] = []
+        idx = match.num_blocks
+        while idx < limit:
+            digest = digests[idx]
+            if not self._host_store.has(digest) or any(pool.free_count < 1 for pool in self._pools):
+                break
+            new_ids = [pool.allocate() for pool in self._pools]
+            if not self._host_store.promote(digest, new_ids, self._storage_pools):
+                for pool, block_id in zip(self._pools, new_ids, strict=True):
+                    pool.free(block_id)
+                break
+            for group, (pool, block_id) in enumerate(zip(self._pools, new_ids, strict=True)):
+                if not pool.register(block_id, digest):
+                    for undo_pool, undo_id in zip(self._pools, new_ids, strict=True):
+                        undo_pool.free(undo_id)
+                    break
+                matched[group].append(block_id)
+                to_release.append((pool, block_id))
+            else:
+                idx += 1
+                continue
+            break
+        for pool, block_id in to_release:
+            pool.free(block_id)
+        count = len(matched[0]) if matched else 0
+        if count == match.num_blocks:
+            return match
+        return PrefixMatch(
+            num_tokens=count * self._block_size,
+            num_blocks=count,
+            root=match.root,
+            digests=match.digests,
+            blocks=tuple(tuple(ids) for ids in matched),
+        )
+
+    def _prefix_block_ids(
+        self, token_ids: Sequence[TokenId], salt: str | None = None
+    ) -> list[list[int]]:
+        if self._prefix is None:
+            return []
+        digests = self._prefix.digests(self._prefix.root(salt), token_ids)
+        matched: list[list[int]] = []
+        for digest in digests:
+            ids = [
+                block_id for pool in self._pools if (block_id := pool.lookup(digest)) is not None
+            ]
+            if len(ids) != len(self._pools):
+                break
+            matched.append(ids)
+        return matched
+
+    def cached_prefix_blocks(self, token_ids: Sequence[TokenId], salt: str | None = None) -> int:
+        """Number of full blocks of ``token_ids`` currently cached across every VRAM pool."""
+        return len(self._prefix_block_ids(token_ids, salt))
+
+    def pin_prefix(self, token_ids: Sequence[TokenId], salt: str | None = None) -> int:
+        """Pin every currently cached prefix block of ``token_ids`` in VRAM."""
+        matched = self._prefix_block_ids(token_ids, salt)
+        for ids in matched:
+            for pool, block_id in zip(self._pools, ids, strict=True):
+                pool.pin(block_id)
+        return len(matched)
+
+    def unpin_prefix(self, token_ids: Sequence[TokenId], salt: str | None = None) -> int:
+        """Release one pin from every pinned cached prefix block of ``token_ids``."""
+        matched = self._prefix_block_ids(token_ids, salt)
+        for ids in matched:
+            for pool, block_id in zip(self._pools, ids, strict=True):
+                if pool.is_pinned(block_id):
+                    pool.unpin(block_id)
+        return len(matched)
 
     # -- changing --------------------------------------------------------------------------
 
@@ -434,6 +581,55 @@ class KVCacheManager:
         self._table.release(request_id)
         del self._committed[request_id]
         self._chains.pop(request_id, None)
+
+    def resize(self, new_num_blocks_per_group: Sequence[int]) -> tuple[KVPool, ...]:
+        """Atomically grow or compact-shrink every KV group to ``new_num_blocks_per_group``.
+
+        Validates active + pinned capacity up front and allocates replacement storage pools before
+        mutating any bookkeeping. If storage reallocation fails with an out-of-memory error, the
+        previous pools and cache remain completely intact.
+        """
+        if len(new_num_blocks_per_group) != len(self._pools):
+            raise ValueError(
+                f"{len(self._pools)} groups need {len(self._pools)} target block counts, "
+                f"got {len(new_num_blocks_per_group)}"
+            )
+        plans = [
+            plan_pool_resize(pool, target)
+            for pool, target in zip(self._pools, new_num_blocks_per_group, strict=True)
+        ]
+        if self._storage_pools is not None and self._host_store is not None:
+            any_evicted = False
+            for group_idx, (plan, kv_pool) in enumerate(
+                zip(plans, self._storage_pools, strict=True)
+            ):
+                for old_id, digest in plan.evicted_digests:
+                    self._host_store.offload(group_idx, old_id, digest, kv_pool)
+                    any_evicted = True
+            if any_evicted:
+                self._host_store.flush()
+
+        new_pools: tuple[KVPool, ...] = ()
+        if self._storage_pools is not None:
+            allocated: list[KVPool] = []
+            try:
+                for kv_pool, plan in zip(self._storage_pools, plans, strict=True):
+                    allocated.append(kv_pool.reallocate(plan.new_num_blocks, plan.remap))
+            except Exception as exc:
+                allocated.clear()
+                if "out of memory" in str(exc).lower() or type(exc).__name__ == "OutOfMemoryError":
+                    raise OutOfMemoryError(f"KV pool resize ran out of memory: {exc}") from exc
+                raise
+            new_pools = tuple(allocated)
+
+        for group_idx, (pool, plan) in enumerate(zip(self._pools, plans, strict=True)):
+            pool.apply_resize(plan.new_num_blocks, plan.remap)
+            self._table.remap_blocks(group_idx, plan.remap)
+        if new_pools:
+            self._storage_pools = new_pools
+            self._wire_eviction_hooks()
+        self.check_integrity()
+        return new_pools
 
     # -- checking --------------------------------------------------------------------------
 

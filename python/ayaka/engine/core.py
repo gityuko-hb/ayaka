@@ -43,6 +43,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ayaka.core.errors import EngineDeadError, EngineError, InvalidRequestError
+from ayaka.core.params import SamplingParams
+from ayaka.core.request import TokenizedRequest
 from ayaka.core.types import FinishReason, RequestId
 from ayaka.engine.seam import EngineInfo
 from ayaka.metrics.stats import IterationStats
@@ -53,8 +55,8 @@ if TYPE_CHECKING:
 
     from ayaka.configs.model import ModelConfig
     from ayaka.core.outputs import RequestOutput
-    from ayaka.core.params import SamplingParams
-    from ayaka.core.request import GenerateRequest, TokenizedRequest
+    from ayaka.core.request import GenerateRequest
+    from ayaka.core.types import TokenId
     from ayaka.engine.input import InputProcessor
     from ayaka.engine.output import OutputProcessor
     from ayaka.engine.profile import StartupReport
@@ -121,6 +123,8 @@ class EngineCore:
         self._clock = clock
         self._families: dict[RequestId, tuple[RequestId, ...]] = {}
         self._recorder = recorder
+        self._last_host_offloads = 0
+        self._last_host_promotions = 0
         self._dead: EngineDeadError | None = None
         self._closed = False
 
@@ -305,6 +309,57 @@ class EngineCore:
 
     # -- the loop --------------------------------------------------------------------------
 
+    def prewarm(
+        self,
+        prompt_token_ids: Sequence[TokenId],
+        *,
+        salt: str | None = None,
+        pin: bool = False,
+    ) -> int:
+        """Prefill and cache full blocks of ``prompt_token_ids``, optionally pinning in VRAM.
+
+        Returns:
+            Number of full prefix blocks cached (and pinned when ``pin=True``).
+        """
+        self._require_running()
+        if not self._kv.prefix_caching or len(prompt_token_ids) < self._kv.block_size:
+            return 0
+        req_id = RequestId(f"__prewarm__:{time.monotonic_ns()}")
+        request = TokenizedRequest(
+            request_id=req_id,
+            prompt_token_ids=tuple(prompt_token_ids),
+            sampling=SamplingParams(temperature=0.0, max_tokens=1),
+            cache_salt=salt,
+            prefix_cache=True,
+        )
+        self._admit(request, stream=False)
+        while self._scheduler.get(req_id) is not None:
+            self.step()
+        if pin:
+            return self._kv.pin_prefix(prompt_token_ids, salt)
+        return self._kv.cached_prefix_blocks(prompt_token_ids, salt)
+
+    def resize_kv_pool(self, new_num_blocks: int | Sequence[int]) -> tuple[int, ...]:
+        """Atomically resize the engine's KV pool and rebind the model runner.
+
+        Raises:
+            EngineError: If a step is currently in flight or the engine is shut down/dead.
+            CapacityError: If the requested size cannot fit active and pinned blocks.
+            OutOfMemoryError: If reallocating storage fails (previous pool stays intact).
+        """
+        self._require_running()
+        if self._scheduler.in_flight:
+            raise EngineError("cannot resize KV pool while a step is in flight")
+        targets = (
+            (new_num_blocks,) * len(self._kv.groups)
+            if isinstance(new_num_blocks, int)
+            else tuple(new_num_blocks)
+        )
+        new_pools = self._kv.resize(targets)
+        if new_pools:
+            self._runner.rebind_kv_pools(new_pools)
+        return self._kv.usable_counts
+
     def step(self) -> list[RequestOutput]:
         """Run one cycle of the loop and return the outputs it produced.
 
@@ -338,22 +393,39 @@ class EngineCore:
         seconds = self._clock() - started
         if answer.error is not None and answer.error.code == "out_of_memory":
             scheduler.recover_from_oom(answer.error)
-            counts = scheduler.take_stats()
-            if self._stats is not None and counts is not None:
-                self._stats.record(_iteration(counts, seconds))
-                self._stats.maybe_log()
+            self._record_iteration(scheduler.take_stats(), seconds)
             outputs += self._deliver()
             self._kv.check_integrity()
             return outputs
         scheduler.update(answer)
-        counts = scheduler.take_stats()
-        if self._stats is not None and counts is not None:
-            self._stats.record(_iteration(counts, seconds))
-            self._stats.maybe_log()
+        self._record_iteration(scheduler.take_stats(), seconds)
         outputs += self._deliver()
         if answer.error is not None:
             self._kv.check_integrity()
         return outputs
+
+    def _record_iteration(self, counts: SchedulerStats | None, seconds: float) -> None:
+        if self._stats is None or counts is None:
+            return
+        host_stored = offloads_delta = promotions_delta = 0
+        host_store = self._kv.host_store
+        if host_store is not None:
+            hs = host_store.stats()
+            host_stored = hs.stored_blocks
+            offloads_delta = max(0, hs.offloads - self._last_host_offloads)
+            promotions_delta = max(0, hs.promotions - self._last_host_promotions)
+            self._last_host_offloads = hs.offloads
+            self._last_host_promotions = hs.promotions
+        self._stats.record(
+            _iteration(
+                counts,
+                seconds,
+                host_stored=host_stored,
+                host_offloads=offloads_delta,
+                host_promotions=promotions_delta,
+            )
+        )
+        self._stats.maybe_log()
 
     def _deliver(self) -> list[RequestOutput]:
         """Turn the scheduler's events into outputs, until the processors stop reacting.
@@ -392,6 +464,9 @@ class EngineCore:
         self._closed = True
         if self._recorder is not None:
             self._recorder.close()
+        host_store = self._kv.host_store
+        if host_store is not None:
+            host_store.close()
         self._input.compiler.close()
         self._tokenizer.close()
 
@@ -407,7 +482,14 @@ class EngineCore:
         return error
 
 
-def _iteration(counts: SchedulerStats, seconds: float) -> IterationStats:
+def _iteration(
+    counts: SchedulerStats,
+    seconds: float,
+    *,
+    host_stored: int = 0,
+    host_offloads: int = 0,
+    host_promotions: int = 0,
+) -> IterationStats:
     """The loggers' record of a step: the scheduler's counts and the runner's time."""
     return IterationStats(
         step_id=counts.step_id,
@@ -423,4 +505,7 @@ def _iteration(counts: SchedulerStats, seconds: float) -> IterationStats:
         step_seconds=seconds,
         pressure_level=counts.pressure_level,
         num_oom_recoveries=counts.num_oom_recoveries,
+        host_kv_stored_blocks=host_stored,
+        host_kv_offloads=host_offloads,
+        host_kv_promotions=host_promotions,
     )

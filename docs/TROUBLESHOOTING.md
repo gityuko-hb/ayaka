@@ -170,3 +170,21 @@ default.
 **Fix.** Reduce `--memory-ratio` slightly or lower concurrency (`--max-running`), retry `503 out_of_memory` /
 `408 preempted_timeout` responses after backoff, or opt in to oldest-turn truncation on the server with
 `--overlong-policy truncate` (or `truncation: "auto"` on `POST /v1/responses`).
+
+## Host-RAM KV cache tiering, pinned memory limits, and runtime pool resize
+
+**Symptom.** Enabling `--host-kv` fails with a pinned-allocation error, offloaded prefixes miss host promotion, or a
+runtime KV pool resize raises `CapacityError` / `OutOfMemoryError`.
+
+**Cause.**
+- Host-RAM KV offloading is opt-in (`HostMemoryConfig.enabled = False`) and requests CUDA page-locked memory by
+  default (`pinned=True`, `allow_pageable=False`), keeping `ram_keep_fraction` (default `0.20`) untouched for the OS
+  and respecting container cgroup limits.
+- When `RLIMIT_MEMLOCK` or host RAM headroom is constrained, pinned allocation can fail unless pageable fallback is
+  permitted (`allow_pageable=True`) or `--host-kv-max-mb` is capped.
+- Runtime KV pool shrink refuses (`CapacityError`) if the target usable block count cannot hold currently active and
+  pinned blocks; reallocation fails cleanly (`OutOfMemoryError`) with the old pools untouched if device memory is
+  exhausted.
+
+**Fix.** Run `ayaka doctor` to verify `host_pinned_ram`, cap host usage explicitly with `--host-kv --host-kv-max-mb N`
+or raise `--ram-keep`, and unpin unused prefixes or wait for running requests to finish before shrinking the KV pool.

@@ -405,6 +405,7 @@ def build_engine(
         CapacityError: If the weights and a context of KV do not fit the memory the config allows;
             raised by the plan, before a weight is read.
     """
+    from ayaka.engine.memory_setup import configure_host_kv
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.storage.pool import KVPool
     from ayaka.model_loader.loader import load_model
@@ -445,6 +446,7 @@ def build_engine(
         [group], [blocks], max_requests=running, max_blocks_per_request=max_blocks, prefix=prefix
     )
     pool = KVPool(group, blocks, device=device.device)
+    configure_host_kv(kv, [pool], config)
 
     service = _tokenizer_service(config, model_config.vocab_size, context, tokenizer)
     scheduler = Scheduler(

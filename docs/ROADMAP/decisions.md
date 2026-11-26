@@ -47,8 +47,8 @@ threshold before flipping the default.
 | **M5** | Default structured-output backend on Linux CUDA (`llguidance` vs `xgrammar`) | Keep `llguidance` default unless `xgrammar` (`--extra xgrammar`) wins `≥ 15%` on CUDA-graph mask / guided-speculative throughput (or uniquely unlocks guided speculation) with no cold-compile regression (`M5-N12`) |
 | **M5** | Should Render/Parsers ever port to Rust/PyO3? | Keep pure Python 3.13 unless concurrent serving benchmarks show CPU parse/render `> 5%` of GPU step time |
 | **M5** | gRPC transport overhead (`GrpcEngineClient` vs in-process) | Must stay `≤ 0.3 ms` p50/token added latency and `≤ 2%` throughput delta on L4 (`M5-N12`) |
-| **M6** | Exact wire error codes (`out_of_memory`, `preempted_timeout`, `FinishEvent.limit="memory"`) | Finalized in `M6-N02` RFC / PR against OpenAI & Anthropic wire compatibility |
-| **M6** | Host KV tier on by default & default `ram_keep`? | Opt-in until WSL2/Linux pinned-RAM ceiling measured, promotion `< 0.5×` cold prefill (`≥ 4K`), and write-behind overhead `≤ 2%` |
+| **M6** | Exact wire error codes (`out_of_memory`, `preempted_timeout`, `FinishEvent.limit="memory"`) | Settled in #140 / PR #141 against OpenAI & Anthropic wire compatibility |
+| **M6** | Host KV tier on by default & default `ram_keep`? | Opt-in (`enabled=False`, `--host-kv`, `--ram-keep 0.20`) implemented; keep opt-in until WSL2/Linux pinned-RAM ceiling measured, promotion `< 0.5×` cold prefill (`≥ 4K`), and write-behind overhead `≤ 2%` |
 | **M6** | Time-budgeted chunking & overlapped scheduling? | Decided from M6 replay/concurrency measurements |
 | **M7** | GGUF `Q4_K_M` direct execution timing (after safetensors AWQ/GPTQ Marlin in `M7-N04`) | Evaluated as opt-in follow-up if user demand exceeds safetensors INT4 availability |
 | **M8** | State checkpoint density, KV FP8 default, vision lazy vs eager load, flagship hybrid model | Measured when M8 opens (note: #99 already showed FlashInfer 0.7.4 FP8 KV is `1.28–1.50×` slower at batch 1) |

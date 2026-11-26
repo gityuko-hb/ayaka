@@ -82,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     _config_parser(commands)
     _connect_parser(commands)
     _bench_parser(commands)
+    _replay_parser(commands)
     return parser
 
 
@@ -271,6 +272,44 @@ def _engine_flags(command: argparse.ArgumentParser) -> None:
     where.add_argument(
         "--offline", action="store_true", help="never use the network; read the local cache only"
     )
+    where.add_argument(
+        "--host-kv",
+        action="store_true",
+        help="enable opt-in host-RAM KV cache offloading and promotion",
+    )
+    where.add_argument(
+        "--ram-keep",
+        type=float,
+        default=0.20,
+        metavar="F",
+        help="fraction of host RAM reserved for the OS when --host-kv is set (0.20)",
+    )
+    where.add_argument(
+        "--host-kv-max-mb",
+        type=int,
+        default=None,
+        metavar="MB",
+        help="maximum host-RAM KV cache tier size in MiB when --host-kv is set",
+    )
+
+
+def _replay_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
+    replay = commands.add_parser(
+        "replay",
+        help="replay a recorded ayaka.session/1 trace and verify token parity and cache hit rate",
+        description="Load a model and replay a recorded session JSONL file from --record DIR, "
+        "checking generated token parity, cache hit rate, and request latencies.",
+    )
+    replay.add_argument("session", type=Path, help="path to session-*.jsonl created by --record")
+    replay.add_argument(
+        "--model", required=True, help="a local model directory or a Hugging Face repo id"
+    )
+    replay.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
+    replay.add_argument(
+        "--max-running", type=int, metavar="N", help="requests run at once (from the memory plan)"
+    )
+    _engine_flags(replay)
+    replay.add_argument("-v", "--verbose", action="count", default=0, help="log more")
 
 
 def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]

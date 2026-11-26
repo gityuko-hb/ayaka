@@ -1070,3 +1070,19 @@ Revisions: the parity runs and the bf16 `ayaka bench` runs at `ca93917`, the KL 
 FP8 buffer fix; its code under `python/` differs from `40fbf48` only in that fix, which 16-bit and
 MoE models do not use. A first Phi-4 FP8 run, at `ca93917` before the fix, gave the same 0.9 tok/s
 and is replaced by the one above.
+
+## Host-RAM KV tiering and pinned memory ceilings (pre-registered gates)
+
+Pre-registered evaluation protocol before enabling host-RAM KV offloading (`--host-kv`) by default:
+
+- **Pinning probe** (`benchmarks/memory/probe_host_pinning.py`): measure safe `cudaHostAlloc` pinned allocation
+  ceilings and H2D/D2H copy bandwidth on native Linux (NVIDIA L4 24 GB) and WSL2 (RTX 3050 4 GB), comparing pinned vs
+  pageable buffers alongside `ayaka doctor` NVML-vs-CUDA gap checks.
+- **Host KV tier promotion benchmark** (`benchmarks/e2e/bench_host_kv_tier.py`): evict warm prefixes from a tight
+  device KV pool under load, flush write-behind offloads, and measure returned-turn TTFT vs cold prefill.
+  - Gate 1 (speedup): returned prompts of at least 4,096 tokens must achieve `< 0.5x` cold prefill TTFT on both L4
+    (Llama-3.1-8B) and RTX 3050 (Llama-3.2-1B) with exact token parity.
+  - Gate 2 (overhead & default): steady-state asynchronous write-behind overhead must stay `<= 2%`; until Linux and
+    WSL2 GPU numbers satisfy both gates, `HostMemoryConfig.enabled` stays `False` (opt-in via `--host-kv`).
+- **Status:** Probe, host KV store, atomic pool resize, and `ayaka replay` verified on CPU (`torch 2.14.1+cpu`,
+  unit and tiny-model parity suites passing); live CUDA measurements on L4 and WSL2 RTX 3050 are **pending GPU runs**.
