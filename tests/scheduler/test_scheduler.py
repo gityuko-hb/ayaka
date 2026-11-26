@@ -602,27 +602,32 @@ def test_a_prefill_chunk_shrinks_to_the_free_blocks() -> None:
     assert r.loop.tokens(b.request_id) == expected_tokens(b)[0]
 
 
-def test_when_no_request_can_move_the_lowest_ranked_ends_with_length_and_a_note() -> None:
+def test_when_no_request_can_move_the_lowest_ranked_is_preempted_and_resumes() -> None:
     r = rig(num_blocks=5, max_running=2)  # 4 usable blocks, 2 per request after prefill
     keep = make_request("keep", 8, max_tokens=8, priority=1)
-    shed = make_request("shed", 8, max_tokens=8, priority=0)
+    victim = make_request("victim", 8, max_tokens=8, priority=0)
     r.scheduler.add_request(keep)
-    r.scheduler.add_request(shed)
+    r.scheduler.add_request(victim)
 
     r.loop.run()
 
-    assert r.loop.finish_reason(shed.request_id) is FinishReason.LENGTH
-    assert r.loop.tokens(shed.request_id) == expected_tokens(shed)[0][:1]
-    shed_error = next(
-        e.error for e in r.loop.events if e.request_id == shed.request_id and e.finished
-    )
-    assert shed_error is not None
-    assert "memory" in shed_error.message
+    finished_order = [e.request_id for e in r.loop.events if e.finished]
+    assert finished_order == [keep.request_id, victim.request_id]
+    assert r.loop.finish_reason(keep.request_id) is FinishReason.LENGTH
+    assert r.loop.finish_reason(victim.request_id) is FinishReason.LENGTH
     assert r.loop.tokens(keep.request_id) == expected_tokens(keep)[0]
+    assert r.loop.tokens(victim.request_id) == expected_tokens(victim)[0]
+    victim_prefills = [
+        step
+        for step in r.runner.steps
+        if step.mode is ForwardMode.PREFILL and victim.request_id in step.request_ids
+    ]
+    assert len(victim_prefills) >= 2
     assert r.kv.stats().num_requests == 0
+    r.kv.check_integrity()
 
 
-def test_among_equal_priorities_the_request_that_arrived_last_is_shed() -> None:
+def test_among_equal_priorities_the_request_that_arrived_last_is_preempted_first() -> None:
     r = rig(num_blocks=5, max_running=2)
     first, second = make_request("first", 8, max_tokens=8), make_request("second", 8, max_tokens=8)
     r.scheduler.add_request(first)
@@ -631,8 +636,17 @@ def test_among_equal_priorities_the_request_that_arrived_last_is_shed() -> None:
 
     r.loop.run()
 
+    finished_order = [e.request_id for e in r.loop.events if e.finished]
+    assert finished_order == [first.request_id, second.request_id]
     assert r.loop.tokens(first.request_id) == expected_tokens(first)[0]
-    assert len(r.loop.tokens(second.request_id)) < 8
+    assert r.loop.tokens(second.request_id) == expected_tokens(second)[0]
+    second_prefills = [
+        step
+        for step in r.runner.steps
+        if step.mode is ForwardMode.PREFILL and second.request_id in step.request_ids
+    ]
+    assert len(second_prefills) >= 2
+    r.kv.check_integrity()
 
 
 def test_a_single_request_that_runs_out_of_kv_ends_with_length_and_a_memory_note() -> None:

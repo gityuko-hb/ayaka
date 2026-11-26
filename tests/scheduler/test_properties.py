@@ -161,8 +161,8 @@ def _check_books(world: World) -> None:
     for request_id in _live_ids(world):
         live = world.scheduler.get(request_id)
         assert live is not None
-        if live.status is RequestStatus.WAITING:
-            assert not world.kv.has(request_id), f"{request_id} waits but holds KV"
+        if live.status in (RequestStatus.WAITING, RequestStatus.PREEMPTED):
+            assert not world.kv.has(request_id), f"{request_id} waits or is preempted but holds KV"
         else:
             assert world.kv.num_committed(request_id) == live.computed
             assert world.kv.table.row_of(request_id) == live.row
@@ -530,7 +530,6 @@ def test_every_status_move_is_allowed(seed: int, monkeypatch: pytest.MonkeyPatch
         assert path[-1][2] == "finished"
         assert sum(1 for t in path if t[2] == "finished") == 1
         assert all(a[2] == b[1] for a, b in itertools.pairwise(path))
-        assert "preempted" not in {t[2] for t in path}  # the scheduler does not preempt yet
 
 
 # -- refusal is harmless ------------------------------------------------------------------------

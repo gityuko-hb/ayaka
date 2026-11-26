@@ -44,6 +44,11 @@ class ServingMetrics:
             ["outcome"],
             registry=self.registry,
         )
+        self.memory_limit_finishes = Counter(
+            "ayaka_memory_limit_finishes",
+            "Generation requests stopped because a memory limit was reached",
+            registry=self.registry,
+        )
         self.prompt_tokens = Counter(
             "ayaka_prompt_tokens", "Prompt tokens of finished requests", registry=self.registry
         )
@@ -97,12 +102,16 @@ class ServingMetrics:
                     self.prompt_tokens.inc(event.prompt_tokens)
                     self.cached_tokens.inc(event.cached_tokens)
                     self.generation_tokens.inc(event.completion_tokens)
-                case FinishEvent(reason):
+                case FinishEvent(reason, _, _, limit):
                     self.finished.labels(str(reason)).inc()
+                    if limit == "memory":
+                        self.memory_limit_finishes.inc()
                 case ErrorEvent(code):
                     self.finished.labels(code if code in _OUTCOMES else "error").inc()
                 case _:
                     pass
 
 
-_OUTCOMES: Final = frozenset({"cancelled", "request_timeout", "engine_dead"})
+_OUTCOMES: Final = frozenset(
+    {"cancelled", "request_timeout", "preempted_timeout", "out_of_memory", "engine_dead"}
+)

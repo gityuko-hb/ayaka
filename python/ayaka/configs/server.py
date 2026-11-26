@@ -17,7 +17,7 @@ import os
 import sys
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from ayaka.configs.base import ConfigMixin
 from ayaka.core.errors import ConfigError
@@ -25,7 +25,10 @@ from ayaka.core.errors import ConfigError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["DEFAULT_PORT", "ServerConfig", "user_config_path"]
+__all__ = ["DEFAULT_PORT", "OverlongPolicy", "ServerConfig", "user_config_path"]
+
+type OverlongPolicy = Literal["reject", "truncate"]
+_OVERLONG_POLICIES: Final = ("reject", "truncate")
 
 #: The port ``ayaka serve`` listens on unless told otherwise.
 DEFAULT_PORT: Final = 8000
@@ -95,6 +98,7 @@ class ServerConfig(ConfigMixin):
     reasoning_parser: str | None = None
     tool_call_parser: str | None = None
     normalize_prompts: bool = True
+    overlong_policy: OverlongPolicy = "reject"
 
     def __post_init__(self) -> None:
         if not isinstance(self.host, str) or not self.host:  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -112,6 +116,12 @@ class ServerConfig(ConfigMixin):
         _strings(self.served_model_names, "server.served_model_names")
         if len(set(self.served_model_names)) != len(self.served_model_names):
             raise ConfigError("server.served_model_names", "DUPLICATE", "names must be unique")
+        if cast("object", self.overlong_policy) not in _OVERLONG_POLICIES:
+            raise ConfigError(
+                "server.overlong_policy",
+                "INVALID_CHOICE",
+                f"must be one of {_OVERLONG_POLICIES}",
+            )
 
     @property
     def is_loopback(self) -> bool:

@@ -31,7 +31,9 @@ __all__ = [
     "ErrorInfo",
     "InvalidRequestError",
     "ModelLoadError",
+    "OutOfMemoryError",
     "OverloadedError",
+    "PreemptedTimeoutError",
     "RequestAborted",
     "RequestTimeout",
     "UnsupportedFeatureError",
@@ -204,6 +206,13 @@ class CapacityError(AyakaError, RuntimeError):
     retryable = True
 
 
+class OutOfMemoryError(CapacityError):
+    """Device or host memory was exhausted during execution or allocation."""
+
+    code = "out_of_memory"
+    retryable = True
+
+
 class OverloadedError(CapacityError):
     """The engine or one of its queues is currently overloaded."""
 
@@ -232,6 +241,13 @@ class RequestTimeout(AyakaError, RuntimeError):  # noqa: N818  # public contract
     """A request exceeded its queue, prefill or generation deadline."""
 
     code = "request_timeout"
+    retryable = True
+
+
+class PreemptedTimeoutError(RequestTimeout):
+    """A preempted request waited past the preemption timeout before resuming."""
+
+    code = "preempted_timeout"
     retryable = True
 
 

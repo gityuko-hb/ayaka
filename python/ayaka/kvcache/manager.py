@@ -184,6 +184,23 @@ class KVCacheManager:
         """Free blocks per group; cheap, unlike :meth:`stats`, which walks the free queues."""
         return tuple(pool.free_count for pool in self._pools)
 
+    @property
+    def usable_counts(self) -> tuple[int, ...]:
+        """Usable blocks per group (excluding the padding block), in O(groups) time."""
+        return tuple(pool.num_blocks - 1 for pool in self._pools)
+
+    @property
+    def utilization(self) -> float:
+        """Share of usable blocks currently held across the scarcest group, in ``[0, 1]``."""
+        return max(
+            (
+                (total - free) / total
+                for total, free in zip(self.usable_counts, self.free_counts, strict=True)
+                if total > 0
+            ),
+            default=0.0,
+        )
+
     def has(self, request_id: RequestId) -> bool:
         """Whether a request holds a block table row."""
         return request_id in self._committed

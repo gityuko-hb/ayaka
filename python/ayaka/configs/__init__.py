@@ -22,8 +22,12 @@ if TYPE_CHECKING:
     from ayaka.configs.engine import EngineConfig
     from ayaka.configs.model import ModelConfig, RopeScaling, RopeScalingKind
     from ayaka.configs.model_source import ModelSourceConfig, ModelTrustPolicy, RequestFormat
-    from ayaka.configs.scheduler import SchedulerConfig, SchedulingPolicyName
-    from ayaka.configs.server import DEFAULT_PORT, ServerConfig
+    from ayaka.configs.scheduler import (
+        PreemptionPolicyName,
+        SchedulerConfig,
+        SchedulingPolicyName,
+    )
+    from ayaka.configs.server import DEFAULT_PORT, OverlongPolicy, ServerConfig
     from ayaka.configs.tokenizer import (
         DetokBackend,
         DetokenizeParams,
@@ -50,6 +54,8 @@ __all__ = [
     "ModelConfig",
     "ModelSourceConfig",
     "ModelTrustPolicy",
+    "OverlongPolicy",
+    "PreemptionPolicyName",
     "RequestFormat",
     "RopeScaling",
     "RopeScalingKind",
@@ -77,8 +83,8 @@ _EXPORTS = {
     "engine": ("EngineConfig",),
     "model": ("ModelConfig", "RopeScaling", "RopeScalingKind"),
     "model_source": ("ModelSourceConfig", "ModelTrustPolicy", "RequestFormat"),
-    "scheduler": ("SchedulerConfig", "SchedulingPolicyName"),
-    "server": ("DEFAULT_PORT", "ServerConfig"),
+    "scheduler": ("PreemptionPolicyName", "SchedulerConfig", "SchedulingPolicyName"),
+    "server": ("DEFAULT_PORT", "OverlongPolicy", "ServerConfig"),
     "tokenizer": (
         "DetokBackend",
         "DetokUpdate",

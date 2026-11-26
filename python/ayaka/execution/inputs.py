@@ -207,6 +207,10 @@ class InputBuilder:
             buffers["token_masks"] = self._masks.device
         return buffers
 
+    def mark_stale(self) -> None:
+        """Mark the device block table mirror stale so the next step resyncs it."""
+        self._stale = True
+
     def resync(self) -> None:
         """Copy the whole host block table to the device mirror."""
         self._mirror.array[:] = self._table.rows[0]

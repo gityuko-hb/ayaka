@@ -38,8 +38,8 @@ class RequestStatus(StrEnum):
     Attributes:
         WAITING: In the queue, holds no KV.
         RUNNING: Holds KV; prefilling or decoding.
-        PREEMPTED: Gave its KV back and waits to run again. Reserved: nothing enters it before
-            preemption lands, but the status and its moves are part of the table.
+        PREEMPTED: Gave its KV back under pressure or step-level out-of-memory recovery
+            and waits to resume by recomputing its computed prefix.
         FINISHED: Done; carries a finish reason.
     """
 
@@ -146,6 +146,10 @@ class Request:
     cache_written_tokens: int = 0
     sequence_index: int = 0
     blocked_on: RequestId | None = None
+    preempted_count: int = 0
+    preempted_since: float | None = None
+    preempted_seconds: float = 0.0
+    resuming: bool = False
     _status: RequestStatus = field(default=RequestStatus.WAITING, init=False)
 
     @classmethod
@@ -182,9 +186,18 @@ class Request:
         return len(self.prompt)
 
     @property
+    def prefill_target(self) -> int:
+        """Total tokens that must hold KV before decoding resumes."""
+        return len(self.prompt) + len(self.output) if self.resuming else len(self.prompt)
+
+    @property
     def is_prefilling(self) -> bool:
-        """Whether part of the prompt still has no KV."""
-        return self.computed < len(self.prompt)
+        """Whether part of the prompt (or recompute prefix) still has no KV."""
+        return self.computed < self.prefill_target
+
+    def prefill_tokens(self) -> tuple[TokenId, ...]:
+        """Tokens to prefill (prompt only, or prompt plus emitted output when resuming)."""
+        return self.prompt + tuple(self.output) if self.resuming else self.prompt
 
     @property
     def abort_requested(self) -> bool:

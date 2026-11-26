@@ -48,6 +48,8 @@ usage, cumulatively, in `message_delta`, so the SDK's final message has the same
 | no key or a wrong key | 401 | |
 | too many requests waiting | 429 | `Retry-After` |
 | a request that timed out | 408 | |
+| a preempted request waited past `preemption_timeout` | 408 | code `preempted_timeout`; retryable |
+| step-level device out-of-memory could not shrink further | 503 | code `out_of_memory`, `Retry-After`; retryable |
 | not ready, draining, or the engine stopped | 503 | `Retry-After`; no internal detail, the request id only |
 | anything else | 500 | logged with its traceback |
 
@@ -156,7 +158,7 @@ ignored with a debug log line. The tables below are generated from the table the
 | `top_p` | read | sampling |
 | `stream` | read | answer with server-sent events |
 | `text` | read | text.format: json_object or json_schema, enforced |
-| `truncation` | read | only disabled is available |
+| `truncation` | read | disabled (default) or auto to drop oldest turns to fit context |
 | `n` | read | one answer per request; 1 only |
 | `store` | read | true is refused: this server stores no responses |
 | `metadata` | read | echoed in the response object |
@@ -256,6 +258,7 @@ ignored with a debug log line. The tables below are generated from the table the
 | `ayaka serve MODEL` | the HTTP server above | the common codes below |
 | `ayaka plan MODEL [--for TOOL]` | the memory plan, without loading weights | 0 fits, 5 does not fit (or one request cannot hold TOOL's prompt) |
 | `ayaka info` | version, devices, backends, extras, directories | 0 |
+| `ayaka doctor [--output text\|json]` | preflight checks for CUDA/NVML gap, pinned host RAM, nvcc, cache disk, startup profiles | 0 no failure, 1 a check failed |
 | `ayaka config show` | the server settings and where each comes from | 0 |
 | `ayaka connect TOOL [--write\|--check\|--observe]` | configure and check a coding tool | `--check`: 0 no step failed, 1 a step failed, 2 could not run |
 | `ayaka bench MODEL` | measure prompt read, generation, first token, an agent session, sanity | 0 done, 1 the benchmark failed, 2 a sanity check failed (results written, marked invalid) |

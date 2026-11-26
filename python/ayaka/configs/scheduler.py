@@ -14,9 +14,9 @@ from typing import Literal, cast
 
 from ayaka.configs.base import ConfigMixin
 from ayaka.core.errors import ConfigError
-from ayaka.utils.validation import require_int
+from ayaka.utils.validation import require_int, require_number
 
-__all__ = ["SchedulerConfig", "SchedulingPolicyName"]
+__all__ = ["PreemptionPolicyName", "SchedulerConfig", "SchedulingPolicyName"]
 
 SchedulingPolicyName = Literal[
     "fcfs",  # first come, first served
@@ -24,7 +24,14 @@ SchedulingPolicyName = Literal[
 ]
 """Order of the waiting queue. The comparison itself lives in ``ayaka.scheduler``."""
 
+PreemptionPolicyName = Literal[
+    "newest",  # lowest priority first, then most recently admitted
+    "lowest_progress",  # lowest priority first, then fewest emitted/computed tokens
+]
+"""Policy for picking a running victim request under KV cache pressure."""
+
 _POLICIES: tuple[str, ...] = ("fcfs", "priority")
+_PREEMPTION_POLICIES: tuple[str, ...] = ("newest", "lowest_progress")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +63,10 @@ class SchedulerConfig(ConfigMixin):
     max_waiting: int = 1024
     policy: SchedulingPolicyName = "fcfs"
     max_consecutive_prefills: int = 2
+    preemption_policy: PreemptionPolicyName = "newest"
+    pressure_high: float = 0.80
+    pressure_critical: float = 0.92
+    preemption_timeout: float | None = None
 
     def __post_init__(self) -> None:
         if self.max_running is not None:
@@ -65,3 +76,29 @@ class SchedulerConfig(ConfigMixin):
         require_int(self.max_consecutive_prefills, "scheduler.max_consecutive_prefills", minimum=1)
         if cast("object", self.policy) not in _POLICIES:
             raise ConfigError("scheduler.policy", "INVALID_CHOICE", f"must be one of {_POLICIES}")
+        if cast("object", self.preemption_policy) not in _PREEMPTION_POLICIES:
+            raise ConfigError(
+                "scheduler.preemption_policy",
+                "INVALID_CHOICE",
+                f"must be one of {_PREEMPTION_POLICIES}",
+            )
+        high = require_number(self.pressure_high, "scheduler.pressure_high")
+        critical = require_number(self.pressure_critical, "scheduler.pressure_critical")
+        if not 0.0 < high < critical <= 1.0:
+            raise ConfigError(
+                "scheduler.pressure",
+                "INVALID_RANGE",
+                f"must satisfy 0 < pressure_high < pressure_critical <= 1, "
+                f"got {high} and {critical}",
+            )
+        object.__setattr__(self, "pressure_high", high)
+        object.__setattr__(self, "pressure_critical", critical)
+        if self.preemption_timeout is not None:
+            timeout = require_number(self.preemption_timeout, "scheduler.preemption_timeout")
+            if timeout <= 0.0:
+                raise ConfigError(
+                    "scheduler.preemption_timeout",
+                    "INVALID_RANGE",
+                    f"must be > 0, got {timeout}",
+                )
+            object.__setattr__(self, "preemption_timeout", timeout)

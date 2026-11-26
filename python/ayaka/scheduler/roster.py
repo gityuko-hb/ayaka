@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from ayaka.core.errors import CapacityError, RequestTimeout
 from ayaka.core.types import FinishReason, ForwardMode
+from ayaka.scheduler.preemption import preempted_timeout_error
 from ayaka.scheduler.request import Request, RequestEvent, RequestStatus
 
 if TYPE_CHECKING:
@@ -53,18 +54,20 @@ class Roster:
         self._queue = queue
         self.live: dict[RequestId, Request] = {}
         self.running: dict[RequestId, Request] = {}
+        self.preempted: list[Request] = []
         self.awaiting: dict[RequestId, Request] = {}
         self.events: list[RequestEvent] = []
-        # Ends and frees since the last stats were taken.
+        # Ends, preemptions and frees since the last stats were taken.
         self.finished = 0
         self.aborted = 0
         self.failed = 0
         self.settled = 0
+        self.preempted_step = 0
 
-    def take_counts(self) -> tuple[int, int, int, int]:
-        """``(finished, aborted, failed, settled)`` since the last call, and reset them."""
-        counts = (self.finished, self.aborted, self.failed, self.settled)
-        self.finished = self.aborted = self.failed = self.settled = 0
+    def take_counts(self) -> tuple[int, int, int, int, int]:
+        """``(finished, aborted, failed, settled, preempted)`` since last call, then reset."""
+        counts = (self.finished, self.aborted, self.failed, self.settled, self.preempted_step)
+        self.finished = self.aborted = self.failed = self.settled = self.preempted_step = 0
         return counts
 
     def take_events(self) -> tuple[RequestEvent, ...]:
@@ -104,6 +107,8 @@ class Roster:
         holds_kv = request.status is RequestStatus.RUNNING
         if request.status is RequestStatus.WAITING:
             self._queue.remove(request_id)
+        elif request.status is RequestStatus.PREEMPTED:
+            self.preempted = [r for r in self.preempted if r.request_id != request_id]
         request.move_to(RequestStatus.FINISHED)
         request.finish_reason = reason
         del self.live[request_id]
@@ -133,8 +138,28 @@ class Roster:
             )
         )
 
-    def expire(self, now: float, queue_timeout: float | None) -> None:
-        """End waiting requests past ``queue_timeout`` and any request past its deadline."""
+    def preempt(self, request: Request, *, now: float) -> None:
+        """Evict a running request back to ``PREEMPTED`` and release all its KV blocks."""
+        request_id = request.request_id
+        self._kv.free(request_id)
+        request.move_to(RequestStatus.PREEMPTED)
+        self.running.pop(request_id, None)
+        request.row = -1
+        request.computed = 0
+        request.resuming = True
+        request.preempted_count += 1
+        request.preempted_since = now
+        self.preempted.append(request)
+        self.preempted_step += 1
+        self.settled += 1
+
+    def expire(
+        self,
+        now: float,
+        queue_timeout: float | None,
+        preemption_timeout: float | None = None,
+    ) -> None:
+        """End waiting, running and preempted requests past their deadlines or timeouts."""
         for request in (*self._queue, *self.running.values()):
             waited = (
                 request.status is RequestStatus.WAITING
@@ -145,6 +170,21 @@ class Roster:
                 self.finish(
                     request, FinishReason.TIMEOUT, error=timeout_error(request), release=True
                 )
+        for request in tuple(self.preempted):
+            if request.deadline is not None and now > request.deadline:
+                self.finish(
+                    request, FinishReason.TIMEOUT, error=timeout_error(request), release=True
+                )
+                continue
+            if preemption_timeout is not None and request.preempted_since is not None:
+                elapsed = request.preempted_seconds + max(0.0, now - request.preempted_since)
+                if elapsed > preemption_timeout:
+                    self.finish(
+                        request,
+                        FinishReason.TIMEOUT,
+                        error=preempted_timeout_error(request, elapsed),
+                        release=True,
+                    )
 
     def shed_stalled(self) -> None:
         """No running request could take its next rows: end the lowest-ranked one."""
@@ -175,6 +215,21 @@ class Roster:
             FinishReason.ERROR,
             error=CapacityError(
                 f"request {head.request_id!r} cannot get KV room even with nothing else running"
+            ).to_info(),
+            release=True,
+        )
+        return True
+
+    def shed_preempted_head(self) -> bool:
+        """With nothing running, end a preempted head request that still cannot fit KV."""
+        if not self.preempted or self.awaiting:
+            return False
+        head = self.preempted[0]
+        self.finish(
+            head,
+            FinishReason.LENGTH,
+            error=CapacityError(
+                f"request {head.request_id!r} cannot re-acquire KV room after preemption"
             ).to_info(),
             release=True,
         )

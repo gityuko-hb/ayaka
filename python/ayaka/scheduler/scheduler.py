@@ -10,11 +10,10 @@ it never touches a tensor and never calls a runner. The engine loop is one threa
     events = scheduler.take_events()
 
 A step is a prefill of one chunk per request or a decode of every ready request, never a
-mix. Memory never makes the scheduler evict or raise: ``allocate`` returns ``False`` and the
-scheduler schedules less. Preemption does not exist yet, so a request that cannot get a row for a
-step simply skips it; if no running request can move, the one that ranks lowest ends with
-``LENGTH`` and a note that memory was the limit (a last resort), which is also what keeps every
-request finishing.
+mix. KV pressure watermarks pause new waiting admissions before exhaustion; when no running
+request can advance, a victim is preempted by releasing its blocks and recomputing its prefix
+once capacity frees up, or a single stalled request ends with ``LENGTH`` and a memory note.
+Step-level out-of-memory failures preempt a victim or halve prefill chunks without crashing.
 
 With a prefix cache, a request is matched when it leaves the queue, not when it arrives, so the
 blocks it attaches cannot be evicted in between: its prefill starts after the matched tokens. After
@@ -42,6 +41,15 @@ from ayaka.core.errors import (
     OverloadedError,
 )
 from ayaka.core.types import FinishReason, ForwardMode
+from ayaka.kvcache.pressure import PressureLevel, PressureThresholds, evaluate_pressure
+from ayaka.scheduler.planning import (
+    check_context,
+    check_kv_capacity,
+    grant_chunk,
+    grant_rows,
+    next_chunk,
+)
+from ayaka.scheduler.preemption import select_victim
 from ayaka.scheduler.queue import RequestQueue, resolve_policy
 from ayaka.scheduler.request import Request, RequestEvent, RequestStatus
 from ayaka.scheduler.roster import InFlight, Roster, timeout_error
@@ -58,7 +66,6 @@ if TYPE_CHECKING:
     from ayaka.core.request import TokenizedRequest
     from ayaka.core.types import RequestId, TokenId
     from ayaka.kvcache.manager import KVCacheManager
-    from ayaka.kvcache.prefix.base import PrefixMatch
     from ayaka.scheduler.step import StepOutput
 
 __all__ = ["Scheduler"]
@@ -105,6 +112,10 @@ class Scheduler:
         self._kv = kv
         self._max_model_len = max_model_len
         self._budget = budget
+        self._effective_budget = budget
+        self._thresholds = PressureThresholds(
+            high=config.pressure_high, critical=config.pressure_critical
+        )
         self._max_running = rows if config.max_running is None else min(config.max_running, rows)
         self._eos = frozenset(eos_token_ids)
         self._queue_timeout = queue_timeout
@@ -119,6 +130,7 @@ class Scheduler:
         self._steps = 0
         self._prefill_streak = 0
         self._admit_delay = 0.0
+        self._oom_recoveries = 0
         self._stats: SchedulerStats | None = None
 
     # -- reading ---------------------------------------------------------------------------
@@ -142,6 +154,16 @@ class Scheduler:
     def num_running(self) -> int:
         """Requests that hold KV and have not finished."""
         return len(self._running)
+
+    @property
+    def num_preempted(self) -> int:
+        """Requests currently preempted and waiting to resume."""
+        return len(self._roster.preempted)
+
+    @property
+    def pressure_level(self) -> PressureLevel:
+        """Current KV cache pressure watermark."""
+        return evaluate_pressure(self._kv.utilization, self._thresholds)
 
     @property
     def num_awaiting_release(self) -> int:
@@ -197,8 +219,8 @@ class Scheduler:
         request_id = request.request_id
         if request_id in self._requests or request_id in self._awaiting:
             raise InvalidRequestError(f"request id {request_id!r} is already in use")
-        _check_context(request, self._max_model_len)
-        _check_kv_capacity(request, self._kv)
+        check_context(request, self._max_model_len)
+        check_kv_capacity(request, self._kv)
         if len(self._queue) >= self._config.max_waiting:
             raise OverloadedError(
                 f"the waiting queue is full ({self._config.max_waiting} requests); retry later"
@@ -250,14 +272,19 @@ class Scheduler:
         """
         if self._flight is not None:
             raise EngineError("schedule() called while a step is in flight; call update() first")
-        self._roster.expire(self._clock(), self._queue_timeout)
+        self._roster.expire(self._clock(), self._queue_timeout, self._config.preemption_timeout)
         extra = lookahead or {}
         while True:
             step = self._plan(extra)
             if step is not None:
                 return step
-            if self._running:
+            if len(self._running) > 1:
+                victim = select_victim(self._running.values(), self._config.preemption_policy)
+                self._roster.preempt(victim, now=self._clock())
+            elif self._running:
                 self._roster.shed_stalled()
+            elif self._roster.shed_preempted_head():
+                continue
             elif not self._roster.shed_unservable_head():
                 return None
 
@@ -268,7 +295,7 @@ class Scheduler:
         return self._plan_prefill() or self._plan_decode(lookahead)
 
     def _plan_prefill(self) -> StepInput | None:
-        budget = self._budget
+        budget = self._effective_budget
         chunks: list[tuple[Request, int]] = []
         partial = [r for r in self._running.values() if r.is_prefilling]
         if partial:
@@ -276,14 +303,45 @@ class Scheduler:
             for request in partial:
                 if budget <= 0:
                     break
-                chunk = _next_chunk(request.prompt_length, request.computed, budget, block_size)
-                size = _grant_chunk(self._kv, request, chunk)
+                chunk = next_chunk(request.prefill_target, request.computed, budget, block_size)
+                size = grant_chunk(self._kv, request, chunk)
                 if size:
                     chunks.append((request, size))
                     budget -= size
         else:
             now = self._clock()
-            while budget > 0 and len(self._running) < self._max_running:
+            while self._roster.preempted and budget > 0 and len(self._running) < self._max_running:
+                resuming = self._roster.preempted[0]
+                tokens = resuming.prefill_tokens()
+                match = (
+                    self._kv.match_prefix(tokens, resuming.cache_salt)
+                    if resuming.prefix_cache
+                    else None
+                )
+                start = match.num_tokens if match is not None else 0
+                size = grant_chunk(
+                    self._kv,
+                    resuming,
+                    next_chunk(resuming.prefill_target, start, budget, self._kv.block_size),
+                    match,
+                )
+                if not size:
+                    break
+                self._roster.preempted.pop(0)
+                resuming.computed = start
+                if resuming.preempted_since is not None:
+                    resuming.preempted_seconds += max(0.0, now - resuming.preempted_since)
+                    resuming.preempted_since = None
+                resuming.row = self._kv.table.row_of(resuming.request_id)
+                resuming.move_to(RequestStatus.RUNNING)
+                self._running[resuming.request_id] = resuming
+                chunks.append((resuming, size))
+                budget -= size
+            while (
+                not self._roster.preempted and budget > 0 and len(self._running) < self._max_running
+            ):
+                if self._running and self.pressure_level is not PressureLevel.NORMAL:
+                    break
                 head = self._queue.peek()
                 if head is None or self._waits_for_sibling(head):
                     break
@@ -293,10 +351,10 @@ class Scheduler:
                     else None
                 )
                 start = match.num_tokens if match is not None else 0
-                size = _grant_chunk(
+                size = grant_chunk(
                     self._kv,
                     head,
-                    _next_chunk(head.prompt_length, start, budget, self._kv.block_size),
+                    next_chunk(head.prompt_length, start, budget, self._kv.block_size),
                     match,
                 )
                 if not size:
@@ -319,20 +377,21 @@ class Scheduler:
                 (
                     r,
                     size,
-                    r.prompt[r.computed : r.computed + size],
-                    r.computed + size >= len(r.prompt),
+                    r.tokens_between(r.computed, r.computed + size),
+                    r.computed + size >= r.prefill_target,
                 )
                 for r, size in chunks
             ],
         )
 
     def _waits_for_sibling(self, request: Request) -> bool:
-        """Whether a sibling this request waits for is still queued or prefilling."""
+        """Whether a sibling this request waits for is still queued, preempted or prefilling."""
         if request.blocked_on is None:
             return False
         sibling = self._requests.get(request.blocked_on)
         return sibling is not None and (
-            sibling.status is RequestStatus.WAITING or sibling.is_prefilling
+            sibling.status in (RequestStatus.WAITING, RequestStatus.PREEMPTED)
+            or sibling.is_prefilling
         )
 
     def _plan_decode(self, lookahead: Mapping[RequestId, int]) -> StepInput | None:
@@ -340,7 +399,7 @@ class Scheduler:
         for request in self._running.values():
             if request.is_prefilling or request.pending is None:
                 continue
-            rows = _grant_rows(
+            rows = grant_rows(
                 self._kv,
                 request,
                 lookahead.get(request.request_id, 0),
@@ -426,14 +485,56 @@ class Scheduler:
                 now,
                 release=request_id in releasable,
             )
-        finished, aborted, failed, settled = self._roster.take_counts()
+        if output.error is None and self._effective_budget < self._budget:
+            self._effective_budget = min(self._budget, self._effective_budget * 2)
+        self._record_stats(flight, scheduled_tokens=sum(flight.rows), emitted=emitted)
+
+    def recover_from_oom(self, error: ErrorInfo) -> bool:
+        """Recover from a step-level out-of-memory error without crashing the engine.
+
+        Preempts a victim when multiple requests ran, halves the prefill chunk
+        budget when a large prefill chunk failed, or fails only the single
+        minimal request that could not fit. Returns ``True`` if the batch was
+        reduced/retried without failing a request, ``False`` if the minimal
+        request was ended with ``error``.
+        """
+        flight = self._flight
+        if flight is None:
+            raise EngineError("recover_from_oom() called without a step in flight")
+        self._flight = None
+        self._oom_recoveries += 1
+        recovered = True
+        if len(self._running) > 1:
+            victim = select_victim(self._running.values(), self._config.preemption_policy)
+            self._roster.preempt(victim, now=self._clock())
+            if flight.mode is ForwardMode.PREFILL and max(flight.rows) > self._kv.block_size:
+                self._effective_budget = max(self._kv.block_size, max(flight.rows) // 2)
+        elif (
+            len(self._running) == 1
+            and flight.mode is ForwardMode.PREFILL
+            and flight.rows[0] > self._kv.block_size
+        ):
+            self._effective_budget = max(self._kv.block_size, flight.rows[0] // 2)
+        else:
+            recovered = False
+            self._effective_budget = self._budget
+            for request_id in flight.request_ids:
+                request = self._requests.get(request_id)
+                if request is not None:
+                    self._roster.finish(request, FinishReason.ERROR, error=error, release=True)
+        self._record_stats(flight, scheduled_tokens=0, emitted=0)
+        return recovered
+
+    def _record_stats(self, flight: InFlight, *, scheduled_tokens: int, emitted: int) -> None:
+        finished, aborted, failed, settled, preempted = self._roster.take_counts()
+        oom_recoveries, self._oom_recoveries = self._oom_recoveries, 0
         self._stats = SchedulerStats(
             step_id=flight.step_id,
             mode=flight.mode,
             num_running=len(self._running),
             num_waiting=len(self._queue),
-            num_preempted=0,
-            num_scheduled_tokens=sum(flight.rows),
+            num_preempted=preempted,
+            num_scheduled_tokens=scheduled_tokens,
             num_new_tokens=emitted,
             num_finished=finished,
             num_aborted=aborted,
@@ -442,6 +543,8 @@ class Scheduler:
             prefill_streak=self._prefill_streak,
             max_queue_delay=flight.max_queue_delay,
             kv_free_blocks=self._kv.free_counts,
+            pressure_level=str(self.pressure_level),
+            num_oom_recoveries=oom_recoveries,
         )
 
     def _apply(
@@ -470,6 +573,7 @@ class Scheduler:
             if request.is_prefilling and produced:
                 raise EngineError(f"request {request.request_id!r}: a prefill chunk emitted tokens")
             if not request.is_prefilling:
+                request.resuming = False
                 if len(produced) != 1:
                     raise EngineError(
                         f"request {request.request_id!r}: the last prefill chunk must emit one "
@@ -540,101 +644,10 @@ class Scheduler:
             added = self._kv.cache_blocks(
                 request.request_id, request.tokens_between(registered * size, prompt_end * size)
             )
-            request.cache_written_tokens += added * size
+            cap = max(0, len(request.prompt) - request.cached_tokens)
+            request.cache_written_tokens = min(request.cache_written_tokens + added * size, cap)
             registered = prompt_end
         if full > registered:
             self._kv.cache_blocks(
                 request.request_id, request.tokens_between(registered * size, full * size)
             )
-
-
-def _check_context(request: TokenizedRequest, limit: int | None) -> None:
-    """Admission check: the prompt and ``max_tokens`` fit the model context."""
-    if limit is None:
-        return
-    total = request.max_total_length
-    if total is not None and total > limit:
-        raise InvalidRequestError(
-            f"prompt ({request.prompt_length}) plus max_tokens "
-            f"({request.sampling.max_tokens}) must be <= the model context of {limit} tokens"
-        )
-    if request.prompt_length >= limit:
-        raise InvalidRequestError(
-            f"prompt ({request.prompt_length}) must be shorter than the model context "
-            f"of {limit} tokens"
-        )
-
-
-def _check_kv_capacity(request: TokenizedRequest, kv: KVCacheManager) -> None:
-    """Admission check: the prompt fits the KV one request can hold on this machine.
-
-    Read from fixed sizes only: :meth:`KVCacheManager.stats` walks the free queue to count cached
-    blocks, which costs milliseconds on a large pool, on the engine thread, for every request.
-    """
-    capacity = kv.max_context_tokens
-    if request.prompt_length > capacity:
-        pool_tokens = min(kv.stats().usable_blocks) * kv.block_size
-        raise InvalidRequestError(
-            f"prompt ({request.prompt_length} tokens) exceeds the {capacity} tokens of KV "
-            f"cache this engine can give one request (block table row: "
-            f"{kv.max_tokens_per_request}, pool: {pool_tokens}); shorten the prompt or "
-            "give the cache more memory"
-        )
-
-
-def _next_chunk(prompt_length: int, computed: int, budget: int, block_size: int) -> int:
-    """The next chunk of a prompt from ``computed``: ends on a block boundary unless the last."""
-    remaining = prompt_length - computed
-    if remaining <= budget:
-        return remaining
-    size = budget - ((computed + budget) % block_size)
-    return size if size > 0 else budget
-
-
-def _grant_chunk(
-    kv: KVCacheManager, request: Request, size: int, prefix: PrefixMatch | None = None
-) -> int:
-    """Allocate room for a chunk, or for as much of it as the free blocks allow.
-
-    Args:
-        kv: The cache manager.
-        request: The request.
-        size: Tokens of the chunk.
-        prefix: For a request leaving the queue, the prefix match to attach first.
-
-    Returns:
-        The tokens the request now has room for, 0 if none.
-    """
-    request_id = request.request_id
-    if kv.allocate(request_id, size, prefix):
-        return size
-    held = (
-        kv.table.num_blocks(request_id, 0) * kv.block_size - request.computed
-        if kv.has(request_id)
-        else 0
-    )
-    shrunk = min(size, held + kv.free_blocks * kv.block_size)
-    if 1 <= shrunk < size and kv.allocate(request_id, shrunk, prefix):
-        return shrunk
-    return 0
-
-
-def _grant_rows(kv: KVCacheManager, request: Request, drafts: int, left: int) -> int:
-    """Rows to reserve for a decode step: ``1 + k`` if they fit, else 1, else 0.
-
-    Args:
-        kv: The cache manager.
-        request: A request that finished its prefill.
-        drafts: The look-ahead ``k`` the runner asked for.
-        left: Tokens the request may still emit; ``k`` is capped so no row is wasted.
-    """
-    k = require_int(drafts, "lookahead", minimum=0)
-    room = kv.max_tokens_per_request - request.computed
-    if room < 1:
-        return 0
-    k = min(k, room - 1, left - 1)
-    if kv.allocate(request.request_id, 1 + k):
-        return 1 + k
-    if k > 0 and kv.allocate(request.request_id, 1):
-        return 1
-    return 0

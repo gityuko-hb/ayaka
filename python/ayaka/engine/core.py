@@ -336,6 +336,15 @@ class EngineCore:
         started = self._clock()
         answer = self._runner.execute(step)
         seconds = self._clock() - started
+        if answer.error is not None and answer.error.code == "out_of_memory":
+            scheduler.recover_from_oom(answer.error)
+            counts = scheduler.take_stats()
+            if self._stats is not None and counts is not None:
+                self._stats.record(_iteration(counts, seconds))
+                self._stats.maybe_log()
+            outputs += self._deliver()
+            self._kv.check_integrity()
+            return outputs
         scheduler.update(answer)
         counts = scheduler.take_stats()
         if self._stats is not None and counts is not None:
@@ -412,4 +421,6 @@ def _iteration(counts: SchedulerStats, seconds: float) -> IterationStats:
         num_failed=counts.num_failed,
         num_settled=counts.num_settled,
         step_seconds=seconds,
+        pressure_level=counts.pressure_level,
+        num_oom_recoveries=counts.num_oom_recoveries,
     )

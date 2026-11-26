@@ -310,10 +310,18 @@ class OutputParser:
         reason = completion.finish_reason if completion is not None else None
         if reason is FinishReason.STOP or reason is FinishReason.LENGTH:
             stop = completion.stop_reason if completion is not None else None
+            limit = (
+                "memory"
+                if reason is FinishReason.LENGTH
+                and output.error is not None
+                and output.error.code in ("capacity_exceeded", "out_of_memory")
+                else None
+            )
             return FinishEvent(
                 reason=reason,
                 stop_sequence=stop if isinstance(stop, str) else None,
                 tool_calls=self._calls is not None and self._calls.num_calls > 0,
+                limit=limit,
             )
         error = output.error
         if error is not None:
@@ -342,6 +350,8 @@ class ChoicesParser:
         self._done = False
         self._tool_calls = False
         self._cancelled = False
+        self._failed = False
+        self._memory_limit = False
 
     @property
     def count(self) -> int:
@@ -363,6 +373,8 @@ class ChoicesParser:
             ended = completion.finish_reason is not None
             if completion.finish_reason is FinishReason.CANCELLED:
                 self._cancelled = True
+            elif completion.finish_reason in (FinishReason.ERROR, FinishReason.TIMEOUT):
+                self._failed = True
             view = RequestOutput(
                 request_id=output.request_id,
                 outputs=(completion,),
@@ -373,8 +385,11 @@ class ChoicesParser:
             for event in parser.feed(view):
                 if isinstance(event, UsageEvent):
                     continue
-                if isinstance(event, FinishEvent) and event.tool_calls:
-                    self._tool_calls = True
+                if isinstance(event, FinishEvent):
+                    if event.tool_calls:
+                        self._tool_calls = True
+                    if event.limit == "memory":
+                        self._memory_limit = True
                 events.append(ChoiceEvent(completion.index, event))
         if output.finished or all(parser.done for parser in self._parsers):
             self._done = True
@@ -390,10 +405,14 @@ class ChoicesParser:
                 )
             )
             error = output.error if output.finished else None
-            if error is not None:
+            if error is not None and (self._failed or not output.outputs):
                 events.append(ErrorEvent(error.code, error.message, retryable=error.retryable))
             elif self._cancelled:
                 events.append(ErrorEvent("cancelled", "the request was cancelled"))
+            elif error is not None and not self._memory_limit:
+                events.append(ErrorEvent(error.code, error.message, retryable=error.retryable))
             else:
-                events.append(FinishEvent(FinishReason.STOP, tool_calls=self._tool_calls))
+                reason = FinishReason.LENGTH if self._memory_limit else FinishReason.STOP
+                limit = "memory" if self._memory_limit else None
+                events.append(FinishEvent(reason, tool_calls=self._tool_calls, limit=limit))
         return events

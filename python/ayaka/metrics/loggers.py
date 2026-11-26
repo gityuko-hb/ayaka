@@ -130,6 +130,16 @@ class PrometheusStatLogger:
             "Preemption events",
             registry=self.registry,
         )
+        self._pressure = Gauge(
+            "ayaka_engine_kv_pressure_level",
+            "KV cache pressure level (0=normal, 1=high, 2=critical)",
+            registry=self.registry,
+        )
+        self._oom_recoveries = Counter(
+            "ayaka_engine_oom_recoveries_total",
+            "Step-level out-of-memory recoveries",
+            registry=self.registry,
+        )
         self._step = Histogram(
             "ayaka_engine_step_seconds",
             "Engine step duration",
@@ -146,6 +156,9 @@ class PrometheusStatLogger:
             self._scheduled_tokens.inc(stats.num_scheduled_tokens)
         if stats.num_preempted:
             self._preemptions.inc(stats.num_preempted)
+        self._pressure.set(_PRESSURE_GAUGE.get(stats.pressure_level, 0))
+        if stats.num_oom_recoveries:
+            self._oom_recoveries.inc(stats.num_oom_recoveries)
         if stats.num_finished:
             self._requests.labels("finished").inc(stats.num_finished)
         if stats.num_aborted:
@@ -156,3 +169,6 @@ class PrometheusStatLogger:
 
     def log(self) -> None:
         return None  # Prometheus scrape pulls lazily; nothing to emit
+
+
+_PRESSURE_GAUGE = {"normal": 0, "high": 1, "critical": 2}

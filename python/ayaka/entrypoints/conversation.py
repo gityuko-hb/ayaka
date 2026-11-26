@@ -378,11 +378,14 @@ class FinishEvent:
         reason: ``FinishReason.STOP`` or ``FinishReason.LENGTH``.
         stop_sequence: The stop string that ended it, or ``None`` (end of sequence, stop token).
         tool_calls: Whether the answer called at least one function.
+        limit: Optional sub-reason when ``reason`` is ``LENGTH`` (``"memory"`` when KV capacity
+            stopped generation before the requested limit).
     """
 
     reason: FinishReason
     stop_sequence: str | None = None
     tool_calls: bool = False
+    limit: Literal["memory"] | None = None
 
 
 @dataclass(frozen=True, slots=True)

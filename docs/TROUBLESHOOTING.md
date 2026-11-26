@@ -140,3 +140,33 @@ not listed).
 
 Run `ayaka connect TOOL --check` against the running server. Each of its seven steps that fails names one fix; the
 last one says whether one request holds the tool's measured prompt.
+
+## Preflight check reports warnings or failures (`ayaka doctor`)
+
+**Symptom.** `ayaka doctor` (or `ayaka doctor --output json`) exits with status 1 or prints `[WARN]` / `[FAIL]` lines.
+
+**Cause.** The host environment has an issue before serving: missing CUDA PyTorch build, an NVML vs CUDA free-memory gap
+exceeding 20% under WSL2, insufficient `cudaHostAlloc` pinned RAM ceiling, missing `nvcc` when `flashinfer` is
+installed, low free disk space in the model cache directory, or stale runtime startup profiles.
+
+**Fix.** Follow the `fix:` line printed under each check: for example `uv sync --extra cu130` for CPU-only torch,
+lowering `--memory-ratio` (around `0.80` on WSL2) or resetting `~/.cache/ayaka/startup_profiles`, freeing cache disk
+space, adding the CUDA toolkit `bin` directory to `PATH` or selecting `--backends torch`, or running
+`ayaka plan MODEL` to refresh startup profiles.
+
+## Out-of-memory recovery, preemption timeouts, and over-long inputs
+
+**Symptom.** Requests receive `503 out_of_memory` (`Retry-After`), `408 preempted_timeout`, or stop early with
+`finish_reason: "length"` even below the model's trained context limit.
+
+**Cause.** When KV cache occupancy reaches `pressure_high` / `pressure_critical`, new waiting admissions pause and
+excess requests are preempted by releasing their KV blocks (and recomputing them once space returns). If a step throws
+a device out-of-memory error, the runner drops stale compiled graphs/caches, frees memory, and the scheduler preempts a
+victim or halves the prefill chunk size instead of crashing the engine. A request that waits longer than
+`preemption_timeout` without room fails with `408 preempted_timeout`; a single minimal request that still exhausts
+device memory fails with `503 out_of_memory`. Prompts that exceed the machine context/KV limit fail with `400` by
+default.
+
+**Fix.** Reduce `--memory-ratio` slightly or lower concurrency (`--max-running`), retry `503 out_of_memory` /
+`408 preempted_timeout` responses after backoff, or opt in to oldest-turn truncation on the server with
+`--overlong-policy truncate` (or `truncation: "auto"` on `POST /v1/responses`).

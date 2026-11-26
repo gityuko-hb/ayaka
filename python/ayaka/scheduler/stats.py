@@ -53,3 +53,5 @@ class SchedulerStats:
     prefill_streak: int
     max_queue_delay: float
     kv_free_blocks: tuple[int, ...]
+    pressure_level: str = "normal"
+    num_oom_recoveries: int = 0
