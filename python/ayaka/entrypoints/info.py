@@ -44,6 +44,7 @@ EXTRAS: Final[Mapping[str, tuple[str, ...]]] = {
     "serve": ("aiohttp",),
     "structured": ("llguidance",),
     "xgrammar": ("xgrammar",),
+    "grpc": ("grpcio", "protobuf"),
     "hf": ("transformers", "tokenizers", "huggingface-hub"),
     "tiktoken": ("tiktoken", "jinja2"),
 }

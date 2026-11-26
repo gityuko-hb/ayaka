@@ -41,6 +41,7 @@ SERVER_FLAGS: Final = (
     ("reasoning_parser", "reasoning_parser"),
     ("tool_call_parser", "tool_call_parser"),
     ("tool_strict_level", "tool_strict_level"),
+    ("engine_grpc", "engine_grpc"),
     ("max_body_bytes", "max_body_bytes"),
     ("shutdown_timeout", "shutdown_timeout"),
     ("sse_coalesce_ms", "sse_coalesce_ms"),

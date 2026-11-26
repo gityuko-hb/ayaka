@@ -95,6 +95,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "config": _config_show,
             "connect": _connect,
             "bench": _bench,
+            "engine-server": _engine_server,
+            "render-server": _render_server,
         }[args.command]
         return handler(args)
     except KeyboardInterrupt:
@@ -249,6 +251,45 @@ def _connect(args: argparse.Namespace) -> int:
     from ayaka.entrypoints.connect.command import connect_command
 
     return connect_command(args)
+
+
+def _engine_server(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ayaka.entrypoints.grpc.runners import serve_engine_grpc
+    from ayaka.utils.import_utils import require_module
+
+    require_module("grpc", capability="ayaka engine-server", remedy="uv sync --extra grpc")
+    engine = _engine_config(args, max_running=args.max_running)
+    asyncio.run(serve_engine_grpc(engine, listen=args.listen, say=say))
+    return EXIT_OK
+
+
+def _render_server(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ayaka.configs.tokenizer import tokenizer_config_from_source
+    from ayaka.entrypoints.grpc.runners import serve_render_grpc
+    from ayaka.utils.import_utils import require_module
+
+    require_module("grpc", capability="ayaka render-server", remedy="uv sync --extra grpc")
+    cfg = server_config(args)
+    source = ModelSourceConfig(
+        args.model, revision=args.revision, tokenizer=args.tokenizer, offline=args.offline
+    )
+    tok_cfg = tokenizer_config_from_source(source)
+    asyncio.run(
+        serve_render_grpc(
+            source,
+            tok_cfg,
+            cfg,
+            model_name=args.model,
+            listen=args.listen,
+            max_model_len=args.max_model_len,
+            say=say,
+        )
+    )
+    return EXIT_OK
 
 
 def _read_prompt(prompt: str | None) -> str:

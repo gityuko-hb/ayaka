@@ -175,7 +175,7 @@ def _ayaka_commands(page: Path) -> list[tuple[str, list[str]]]:
     found: list[tuple[str, list[str]]] = []
     for code in re.findall(r"```[a-z]*\n(.*?)```|`([^`\n]+)`", text, flags=re.DOTALL):
         for line in "".join(code).splitlines():
-            for match in re.finditer(r"\bayaka ([a-z]+)((?: +[^ |;&]+)*)", line):
+            for match in re.finditer(r"\bayaka ([a-z][a-z0-9-]*)((?: +[^ |;&]+)*)", line):
                 flags = re.findall(r"(?<![\w-])(--[a-z][a-z0-9-]*)", match.group(2))
                 found.append((match.group(1), flags))
     return found

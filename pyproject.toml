@@ -100,6 +100,12 @@ structured = [
 xgrammar = [
     "xgrammar>=0.2.9,<0.3",
 ]
+# Optional remote procedure call transport (`ayaka engine-server`, `ayaka render-server`,
+# `ayaka serve --engine-grpc`). Loaded lazily when remote transport flags are used.
+grpc = [
+    "grpcio>=1.70",
+    "protobuf>=6.30",
+]
 
 [tool.hatch.version]
 path = "python/ayaka/__version__.py"
