@@ -55,6 +55,8 @@ from ayaka.entrypoints.metrics import ServingMetrics
 from ayaka.entrypoints.normalize import Normalizer, identify_client
 from ayaka.entrypoints.parsers.formats import suggest_tool_call_parser
 from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
+from ayaka.entrypoints.parsers.unified import OutputInterpretation
+from ayaka.entrypoints.render.selection import PromptRenderer
 from ayaka.entrypoints.stream import (
     WRITE_BUFFER_HIGH,
     SlowClientError,
@@ -75,6 +77,7 @@ if TYPE_CHECKING:
     from ayaka.engine.seam import EngineClient
     from ayaka.entrypoints.conversation import Collected, OutputEvent, OutputRequest
     from ayaka.entrypoints.parsers.output import EventParser
+    from ayaka.entrypoints.render.selection import RenderedChat, RenderRequest
     from ayaka.entrypoints.stream import StreamEncoder
     from ayaka.tokenizers.contracts import EncodeInput
     from ayaka.tokenizers.service import TokenizerService
@@ -157,6 +160,7 @@ class Serving:
         self.status = Readiness.STARTING
         self.llm: EngineClient | None = None
         self.tokenizer: TokenizerService | None = None
+        self.renderer: PromptRenderer | None = None
         self.output_format = OutputFormat()
         self.max_model_len = 0
         self.max_context_tokens = 0
@@ -207,6 +211,7 @@ class Serving:
         """Start serving with a started engine and the tokenizer that makes its prompts."""
         self.llm = llm
         self.tokenizer = tokenizer
+        self.renderer = PromptRenderer(tokenizer, model_name=self.model_name)
         info = llm.info
         self.max_model_len = info.max_model_len
         self.max_context_tokens = info.max_context_tokens
@@ -315,6 +320,29 @@ class Serving:
         """
         return await self._encode(conversation.template_data, max_tokens, vouch=vouch)
 
+    async def render_chat(
+        self,
+        request: RenderRequest,
+        *,
+        max_tokens: int | None = None,
+        vouch: bool = True,
+    ) -> RenderedChat:
+        """Render and tokenize a chat request with request-scoped thinking metadata."""
+        self.require_ready()
+        renderer = self.renderer
+        assert renderer is not None  # noqa: S101  # attach() sets it with the engine
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                self._preprocess,
+                lambda: renderer.render(request, max_tokens=max_tokens, vouch=vouch),
+            )
+        except ContextLengthError as exc:
+            raise ContextLengthError(
+                prompt_tokens=exc.prompt_tokens,
+                output_tokens=max(max_tokens or 1, 1),
+                max_context_tokens=exc.max_context_tokens,
+            ) from None
+
     async def tokenize_text(
         self, prompt: str | tuple[int, ...], *, max_tokens: int | None = None
     ) -> tuple[int, ...]:
@@ -379,6 +407,7 @@ class Serving:
         *,
         tools: bool = False,
         parallel_tool_calls: bool = True,
+        rendered: RenderedChat | None = None,
     ) -> StructuredParams | None:
         """The output constraint a request asked for, with this model's syntax; ``None`` if none.
 
@@ -397,7 +426,12 @@ class Serving:
             UnsupportedFeatureError: If the request needs a constraint this server cannot make.
         """
         fmt = self.output_format
-        start_after, reasoning_open = fmt.constraint_start()
+        start_after, reasoning_open = fmt.constraint_start(
+            thinking_enabled=rendered.thinking_enabled if rendered is not None else None,
+            starts_inside_reasoning=(
+                rendered.starts_inside_reasoning if rendered is not None else None
+            ),
+        )
         if output.response is not None:
             schema = output.schema if output.response is ConstraintKind.JSON_SCHEMA else None
             return StructuredParams(
@@ -452,6 +486,7 @@ class Serving:
         tools: bool,
         parallel_tool_calls: bool = True,
         structured: StructuredParams | None = None,
+        rendered: RenderedChat | None = None,
     ) -> Generation:
         """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
 
@@ -486,14 +521,32 @@ class Serving:
             if self.status is not Readiness.READY or llm.health().state is not EngineState.RUNNING:
                 raise NotReadyError(f"the server is {self.status.value}; retry later") from exc
             raise
-        parsers = [
-            self.output_format.parser(
-                call_id_prefix=f"call_{public_id[:24]}" + (f"_{index}" if sampling.n > 1 else ""),
+        if rendered is not None:
+            interpretation = OutputInterpretation(
+                force_reasoning=rendered.force_reasoning,
+                previous_content=rendered.previous_content,
+                stream_reasoning=rendered.stream_reasoning,
                 tools=tools,
                 parallel_tool_calls=parallel_tool_calls,
             )
-            for index in range(sampling.n)
-        ]
+            parsers: list[EventParser] = [
+                self.output_format.processor(
+                    interpretation,
+                    call_id_prefix=f"call_{public_id[:24]}"
+                    + (f"_{index}" if sampling.n > 1 else ""),
+                )
+                for index in range(sampling.n)
+            ]
+        else:
+            parsers = [
+                self.output_format.parser(
+                    call_id_prefix=f"call_{public_id[:24]}"
+                    + (f"_{index}" if sampling.n > 1 else ""),
+                    tools=tools,
+                    parallel_tool_calls=parallel_tool_calls,
+                )
+                for index in range(sampling.n)
+            ]
         parser: EventParser = parsers[0] if sampling.n == 1 else ChoicesParser(parsers)
         self.metrics.running.inc()
         return Generation(request_id, public_id, len(prompt), stream, parser)

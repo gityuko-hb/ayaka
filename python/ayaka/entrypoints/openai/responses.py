@@ -57,6 +57,8 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.failures import responses_code
 from ayaka.entrypoints.http import read_body
 from ayaka.entrypoints.openai.protocol import response_format
+from ayaka.entrypoints.render.reasoning import ThinkingRequest, parse_reasoning_effort
+from ayaka.entrypoints.render.selection import RenderRequest
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
 from ayaka.entrypoints.wire.policy import apply_policy
@@ -116,6 +118,8 @@ class ResponsesRequest:
     parallel_tool_calls: bool
     echo: dict[str, object]
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
+    thinking: ThinkingRequest = dataclasses.field(default_factory=ThinkingRequest)
+    named_tool_choice: bool = False
 
 
 def parse_responses_request(body: JsonObject) -> ResponsesRequest:
@@ -136,6 +140,7 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
     text_format = text.child("format") if text is not None else None
     response, schema = response_format(text_format, "text.format")
     reasoning = body.child("reasoning")
+    thinking = _parse_responses_thinking(reasoning)
 
     builder = ConversationBuilder()
     instructions = body.string("instructions")
@@ -172,7 +177,23 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
         output=OutputRequest(
             response=response, schema=schema, tool_choice=constrained, strict=strict
         ),
+        thinking=thinking,
+        named_tool_choice=constrained not in ("auto", "required"),
     )
+
+
+def _parse_responses_thinking(reasoning: JsonObject | None) -> ThinkingRequest:
+    if reasoning is None:
+        return ThinkingRequest()
+    effort_raw = reasoning.string("effort")
+    effort = None
+    if effort_raw is not None:
+        try:
+            effort = parse_reasoning_effort(effort_raw, where=reasoning.where("effort"))
+        except ValueError as exc:
+            raise _invalid(reasoning.where("effort"), str(exc)) from exc
+    enabled = reasoning.flag("enabled") if reasoning.has("enabled") else None
+    return ThinkingRequest(enabled=enabled, effort=effort)
 
 
 def _input(body: JsonObject, builder: ConversationBuilder) -> None:
@@ -594,7 +615,15 @@ async def create_response(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         responses.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation, max_tokens=responses.max_tokens)
+    rendered = await serving.render_chat(
+        RenderRequest(
+            conversation=conversation,
+            thinking=responses.thinking,
+            named_tool_choice=responses.named_tool_choice,
+        ),
+        max_tokens=responses.max_tokens,
+    )
+    prompt = rendered.token_ids
     sampling = responses.sampling.build(serving.output_tokens(len(prompt), responses.max_tokens))
     public_id = request[REQUEST_ID]
     generation = await serving.start(
@@ -608,7 +637,9 @@ async def create_response(request: web.Request) -> web.StreamResponse:
             conversation,
             tools=responses.tools,
             parallel_tool_calls=responses.parallel_tool_calls,
+            rendered=rendered,
         ),
+        rendered=rendered,
     )
     snapshot = _Snapshot(f"resp_{public_id}", int(time.time()), serving.model_name, responses.echo)
     try:

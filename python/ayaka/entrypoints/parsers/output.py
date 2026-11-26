@@ -35,6 +35,7 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.parsers.formats import reasoning_format, tool_call_format
 from ayaka.entrypoints.parsers.reasoning import ReasoningParser
 from ayaka.entrypoints.parsers.tool_calls import ToolCallParser
+from ayaka.entrypoints.parsers.unified import ChatResponseProcessor
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from ayaka.entrypoints.conversation import OutputEvent
     from ayaka.entrypoints.parsers.formats import ReasoningFormat, ToolCallFormat
     from ayaka.entrypoints.parsers.markers import Marker
+    from ayaka.entrypoints.parsers.unified import OutputInterpretation
     from ayaka.tokenizers.ports import TokenizerLike
 
 __all__ = ["ChoicesParser", "EventParser", "OutputFormat", "OutputParser"]
@@ -57,6 +59,16 @@ class EventParser(Protocol):
     @property
     def generated_tokens(self) -> int:
         """Tokens of every sequence fed so far: the count when no usage event came."""
+        ...
+
+    @property
+    def reasoning_tokens(self) -> int:
+        """Reasoning tokens attributed so far."""
+        ...
+
+    @property
+    def done(self) -> bool:
+        """Whether the parser has emitted its terminal event."""
         ...
 
 
@@ -98,21 +110,32 @@ class OutputFormat:
             tool_markers=tool_fmt.markers(tokenizer) if tool_fmt else None,
         )
 
-    def constraint_start(self) -> tuple[int | None, int | None]:
+    def constraint_start(
+        self,
+        *,
+        thinking_enabled: bool | None = None,
+        starts_inside_reasoning: bool | None = None,
+    ) -> tuple[int | None, int | None]:
         """Where an output constraint starts: ``(start_after, reasoning_open)``.
 
-        The same rule the reasoning parser follows. Without a reasoning format a constraint
-        starts at the first token. With a block the prompt opened (``deepseek_r1``) it waits for
-        the closing marker. With one the model may open (``think``) it starts at once unless the
-        first token is the opening marker, and then waits for the closing one. A marker that is
-        not one token cannot be watched for: the constraint then waits for a closing marker it
-        may never see, so a model that does not reason is not constrained.
+        When ``thinking_enabled`` is ``False`` for the current request, constraints start
+        immediately at token 0 regardless of the model's default reasoning format. Otherwise,
+        ``starts_inside_reasoning`` (when provided by the render layer) overrides
+        ``self.reasoning.starts_inside`` so prompt-opened and model-opened reasoning stay
+        synchronized with the parser.
         """
+        if thinking_enabled is False:
+            return None, None
         markers = self.reasoning_markers
         if self.reasoning is None or markers is None:
             return None, None
         opening, closing = markers
-        if self.reasoning.starts_inside or opening.token_id is None:
+        starts_inside = (
+            self.reasoning.starts_inside
+            if starts_inside_reasoning is None
+            else starts_inside_reasoning
+        )
+        if starts_inside or opening.token_id is None:
             return closing.token_id, None
         return closing.token_id, opening.token_id
 
@@ -171,6 +194,32 @@ class OutputFormat:
             else None
         )
         return OutputParser(reasoning, calls, single_call=not parallel_tool_calls)
+
+    def processor(
+        self,
+        interpretation: OutputInterpretation,
+        *,
+        call_id_prefix: str,
+    ) -> ChatResponseProcessor:
+        """Build a request-scoped :class:`ChatResponseProcessor` from ``interpretation``."""
+        reasoning = (
+            ReasoningParser(
+                self.reasoning,
+                self.reasoning_markers,
+                starts_inside_override=interpretation.force_reasoning,
+                previous_content=interpretation.previous_content,
+            )
+            if self.reasoning is not None and interpretation.force_reasoning is not False
+            else None
+        )
+        calls = (
+            ToolCallParser(
+                self.tool_calls, call_id_prefix=call_id_prefix, markers=self.tool_markers
+            )
+            if self.tool_calls is not None and interpretation.tools
+            else None
+        )
+        return ChatResponseProcessor(reasoning, calls, interpretation=interpretation)
 
 
 class OutputParser:
@@ -337,11 +386,16 @@ class ChoicesParser:
         parsers: One parser per choice, in index order.
     """
 
-    def __init__(self, parsers: Sequence[OutputParser]) -> None:
+    def __init__(self, parsers: Sequence[EventParser]) -> None:
         self._parsers = tuple(parsers)
         self._done = False
         self._tool_calls = False
         self._cancelled = False
+
+    @property
+    def done(self) -> bool:
+        """Whether every choice has finished."""
+        return self._done
 
     @property
     def count(self) -> int:
@@ -352,6 +406,11 @@ class ChoicesParser:
     def generated_tokens(self) -> int:
         """Tokens fed so far, over every choice."""
         return sum(parser.generated_tokens for parser in self._parsers)
+
+    @property
+    def reasoning_tokens(self) -> int:
+        """Reasoning tokens fed so far, over every choice."""
+        return sum(parser.reasoning_tokens for parser in self._parsers)
 
     def feed(self, output: RequestOutput) -> list[OutputEvent]:
         """The events of the next fragment, per choice, then the request's end."""

@@ -156,7 +156,21 @@ _CHAT: Final = EndpointPolicy(
         ),
         *_rules(Rule.READ, "json_object or json_schema, always enforced", "response_format"),
         *_rules(Rule.READ, "only text output is available", "modalities"),
-        *_rules(Rule.HINT, "the model reasons as trained", "reasoning_effort"),
+        *_rules(
+            Rule.READ,
+            "request-scoped thinking: none disables it, minimal..max sets effort",
+            "reasoning_effort",
+        ),
+        *_rules(
+            Rule.READ,
+            "extra keyword arguments passed to the model's chat template",
+            "chat_template_kwargs",
+        ),
+        *_rules(
+            Rule.READ,
+            "continue the trailing assistant message instead of opening a new turn",
+            "continue_final_message",
+        ),
         *_rules(
             Rule.REFUSE,
             "the deprecated function fields are not served; use tools",
@@ -200,7 +214,11 @@ _RESPONSES: Final = EndpointPolicy(
         *_rules(Rule.READ, "one answer per request; 1 only", "n"),
         *_rules(Rule.READ, "true is refused: this server stores no responses", "store"),
         *_rules(Rule.READ, "echoed in the response object", "metadata"),
-        *_rules(Rule.HINT, "reasoning.effort: the model reasons as trained", "reasoning"),
+        *_rules(
+            Rule.READ,
+            "reasoning.effort or reasoning.enabled controls request-scoped thinking",
+            "reasoning",
+        ),
         *_rules(
             Rule.IGNORE,
             "accounting, caching and output-selection fields with no effect here",
@@ -270,7 +288,7 @@ _MESSAGES: Final = EndpointPolicy(
         *_rules(Rule.READ, "answer with server-sent events", "stream"),
         *_rules(
             Rule.READ,
-            "checked; the budget is a hint, the model reasons as trained",
+            "type disabled or enabled controls request-scoped thinking; budget_tokens is checked",
             "thinking",
         ),
         *_rules(

@@ -123,16 +123,6 @@ class TestReading:
                 "vision",
             ),
             (
-                {
-                    "messages": [
-                        {"role": "user", "content": "x"},
-                        {"role": "assistant", "content": "Sure"},
-                    ]
-                },
-                UnsupportedFeatureError,
-                "prefill",
-            ),
-            (
                 {"messages": [{"role": "user", "content": "x"}], "tool_choice": {"type": "any"}},
                 InvalidRequestError,
                 "no tools",
