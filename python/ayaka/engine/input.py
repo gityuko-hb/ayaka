@@ -100,12 +100,16 @@ class InputProcessor:
         max_model_len: int,
         vocab_size: int,
         compiler: GrammarCompiler | None = None,
+        structured_backend: str = "llguidance",
     ) -> None:
         self._service = service
         self._max_model_len = max_model_len
         self._vocab_size = vocab_size
         self._compiler = compiler or GrammarCompiler(
-            service.tokenizer, vocab_size=vocab_size, eos_token_ids=service.eos_token_ids
+            service.tokenizer,
+            vocab_size=vocab_size,
+            eos_token_ids=service.eos_token_ids,
+            backend="xgrammar" if structured_backend == "xgrammar" else "llguidance",
         )
 
     @property

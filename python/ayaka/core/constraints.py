@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 __all__ = [
     "MAX_SCHEMA_BYTES",
     "ConstraintKind",
+    "StructuralTagItem",
+    "StructuralTagSpec",
     "StructuredParams",
     "ToolCallSyntax",
     "ToolSchema",
@@ -45,6 +47,44 @@ class ConstraintKind(StrEnum):
     JSON_SCHEMA = "json_schema"
     JSON_OBJECT = "json_object"
     TOOL_CALL = "tool_call"
+    REGEX = "regex"
+    CHOICE = "choice"
+    GRAMMAR = "grammar"
+    STRUCTURAL_TAG = "structural_tag"
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralTagItem:
+    """One tagged block in a :class:`StructuralTagSpec` constraint."""
+
+    begin: str
+    schema: Mapping[str, object] | None = None
+    grammar: str | None = None
+    end: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.begin:
+            raise InvalidRequestError("a structural tag item needs a non-empty begin marker")
+        if self.schema is None and self.grammar is None:
+            object.__setattr__(self, "schema", {"type": "object"})
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralTagSpec:
+    """Trigger-guarded structural tag definitions for tagged output constraints."""
+
+    tags: tuple[StructuralTagItem, ...]
+    triggers: tuple[str, ...] = ()
+    at_least_one: bool = False
+    stop_after_first: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.tags:
+            raise InvalidRequestError("structural_tag requires at least one tag definition")
+        if not self.triggers:
+            object.__setattr__(
+                self, "triggers", tuple(dict.fromkeys(tag.begin for tag in self.tags))
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,10 +183,25 @@ class StructuredParams:
     parallel: bool = True
     start_after: int | None = None
     reasoning_open: int | None = None
+    pattern: str | None = None
+    choices: tuple[str, ...] = ()
+    grammar: str | None = None
+    structural_tag: StructuralTagSpec | None = None
 
     def __post_init__(self) -> None:
         if self.kind is ConstraintKind.JSON_SCHEMA and self.schema is None:
             raise InvalidRequestError("a json_schema constraint needs a schema")
+        if self.kind is ConstraintKind.REGEX and not self.pattern:
+            raise InvalidRequestError("a regex constraint needs a non-empty pattern")
+        if self.kind is ConstraintKind.CHOICE:
+            if not self.choices:
+                raise InvalidRequestError("a choice constraint needs at least one choice")
+            if any(not choice for choice in self.choices):
+                raise InvalidRequestError("choice constraint values must be non-empty")
+        if self.kind is ConstraintKind.GRAMMAR and not self.grammar:
+            raise InvalidRequestError("a grammar constraint needs a non-empty grammar")
+        if self.kind is ConstraintKind.STRUCTURAL_TAG and self.structural_tag is None:
+            raise InvalidRequestError("a structural_tag constraint needs structural_tag rules")
         if self.kind is ConstraintKind.TOOL_CALL:
             if not self.tools:
                 raise InvalidRequestError("a tool-call constraint needs at least one tool")
@@ -190,6 +245,27 @@ class StructuredParams:
             "tool_choice": self.tool_choice,
             "strict": self.strict,
             "parallel": self.parallel if self.syntax is not None and self.syntax.bare else None,
+            "pattern": self.pattern,
+            "choices": list(self.choices) if self.choices else None,
+            "grammar": self.grammar,
+            "structural_tag": (
+                {
+                    "triggers": list(self.structural_tag.triggers),
+                    "at_least_one": self.structural_tag.at_least_one,
+                    "stop_after_first": self.structural_tag.stop_after_first,
+                    "tags": [
+                        {
+                            "begin": item.begin,
+                            "end": item.end,
+                            "schema": item.schema,
+                            "grammar": item.grammar,
+                        }
+                        for item in self.structural_tag.tags
+                    ],
+                }
+                if self.structural_tag is not None
+                else None
+            ),
         }
         try:
             # Key order is kept: the order of a schema's properties is the order they are written.

@@ -55,6 +55,12 @@ from ayaka.entrypoints.metrics import ServingMetrics
 from ayaka.entrypoints.normalize import Normalizer, identify_client
 from ayaka.entrypoints.parsers.formats import suggest_tool_call_parser
 from ayaka.entrypoints.parsers.output import ChoicesParser, OutputFormat
+from ayaka.entrypoints.parsers.output_grammar import (
+    OutputGrammarContext,
+    ToolStrictLevel,
+    build_tool_constraint,
+)
+from ayaka.entrypoints.parsers.parameters import ToolSchemas
 from ayaka.entrypoints.parsers.unified import OutputInterpretation
 from ayaka.entrypoints.render.selection import PromptRenderer
 from ayaka.entrypoints.stream import (
@@ -409,22 +415,7 @@ class Serving:
         parallel_tool_calls: bool = True,
         rendered: RenderedChat | None = None,
     ) -> StructuredParams | None:
-        """The output constraint a request asked for, with this model's syntax; ``None`` if none.
-
-        A JSON answer is constrained from its first token, or from the end of the reasoning
-        block when the model reasons (:meth:`OutputFormat.constraint_start`: the parser and the
-        grammar follow the same rule). A request with tools gets a lazy tool-call constraint
-        when the structured extra is installed and the model's opening marker is one token, so
-        a call it writes is a valid call and free text stays free; a request that forces a
-        call or asks for strict arguments needs that constraint and is refused without it. A
-        format without markers (``llama3_json``) has no marker a lazy constraint could start on:
-        a forced call is constrained from the first token; an optional call is constrained once
-        the answer opens with ``{`` (the matcher decides on the first token that is not blank),
-        its arguments following each tool's schema, and any other answer stays free text.
-
-        Raises:
-            UnsupportedFeatureError: If the request needs a constraint this server cannot make.
-        """
+        """Build a request-synchronized :class:`StructuredParams`, or ``None`` if unconstrained."""
         fmt = self.output_format
         start_after, reasoning_open = fmt.constraint_start(
             thinking_enabled=rendered.thinking_enabled if rendered is not None else None,
@@ -437,44 +428,45 @@ class Serving:
             return StructuredParams(
                 kind=output.response,
                 schema=schema,
+                pattern=output.pattern,
+                choices=output.choices,
+                grammar=output.grammar,
+                structural_tag=output.structural_tag,
                 start_after=start_after,
                 reasoning_open=reasoning_open,
             )
-        if not tools or conversation is None or not conversation.tools:
+        if not tools or conversation is None or not conversation.tools or fmt.tool_calls is None:
             return None
-        if fmt.tool_calls is None:
-            return None  # start() refuses tools without a tool-call parser
-        markers = fmt.tool_markers
-        wanted = output.wants_constraint
+        markers, wanted = fmt.tool_markers, output.wants_constraint
+        has_structured = has_module("llguidance") or has_module("xgrammar")
         spelled: tuple[int, ...] = ()
         if markers is None:
-            # A format without markers (llama3_json): a forced call is constrained from the first
-            # token of the answer, an optional one from the `{` that opens it.
-            if not wanted and not has_module("llguidance"):
-                return None  # free text, as without the structured extra; the parser finds it
+            if not wanted and not has_structured:
+                return None
         else:
             opening = markers[0]
-            if not wanted and (opening.token_id is None or not has_module("llguidance")):
-                # Lazy constraints only for a one-token marker: a spelled one may come in other
-                # pieces.
-                return None  # free text, as without the structured extra
+            if not wanted and (
+                (fmt.tool_calls.style == "json" and opening.token_id is None) or not has_structured
+            ):
+                return None
             tokenizer = self.tokenizer.tokenizer if self.tokenizer is not None else None
             if opening.token_id is None and tokenizer is not None:
                 spelled = tuple(tokenizer.encode(opening.text, add_special_tokens=False))
+        ctx = OutputGrammarContext(
+            output_format=fmt,
+            tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),
+            tool_choice=output.tool_choice,
+            strict_request=output.strict,
+            tool_strict_level=ToolStrictLevel(self.config.tool_strict_level),
+            parallel_tool_calls=parallel_tool_calls,
+            start_after=start_after,
+            reasoning_open=reasoning_open,
+        )
         try:
-            return StructuredParams(
-                kind=ConstraintKind.TOOL_CALL,
-                tools=tuple(ToolSchema(tool.name, tool.parameters) for tool in conversation.tools),
-                syntax=fmt.call_syntax(spelled),
-                tool_choice=output.tool_choice,
-                strict=output.strict,
-                parallel=parallel_tool_calls,
-                start_after=start_after,
-                reasoning_open=reasoning_open,
-            )
+            return build_tool_constraint(ctx, spelled_open=spelled)
         except InvalidRequestError:
             if markers is None and not wanted:
-                return None  # added by the server, not asked for: schemas too large stay free
+                return None
             raise
 
     async def start(
@@ -487,6 +479,7 @@ class Serving:
         parallel_tool_calls: bool = True,
         structured: StructuredParams | None = None,
         rendered: RenderedChat | None = None,
+        tool_schemas: ToolSchemas | None = None,
     ) -> Generation:
         """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
 
@@ -522,6 +515,15 @@ class Serving:
                 raise NotReadyError(f"the server is {self.status.value}; retry later") from exc
             raise
         if rendered is not None:
+            resolved_schemas = (
+                tool_schemas
+                if tool_schemas is not None
+                else (
+                    ToolSchemas.from_tools(structured.tools)
+                    if structured is not None and structured.tools
+                    else None
+                )
+            )
             interpretation = OutputInterpretation(
                 force_reasoning=rendered.force_reasoning,
                 previous_content=rendered.previous_content,
@@ -534,6 +536,7 @@ class Serving:
                     interpretation,
                     call_id_prefix=f"call_{public_id[:24]}"
                     + (f"_{index}" if sampling.n > 1 else ""),
+                    tool_schemas=resolved_schemas,
                 )
                 for index in range(sampling.n)
             ]

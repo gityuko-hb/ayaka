@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from .constraints import (
         MAX_SCHEMA_BYTES,
         ConstraintKind,
+        StructuralTagItem,
+        StructuralTagSpec,
         StructuredParams,
         ToolCallSyntax,
         ToolSchema,
@@ -100,6 +102,8 @@ __all__ = [
     "RequestTimeout",
     "SamplingParams",
     "SequenceIndex",
+    "StructuralTagItem",
+    "StructuralTagSpec",
     "StructuredParams",
     "TokenId",
     "TokenLogprob",
@@ -115,6 +119,8 @@ _EXPORTS = {
     "constraints": (
         "MAX_SCHEMA_BYTES",
         "ConstraintKind",
+        "StructuralTagItem",
+        "StructuralTagSpec",
         "StructuredParams",
         "ToolCallSyntax",
         "ToolSchema",

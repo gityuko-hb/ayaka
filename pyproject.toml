@@ -94,6 +94,12 @@ serve = [
 structured = [
     "llguidance>=1.9.1,<2",
 ]
+# Optional second structured-output compiler backend (xgrammar). Imported only when configured
+# via `--structured-backend xgrammar`, so `import ayaka` never loads it.
+#   uv sync --extra cpu --extra serve --extra structured --extra xgrammar
+xgrammar = [
+    "xgrammar>=0.2.9,<0.3",
+]
 
 [tool.hatch.version]
 path = "python/ayaka/__version__.py"

@@ -46,6 +46,7 @@ from ayaka.entrypoints.conversation import (
 )
 from ayaka.entrypoints.failures import failure_for_event
 from ayaka.entrypoints.http import read_body
+from ayaka.entrypoints.parsers.parameters import ToolSchemas
 from ayaka.entrypoints.render.selection import RenderRequest
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import sse_json
@@ -282,6 +283,7 @@ async def create_message(request: web.Request) -> web.StreamResponse:
             rendered=rendered,
         ),
         rendered=rendered,
+        tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
     )
     message_id = f"msg_{public_id}"
     try:

@@ -50,6 +50,7 @@ from ayaka.entrypoints.openai.protocol import (
     parse_chat_request,
     parse_completion_request,
 )
+from ayaka.entrypoints.parsers.parameters import ToolSchemas
 from ayaka.entrypoints.render.selection import RenderRequest
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
@@ -347,6 +348,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         parallel_tool_calls=chat.parallel_tool_calls,
         structured=structured,
         rendered=rendered,
+        tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
     )
     meta = _Meta(f"chatcmpl-{public_id}", int(time.time()), serving.model_name)
     try:

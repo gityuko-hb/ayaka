@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from ayaka.core.outputs import RequestOutput
     from ayaka.entrypoints.conversation import OutputEvent
     from ayaka.entrypoints.parsers.reasoning import ReasoningParser
-    from ayaka.entrypoints.parsers.tool_calls import ToolCallParser
+    from ayaka.entrypoints.parsers.tool_calls.base import ToolCallParserLike
 
 __all__ = [
     "ChatResponseProcessor",
@@ -81,7 +81,7 @@ class CombinedParser:
     def __init__(
         self,
         reasoning: ReasoningParser | None,
-        tool_calls: ToolCallParser | None,
+        tool_calls: ToolCallParserLike | None,
         *,
         single_call: bool = False,
         stream_reasoning: bool = True,
@@ -224,7 +224,7 @@ class ChatResponseProcessor:
     def __init__(
         self,
         reasoning: ReasoningParser | None,
-        tool_calls: ToolCallParser | None,
+        tool_calls: ToolCallParserLike | None,
         *,
         interpretation: OutputInterpretation,
     ) -> None:
