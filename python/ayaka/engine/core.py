@@ -138,6 +138,7 @@ class EngineCore:
             max_model_len=longest,
             max_context_tokens=min(longest, self._kv.max_context_tokens),
             prefix_caching=self._kv.prefix_caching,
+            vision=self.model_config.vision_spec,
         )
 
     @property
