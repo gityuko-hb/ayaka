@@ -179,7 +179,8 @@ def test_sustained_preemption_timeout_under_synthetic_clock() -> None:
 
 @pytest.mark.gpu
 def test_gpu_step_oom_recovery_smoke(checkpoint: TinyCheckpoint) -> None:
-    cfg = dataclasses.replace(tiny_engine_config(checkpoint.directory), device="cuda")
+    base = tiny_engine_config(checkpoint.directory)
+    cfg = dataclasses.replace(base, device=dataclasses.replace(base.device, device="cuda"))
     engine = build_engine(cfg, tokenizer=tiny_tokenizer())
     runner = engine._runner
     original_forward = runner._forward
