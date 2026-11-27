@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from ayaka.core.errors import AyakaError
+from ayaka.entrypoints._bench_probes import measure_extended_probes
 from ayaka.entrypoints.bench_machine import MemorySampler, gpu_state, machine_info, power_source
 from ayaka.entrypoints.bench_prompts import (
     GROUPS,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from ayaka.configs.engine import EngineConfig
+    from ayaka.core.multimodal import ImageInput
     from ayaka.core.outputs import RequestOutput
     from ayaka.engine.llm import LLM
     from ayaka.engine.recorder import SessionRecorder
@@ -165,9 +167,22 @@ class _Runner:
         if tokenizer is None:
             raise ValueError("ayaka bench needs a model with a tokenizer")
         self.tokenizer = tokenizer
+        self.seed = options.seed
+        self.repeats = options.repeats
+        self.quick = options.quick
+        self.has_vision = llm.info.vision is not None
 
     def encode(self, text: str) -> list[int]:
         return list(self.tokenizer.encode(text, add_special_tokens=False))
+
+    def chat_turn(self, prompt_text: str, image: ImageInput) -> RequestOutput:
+        from ayaka.core.params import SamplingParams
+        from ayaka.tokenizers.contracts import ChatMessage
+
+        sampling = SamplingParams(temperature=0.0, max_tokens=4, seed=self.options.seed)
+        return self.llm.chat(
+            [ChatMessage(role="user", content=prompt_text, images=(image,))], sampling
+        )
 
     def _request(self, prompt: tuple[int, ...], max_tokens: int, *, cache: bool) -> Any:
         from ayaka.core.params import SamplingParams
@@ -589,9 +604,10 @@ def _measure(
     say("agent session")
     file_text = runner.tokenizer.decode(material_ids("edit", file_tokens, runner.encode))
     agent = runner.agent(f"Agent run {options.seed}.\n{system_base}", file_text)
+    extra = measure_extended_probes(runner, usable, say)
     say("sanity")
     sanity = runner.sanity()
-    return {
+    payload: dict[str, object] = {
         "prompt_set": {
             "version": PROMPT_SET_VERSION,
             "groups": list(GROUPS),
@@ -609,7 +625,9 @@ def _measure(
         },
         "agent": agent,
         "sanity": sanity,
+        **extra,
     }
+    return payload
 
 
 def bench_command(args: argparse.Namespace, config: EngineConfig) -> int:

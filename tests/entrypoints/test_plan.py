@@ -116,8 +116,42 @@ class TestCommand:
         assert code == EXIT_OK
         assert report["fits"] is True
         assert report["memory"]["weights_bytes"] == plan.weights_bytes
+        assert report["memory"]["state_bytes"] == 0
+        assert report["memory"]["latent_kv_bytes"] == 0
+        assert report["memory"]["vision_weights_bytes"] == 0
+        assert report["kv"]["groups"] == 1
         assert report["kv"]["bytes_per_token"] == plan.group.spec.bytes_per_token()
         assert report["speed"] is None
+
+    def test_hybrid_mla_and_vision_fields_surface_in_plan_json_and_lines(
+        self, checkpoint: TinyCheckpoint
+    ) -> None:
+        from ayaka.entrypoints.plan import plan_lines, plan_report
+
+        base = plan_engine(dataclasses.replace(tiny_engine_config(checkpoint.directory)))
+        enriched = dataclasses.replace(
+            base,
+            kv_groups=2,
+            state_bytes=8 * 2**20,
+            latent_kv_bytes=4 * 2**20,
+            vision_weights_bytes=32 * 2**20,
+            vision_activation_bytes=6 * 2**20,
+            vision_load="lazy",
+        )
+        rep: dict[str, Any] = plan_report(enriched, "hybrid-vision")
+        assert rep["kv"]["groups"] == 2
+        assert rep["memory"]["state_bytes"] == 8 * 2**20
+        assert rep["memory"]["latent_kv_bytes"] == 4 * 2**20
+        assert rep["memory"]["vision_weights_bytes"] == 32 * 2**20
+        assert rep["memory"]["vision_activation_bytes"] == 6 * 2**20
+        assert rep["memory"]["vision_load"] == "lazy"
+
+        text = "\n".join(plan_lines(enriched, "hybrid-vision"))
+        assert "2 groups" in text
+        assert "  state    " in text
+        assert "  latent   " in text
+        assert "  vision   " in text
+        assert "lazy" in text
 
     def test_a_plan_that_does_not_fit_exits_5_with_three_ways_out(
         self, checkpoint: TinyCheckpoint, capsys: pytest.CaptureFixture[str]

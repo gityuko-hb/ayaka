@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 from ayaka.core.errors import CapacityError, ConfigError, ModelLoadError
 from ayaka.device.capabilities import device_capabilities
@@ -149,6 +149,12 @@ class EnginePlan:
     stored_types: Mapping[str, int] | None = None
     groups: tuple[KVGroup | LatentKVGroup, ...] = ()
     state_group: RecurrentStateGroup | None = None
+    kv_groups: int = 1
+    state_bytes: int = 0
+    latent_kv_bytes: int = 0
+    vision_weights_bytes: int = 0
+    vision_activation_bytes: int = 0
+    vision_load: Literal["eager", "lazy"] = "eager"
 
     def __post_init__(self) -> None:
         if not self.groups:
@@ -266,6 +272,8 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         model_config.fingerprint if quant is None else f"{model_config.fingerprint}+{quant.name}"
     )
     model_fp = base_fp if kv_codec == RAW_CODEC else f"{base_fp}+kv:{kv_codec}"
+    if model_config.has_vision:
+        model_fp = f"{model_fp}+vision:{device.vision_load}"
     key = ProfileKey.build(
         device=f"{info.name} {capabilities.arch}",
         model=model_fp,
@@ -292,7 +300,9 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             previous.graph_bytes,
         )
     stored = stored_weights(config.source)
-    weights = weights_bytes(model) if stored is None else stored[0]
+    vision_weights = model.vision_weight_bytes()
+    base_weights = weights_bytes(model) if stored is None else stored[0]
+    weights = base_weights + (vision_weights if device.vision_load == "eager" else 0)
     try:
         budget = compute_budget(
             config,
@@ -324,6 +334,11 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     if config.cache.num_blocks is None:
         floor = 1 + div_ceil(reserve_tokens, block_size)
         blocks = min(blocks, max(1 + running * max_blocks, floor))
+    latent_bytes = sum(
+        blocks * g.spec.bytes_per_block() + g.spec.fixed_bytes()
+        for g in groups
+        if isinstance(g, LatentKVGroup)
+    )
     plan = EnginePlan(
         directory=directory,
         device=info,
@@ -345,6 +360,12 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         profiled=previous is not None,
         quantization=None if quant is None else quant.name,
         stored_types=None if stored is None else stored[1],
+        kv_groups=len(groups),
+        state_bytes=budget.state_bytes,
+        latent_kv_bytes=latent_bytes,
+        vision_weights_bytes=vision_weights,
+        vision_activation_bytes=model.vision_activation_bytes(),
+        vision_load=device.vision_load,
     )
     return plan, ops, baseline_reserved
 
@@ -496,7 +517,10 @@ def build_engine(
         runner=runner,
         kv=kv,
         input_processor=InputProcessor(
-            service, max_model_len=context, vocab_size=model_config.vocab_size
+            service,
+            max_model_len=context,
+            vocab_size=model_config.vocab_size,
+            vision=model_config.vision_spec,
         ),
         output_processor=OutputProcessor(service, abort=scheduler.abort),
         tokenizer=service,
