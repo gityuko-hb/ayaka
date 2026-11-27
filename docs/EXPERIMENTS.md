@@ -1085,4 +1085,13 @@ Pre-registered evaluation protocol before enabling host-RAM KV offloading (`--ho
   - Gate 2 (overhead & default): steady-state asynchronous write-behind overhead must stay `<= 2%`; until Linux and
     WSL2 GPU numbers satisfy both gates, `HostMemoryConfig.enabled` stays `False` (opt-in via `--host-kv`).
 - **Status:** Probe, host KV store, atomic pool resize, and `ayaka replay` verified on CPU (`torch 2.14.1+cpu`,
-  unit and tiny-model parity suites passing); live CUDA measurements on L4 and WSL2 RTX 3050 are **pending GPU runs**.
+  unit and tiny-model parity suites passing). Gate 1 measured on one other GPU: NVIDIA A100-SXM4-80GB, `Qwen/Qwen3-8B`
+  bf16, pinned host memory, 5 alternating rounds (`bench_host_kv_tier.py --prompt-tokens 4096 8192`):
+
+  | Prompt | Recompute | Host tier | Ratio | Token parity |
+  | ---: | ---: | ---: | ---: | --- |
+  | 4,096 | 440.35 ms | 179.57 ms | 0.408 | yes |
+  | 8,192 | 936.72 ms | 300.00 ms | 0.320 | yes |
+
+  This is not the run the gate names (L4 with Llama-3.1-8B, RTX 3050 with Llama-3.2-1B), and Gate 2 is not measured,
+  so the host tier stays opt-in. The L4, WSL2 and write-behind overhead measurements are **pending GPU runs**.
