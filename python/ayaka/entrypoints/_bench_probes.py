@@ -41,7 +41,7 @@ def measure_extended_probes(
     """Measure optional long-context and 1024x768 image probes when the model fits them."""
     extra: dict[str, dict[str, object]] = {}
     if usable >= 4096:
-        long_len = min(8192 if host.quick else 16384, usable)
+        long_len = min(32768, usable)
         say(f"long context: {long_len} tokens")
         long_prompt = build_prompt("long", long_len, host.encode)
         long_sec = host.prompt_read(long_prompt.token_ids)
