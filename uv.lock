@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "extra != 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130'",
@@ -202,7 +202,7 @@ version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a1/98/7e457a3b014976887a050561955c0b76e1e7e2d6e27b78ecef2ef80518f2/anyio-4.16.0.tar.gz", hash = "sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb", size = 310971, upload-time = "2026-11-01T11:20:07.282Z" }
 wheels = [
@@ -274,6 +274,10 @@ flashinfer = [
     { name = "flashinfer-python", marker = "sys_platform == 'linux'" },
     { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
 ]
+grpc = [
+    { name = "grpcio" },
+    { name = "protobuf" },
+]
 hf = [
     { name = "huggingface-hub" },
     { name = "tokenizers" },
@@ -288,6 +292,9 @@ structured = [
 tiktoken = [
     { name = "jinja2" },
     { name = "tiktoken" },
+]
+xgrammar = [
+    { name = "xgrammar" },
 ]
 
 [package.dev-dependencies]
@@ -315,19 +322,22 @@ test = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'serve'", specifier = ">=3.14.5" },
     { name = "flashinfer-python", marker = "sys_platform == 'linux' and extra == 'flashinfer'", specifier = "==0.7.4" },
+    { name = "grpcio", marker = "extra == 'grpc'", specifier = ">=1.70" },
     { name = "huggingface-hub", marker = "extra == 'hf'", specifier = ">=2.4.0" },
     { name = "jinja2", marker = "extra == 'tiktoken'", specifier = ">=3.1.6" },
     { name = "llguidance", marker = "extra == 'structured'", specifier = ">=1.9.1,<2" },
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "prometheus-client", specifier = ">=0.21" },
+    { name = "protobuf", marker = "extra == 'grpc'", specifier = ">=6.30" },
     { name = "tiktoken", marker = "extra == 'tiktoken'", specifier = ">=0.14.0" },
     { name = "tokenizers", marker = "extra == 'hf'", specifier = ">=0.23.3" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'flashinfer'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "ayaka-llm", extra = "flashinfer" } },
     { name = "torch", marker = "extra == 'cpu'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "ayaka-llm", extra = "cpu" } },
     { name = "torch", marker = "extra == 'cu130'", specifier = ">=2.14,<2.15", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "ayaka-llm", extra = "cu130" } },
     { name = "transformers", marker = "extra == 'hf'", specifier = ">=5.22,<6" },
+    { name = "xgrammar", marker = "extra == 'xgrammar'", specifier = ">=0.2.9,<0.3" },
 ]
-provides-extras = ["cpu", "cu130", "flashinfer", "hf", "serve", "structured", "tiktoken"]
+provides-extras = ["cpu", "cu130", "flashinfer", "grpc", "hf", "serve", "structured", "tiktoken", "xgrammar"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -602,7 +612,7 @@ name = "cuda-bindings"
 version = "13.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder" },
+    { name = "cuda-pathfinder", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/89/94/e90cb85fbe77d6d9b0d3d3d60c0964a59e7fbcc5b21be64a2fda6aff9e21/cuda_bindings-13.5.0-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:cf525b2c2113fdfd2b10899a3e5d280520e970aa13c6ca021e83d9d02f895ed1", size = 7388832, upload-time = "2026-11-05T12:06:11.458Z" },
@@ -719,43 +729,43 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-cufile", marker = "(platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (platform_machine != 'aarch64' and platform_machine != 'x86_64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'aarch64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (platform_machine == 'aarch64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (platform_machine == 'x86_64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (platform_machine == 'x86_64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform != 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-curand", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 cusolver = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform == 'win32' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 
 [[package]]
@@ -905,6 +915,47 @@ wheels = [
 ]
 
 [[package]]
+name = "grpcio"
+version = "1.85.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/90/c7/37a4a43210ef2ecbf570a84e66c61c8a197db3c4057dc23b20263875f9af/grpcio-1.85.4.tar.gz", hash = "sha256:45c4efd77dbfbb92cfebe493518c7e2a97ef3f4da2673508f81214b7493d7cca", size = 14119566, upload-time = "2026-11-24T10:08:14.94Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/68/ee00a3c275836ac90d52504b3be5c01d5298a559a15324db776e6d2991a5/grpcio-1.85.4-cp313-cp313-linux_armv7l.whl", hash = "sha256:12279daab9d1777165bf2150da1ae27b53e50ae72775fd8a87863d046eeec01c", size = 6801544, upload-time = "2026-11-24T10:07:04.004Z" },
+    { url = "https://files.pythonhosted.org/packages/89/09/90998ae20d4447630a8ddc40ab5adecbfa453bd799623448e31d398a1d1e/grpcio-1.85.4-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:430ab5e72d230d571cc30b4fbf60cf626c443ac39860092f76dfaff28bf0f300", size = 12629518, upload-time = "2026-11-24T10:07:06.272Z" },
+    { url = "https://files.pythonhosted.org/packages/66/e4/fd044f6e8ddabdd3a50e63cec2b9eca5415fb243ba964e4907a75ee18ba3/grpcio-1.85.4-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0d5202bae602cf80f762c3cb5bf9390577ac3e00e6a3aadce5b7aadd0f2acb57", size = 7174606, upload-time = "2026-11-24T10:07:08.914Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/8f/6215dbc6a7038600c7cd08fbafd14c7b305f6f0a95e002090d5e5554593c/grpcio-1.85.4-cp313-cp313-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:04cd455414321fcbe3c7ca87dd908d53e6d09fc98a265faa9d1c5561f4bed5a3", size = 8185057, upload-time = "2026-11-24T10:07:11.57Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/1b/bb8b36d604c3ad1c33a15dfccb5fd63f70271a996bff2233270817e17023/grpcio-1.85.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0988d60f32439566cb4e66be42e2c6bf6e1403177d41256dd87b4a34ab8c95f7", size = 7362522, upload-time = "2026-11-24T10:07:14.636Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/95/5397a6a3a930c9ea2140345162a418979104dcccc328a1296ddc297c14cd/grpcio-1.85.4-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:52dfabe3169170c653adb33093ffea597cb557ff5c16273a9023314430852dd7", size = 7930498, upload-time = "2026-11-24T10:07:17.286Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/41/5d688bc4295a00a5478d75114174ceb0b27cf783085ec90c37418163d52c/grpcio-1.85.4-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:a6d1c849a084846c1a0c8b8496024d8dd41d9cb964d5ffd73e8a316f315de19f", size = 9171485, upload-time = "2026-11-24T10:07:19.603Z" },
+    { url = "https://files.pythonhosted.org/packages/81/b8/9cec22c0f431b21cd76b9cf4e8e6eb2d9d9f8f398e99855d14c1575faecf/grpcio-1.85.4-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:f8465854ab700b4f85ab2abe9a18337b3b85bbbeced019567a0d963eaab94aee", size = 8310209, upload-time = "2026-11-24T10:07:22.361Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/85/41b74237e960fdce46112aea0a9e8d337111e381d43994eedd3de33729b2/grpcio-1.85.4-cp313-cp313-win32.whl", hash = "sha256:19e40e78581a00fff8d8e53c0c0faef4aa53eb93937cf79b0f312db0148053bd", size = 4768832, upload-time = "2026-11-24T10:07:24.46Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/66/c09f62da6cf56508b13cfd84bf6c687708060a255953a61b03f610bcf887/grpcio-1.85.4-cp313-cp313-win_amd64.whl", hash = "sha256:38509ee4053ee7561cc35afc57af236bfeaf5056d96be6bbaf1d294ac3f90535", size = 5606830, upload-time = "2026-11-24T10:07:26.412Z" },
+    { url = "https://files.pythonhosted.org/packages/77/b3/54fa6957a7ec67512ff0e6b54c126b7972a06233bede3c5057c48b9887f6/grpcio-1.85.4-cp314-cp314-linux_armv7l.whl", hash = "sha256:bafcdec12b152d83b0129d628568435e5db73396ee43292adddda0d08e52761f", size = 6803094, upload-time = "2026-11-24T10:07:28.472Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/7e/ecac0ba1f209b667d3b1e14da69fb46256b9e282edce0c15d47c9882d4c4/grpcio-1.85.4-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:2a471210eace83a9f2cd7445700a7f41eab2c261bfd56e02330105476200e47b", size = 12640253, upload-time = "2026-11-24T10:07:31.344Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/c3/dde68f94ec42c08b1f3908a4231db053f6bbf1b06b588b14eebe977f5f73/grpcio-1.85.4-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2499a2a8b1eac38b2845849a2b566b3d424ccb6dc5b11659c9dc71a3e486621a", size = 7187883, upload-time = "2026-11-24T10:07:35.248Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/56/77f6b0a79baf7d84657209bbdd86bbbde416d03dc7464b9a50b185119600/grpcio-1.85.4-cp314-cp314-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:2bad38694cffb899a8dc059704d997b1926065cb213135263151d5a7e89d813f", size = 8187371, upload-time = "2026-11-24T10:07:37.382Z" },
+    { url = "https://files.pythonhosted.org/packages/78/dc/99906c5b50089e68f1522deeaa6bbf0a362617dbc91c16193676a7eea37a/grpcio-1.85.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0b682bd6be9a621fb30e04364b0236f830e713add877c6d09527142a636adfe9", size = 7367056, upload-time = "2026-11-24T10:07:39.489Z" },
+    { url = "https://files.pythonhosted.org/packages/30/2c/0e2ab08f2c45a5f287eb2e9a3f6a7bdad0edfecbb1745c42915ead606503/grpcio-1.85.4-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:414cc472c74e3a2d633c752f4883b3a08f0c982b38c734a735de34b60cea91b0", size = 7940021, upload-time = "2026-11-24T10:07:41.562Z" },
+    { url = "https://files.pythonhosted.org/packages/82/25/4a5dbe06d4eb0c4adc9e62ce16be64d0487ca5349c051f4e2ccc8e21f9ce/grpcio-1.85.4-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:56d2108453468b0cf0653762de4de4a7b8d3b093e85905d3cb18b6990c4e8402", size = 9175151, upload-time = "2026-11-24T10:07:43.591Z" },
+    { url = "https://files.pythonhosted.org/packages/18/bb/bb0f0aef29c9dee72a8d4fda27684dc9f3d51d3e2352e8b9b625af4a6aeb/grpcio-1.85.4-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:fdd65fe8df4462a32f9f575ab9642f7f7f2cda157a6a7903d20824ab288c8d1d", size = 8315681, upload-time = "2026-11-24T10:07:45.856Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/6b/b44db1c0ffb064f8b298ffbdd5151cffc886a0c21d9eada3bc00038a9d4b/grpcio-1.85.4-cp314-cp314-win32.whl", hash = "sha256:887d9bed52d9974149d7f108f5a064951cb9b72524aa5fdb0248334fc9ebb8c2", size = 4853698, upload-time = "2026-11-24T10:07:47.799Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/1a/99bfe4a69ea3d7878e970841c61c67a06db7cc93243c4371fd3ff7e0dba1/grpcio-1.85.4-cp314-cp314-win_amd64.whl", hash = "sha256:157eff419b9ddeb5662106a2f940590bb70d82f3efc229e9347ae839e0bee0a4", size = 5758604, upload-time = "2026-11-24T10:07:49.504Z" },
+    { url = "https://files.pythonhosted.org/packages/66/ad/4479b83f46fb6c7dc220f5a150b55d7b9db7b942efb0112a79683ebdd199/grpcio-1.85.4-cp315-cp315-linux_armv7l.whl", hash = "sha256:079ff0804bef1620e68fa5e0e071b9af1cb3fa83eb6949a2749a54114078a6c7", size = 6803551, upload-time = "2026-11-24T10:07:51.547Z" },
+    { url = "https://files.pythonhosted.org/packages/51/40/ea0f1e9dfa851abeb43598b33c0446d3d4c36b1c2ad0bd0ac1dae105eaa4/grpcio-1.85.4-cp315-cp315-macosx_10_15_universal2.whl", hash = "sha256:9d90638d13d8fa2cf32eda5ab8ad648ddcb1ba32dd6c05a57a52f1c98903b778", size = 12658332, upload-time = "2026-11-24T10:07:54.064Z" },
+    { url = "https://files.pythonhosted.org/packages/35/67/53b25eb776a84b55874e0406d780d776a5dd12f58f21ae117240c27d025f/grpcio-1.85.4-cp315-cp315-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:74a09c600c533d2c958a84f1f7b681668183b8b26779b3e93d60d53e98ed5a46", size = 7209516, upload-time = "2026-11-24T10:07:56.491Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/da/4a94abfc3d128b9e2b54bb93bb76c21902eb95a7d1f6d2fa9275debed1c8/grpcio-1.85.4-cp315-cp315-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:473e1094f86b0969b79ef26d68036c53a3027bb592df2bc459862303a8a5a529", size = 7510038, upload-time = "2026-11-24T10:07:58.611Z" },
+    { url = "https://files.pythonhosted.org/packages/48/11/60c9854e23752e59c712aa96db1ea442eb6d10441fbb865209839d337c90/grpcio-1.85.4-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:39a5ec3806267c429612830990439c0998b908b0b06af9117e1feb2ff165d982", size = 7409708, upload-time = "2026-11-24T10:08:00.68Z" },
+    { url = "https://files.pythonhosted.org/packages/43/59/23713cae9d8ed4fb08b957d999d6f148ef3c451d0afb8a84c57fd80ac65b/grpcio-1.85.4-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:f1c2213e59e45a342ee71bb593265fffa9027a4c8cf00f8cf3cc217bc3c75a78", size = 7963802, upload-time = "2026-11-24T10:08:03.006Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/8f/31b21b2d19afbc0e9b1c59167172429f268230853a88a44046efc78286cf/grpcio-1.85.4-cp315-cp315-musllinux_1_2_i686.whl", hash = "sha256:d9b21ccb14c89638504a9e1ec23d970d2ba761a400a4e1722cac52b8f570c5e2", size = 8502441, upload-time = "2026-11-24T10:08:05.355Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/53/70a3cdc838158eb911f77769ac75b23ad44f52a32101039ec76be49ad73d/grpcio-1.85.4-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:077c1cf5709fa6050b45e3aa58084c199442110c6172dfb42ef8a42104f92183", size = 8346315, upload-time = "2026-11-24T10:08:08.154Z" },
+    { url = "https://files.pythonhosted.org/packages/99/83/77c4c96a8ce080282273b4751faba67f1f8721db820d7767d06bbdab7c55/grpcio-1.85.4-cp315-cp315-win32.whl", hash = "sha256:435706a011b14c4c1837f113de5e4c088cdcd8bfe417c2aecfb978242a7ac70f", size = 4853749, upload-time = "2026-11-24T10:08:09.885Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/a8/19612c90d012e82ef04badc429f50087f7747b5a00215b9402c53c51eb40/grpcio-1.85.4-cp315-cp315-win_amd64.whl", hash = "sha256:893ab605f59a97056d8dfbd648439cd8aaf1ce3c8720b099978efa9bff574099", size = 5758567, upload-time = "2026-11-24T10:08:12.137Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -955,11 +1006,11 @@ name = "httpx2"
 version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "sys_platform != 'emscripten'" },
-    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
-    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten'" },
+    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "httpx2-jsfetch", marker = "sys_platform == 'emscripten' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
     { name = "idna" },
-    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/73/5ca2cedf5e4e50423d1c258877865a6b62793633b561c58499f8aeb33b7e/httpx2-2.16.0.tar.gz", hash = "sha256:0d54c98128e8f2ff7fbbde0fca8c359e5f032edeaaaac443cdb7f31f685bcd7f", size = 103116, upload-time = "2026-10-21T07:09:46.348Z" }
 wheels = [
@@ -983,7 +1034,7 @@ dependencies = [
     { name = "click" },
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
     { name = "httpx2" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -1535,7 +1586,7 @@ name = "nvidia-cublas"
 version = "13.1.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-nvrtc" },
+    { name = "nvidia-cuda-nvrtc", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/a1/0bd24ee8c8d03adac032fd2909426a00c88f8c57961b1277ded97f91119f/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b7a210458267ac818974c53038fbec2e969d5c99f305ab15c72522fa9f001dd5", size = 542848918, upload-time = "2026-04-08T18:46:22.985Z" },
@@ -1578,7 +1629,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.24.0.43"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas" },
+    { name = "nvidia-cublas", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ca/30/7c257e3d5cb4fecb147b93895c66e29c93f8e76d74b45bb418ff0587c4ec/nvidia_cudnn_cu13-9.24.0.43-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:a6812a554a1ff0413e9c52b84c26c050380649ab9615f9c16bded368ce9f421f", size = 650976863, upload-time = "2026-07-02T16:23:39.248Z" },
@@ -1592,7 +1643,7 @@ version = "1.32.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "apache-tvm-ffi", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
-    { name = "nvidia-cutlass-dsl", extra = ["cu13"], marker = "(platform_machine != 'ARM64' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-cutlass-dsl", extra = ["cu13"], marker = "(platform_machine != 'ARM64' and extra != 'extra-9-ayaka-llm-cpu') or (sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'win32' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform != 'win32' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/89/c1/5612d112af65b624779141ef7275193ab0ca233b563be9454e8328a4ab53/nvidia_cudnn_frontend-1.32.3-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:98aebb66416e39108f98f33b703a24bcb96517429daaad8709fb95f2710f72be", size = 11454046, upload-time = "2026-11-10T17:54:18.903Z" },
@@ -1615,7 +1666,7 @@ name = "nvidia-cufft"
 version = "12.0.0.61"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-nvjitlink", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ae/f417a75c0259e85c1d2f83ca4e960289a5f814ed0cea74d18c353d3e989d/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2708c852ef8cd89d1d2068bdbece0aa188813a0c934db3779b9b1faa8442e5f5", size = 214053554, upload-time = "2025-09-04T08:31:38.196Z" },
@@ -1647,9 +1698,9 @@ name = "nvidia-cusolver"
 version = "12.0.4.66"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas" },
-    { name = "nvidia-cusparse" },
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-cublas", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "nvidia-cusparse", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "nvidia-nvjitlink", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/c3/b30c9e935fc01e3da443ec0116ed1b2a009bb867f5324d3f2d7e533e776b/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:02c2457eaa9e39de20f880f4bd8820e6a1cfb9f9a34f820eb12a155aa5bc92d2", size = 223467760, upload-time = "2025-09-04T08:33:04.222Z" },
@@ -1662,7 +1713,7 @@ name = "nvidia-cusparse"
 version = "12.6.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-nvjitlink", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/94/5c26f33738ae35276672f12615a64bd008ed5be6d1ebcb23579285d960a9/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80bcc4662f23f1054ee334a15c72b8940402975e0eab63178fc7e670aa59472c", size = 162155568, upload-time = "2025-09-04T08:33:42.864Z" },
@@ -2146,7 +2197,7 @@ name = "pytest"
 version = "9.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -2521,13 +2572,13 @@ resolution-markers = [
     "sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "filelock", marker = "sys_platform == 'darwin'" },
-    { name = "fsspec", marker = "sys_platform == 'darwin'" },
-    { name = "jinja2", marker = "sys_platform == 'darwin'" },
-    { name = "networkx", marker = "sys_platform == 'darwin'" },
-    { name = "setuptools", marker = "sys_platform == 'darwin'" },
-    { name = "sympy", marker = "sys_platform == 'darwin'" },
-    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
+    { name = "filelock", marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "fsspec", marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "jinja2", marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "networkx", marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "setuptools", marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "sympy", marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "typing-extensions", marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:82762c7527079f1e17a771684362ed51400e3bc72942df30217e40f27c6816d7", upload-time = "2026-09-30T19:50:39Z" },
@@ -2545,13 +2596,13 @@ resolution-markers = [
     "sys_platform != 'darwin'",
 ]
 dependencies = [
-    { name = "filelock", marker = "sys_platform != 'darwin'" },
-    { name = "fsspec", marker = "sys_platform != 'darwin'" },
-    { name = "jinja2", marker = "sys_platform != 'darwin'" },
-    { name = "networkx", marker = "sys_platform != 'darwin'" },
-    { name = "setuptools", marker = "sys_platform != 'darwin'" },
-    { name = "sympy", marker = "sys_platform != 'darwin'" },
-    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
+    { name = "filelock", marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "fsspec", marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "jinja2", marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "networkx", marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "setuptools", marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "sympy", marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "typing-extensions", marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-linux_s390x.whl", hash = "sha256:4b323c71a5ac184485c87d694842157b1eb217c425ad69761dafd379d1590521", upload-time = "2026-09-30T19:47:59Z" },
@@ -2580,20 +2631,20 @@ name = "torch"
 version = "2.14.1+cu130"
 source = { registry = "https://download.pytorch.org/whl/cu130" }
 dependencies = [
-    { name = "cuda-bindings", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
+    { name = "cuda-bindings", marker = "(python_full_version < '3.15' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
     { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx" },
-    { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-cusparselt-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-nccl-cu13", marker = "sys_platform == 'linux'" },
-    { name = "nvidia-nvshmem-cu13", marker = "sys_platform == 'linux'" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "triton", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "fsspec", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "jinja2", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "networkx", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "nvidia-cudnn-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-cusparselt-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-nccl-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "nvidia-nvshmem-cu13", marker = "(sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "setuptools", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "sympy", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "triton", marker = "(python_full_version < '3.15' and sys_platform == 'linux' and extra != 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "typing-extensions", marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:36d7d3065e072a8b190460327bc68afd0f91592af2433f65bd5dd7d86738f38d", upload-time = "2026-09-30T20:26:24Z" },
@@ -2618,7 +2669,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [
@@ -2673,7 +2724,7 @@ version = "0.28.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
     { name = "rich" },
     { name = "shellingham" },
 ]
@@ -2726,6 +2777,42 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/69/74/745e612b69ad14a534b7bc233c4574b968eb2c21a276ea172e8f0fc13f51/virtualenv-21.15.5.tar.gz", hash = "sha256:fb869ea32930530ccc87549877b53268c2a4d4a7d7f2c384042eca05170350e6", size = 5639868, upload-time = "2026-11-04T05:13:20.929Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9d/d6/f9ac78f115e32e0d76adda9db72b74425b86495ae274cd7b58c660f5d1c1/virtualenv-21.15.5-py3-none-any.whl", hash = "sha256:bcf98c32139cf3df7f0cc2c8c48ca150645c20e66f8c4fe6c1e5e40bcae73947", size = 5680750, upload-time = "2026-11-04T05:13:19.057Z" },
+]
+
+[[package]]
+name = "xgrammar"
+version = "0.2.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-tvm-ffi" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-ayaka-llm-cpu') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "extra == 'extra-9-ayaka-llm-cu130' or extra == 'extra-9-ayaka-llm-flashinfer' or extra != 'extra-9-ayaka-llm-cpu'" },
+    { name = "transformers" },
+    { name = "triton", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (platform_machine != 'x86_64' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer') or (sys_platform != 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-cu130') or (sys_platform != 'linux' and extra == 'extra-9-ayaka-llm-cpu' and extra == 'extra-9-ayaka-llm-flashinfer')" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3a/2f/5bf8e8fa6619cff534932f79b0abc81a417d354bc5093252c1a6081d0a93/xgrammar-0.2.9.tar.gz", hash = "sha256:87b466bca2475e29bb0323abc62c6c33cbcbcff47e5fb800a3e2099ac9620b90", size = 2763853, upload-time = "2026-11-09T16:09:24.187Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/8e/a2c93a5756689f57adb913245a89b3a3b7978c60a4b34b0dc4ce155540c2/xgrammar-0.2.9-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:3e3d9615e083a94c65af6619e0e9aae272e9938f4b3167fd05dbc489870b212c", size = 1312486, upload-time = "2026-11-09T16:08:47.675Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/25/34e85e8c878286233fb9ecab26ad58948af8d3b104df1e27478f307adef3/xgrammar-0.2.9-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:454d6f0db15dabda6a7735801e0d0ed4685404e1100bcf2e1cacaae50c3f1344", size = 1195237, upload-time = "2026-11-09T16:08:49.439Z" },
+    { url = "https://files.pythonhosted.org/packages/30/ae/9e4ca46a3ccc542b74c86f9422fcd0d35141e1af2da526227a4ee686341a/xgrammar-0.2.9-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fd18ee20065863cfe2eb9947e6bbf515ae1966ced1352f17799c0aa54dbb1ac4", size = 1349110, upload-time = "2026-11-09T16:08:50.993Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/11/6b74367b2a07ffc59f6cd276fd7ea1250ec7f3fd28562ef9973360887b1d/xgrammar-0.2.9-cp313-cp313-win_amd64.whl", hash = "sha256:d536c183592068aafcf63b50bb7b4f4f2bc6e19f70bdb343270727bd38c7a182", size = 1152557, upload-time = "2026-11-09T16:08:52.427Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/d5/be51a3834d9c314d3536d08c51b71e7dff7f73fe056e231f51bbdeba2518/xgrammar-0.2.9-cp313-cp313-win_arm64.whl", hash = "sha256:6b7a2adb0eac411e273f5986fd62f992577e6e9352d3099f4179c0314e5d6463", size = 1117757, upload-time = "2026-11-09T16:08:54.142Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/d5/e2bb68c5c2eaf20f251be1c119333cab763d27af83ced608eddeb634d9cf/xgrammar-0.2.9-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:294f7cbbd5aad54bf01ebe2759aad73103ab41375e4a820bdad2215c7331fba1", size = 1539189, upload-time = "2026-11-09T16:08:55.501Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/66/845fa8d15bd74c0b1f730a2b987c0ced2a8703d26b0605d5d8c727f9758c/xgrammar-0.2.9-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:d58dced7b5185f920cb71ade59d2b58437dd49c1a58c1699c132ded936ae552d", size = 1312485, upload-time = "2026-11-09T16:08:56.94Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/b1/6a7b7af855f797bc46611f49a7ebb4d1f9b42042129ff298f0b742f6e3c9/xgrammar-0.2.9-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:49ec16383105cafff2ec2bd24306f8839b103379a5f20667516ad986f7f21237", size = 1195240, upload-time = "2026-11-09T16:08:58.442Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/79/7ee1cf491fd849f8fa172875f24ac2567df92a6ad23d28132e03bb736cad/xgrammar-0.2.9-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ace95ca1b7d9b631a9ccbbccb13751847a11c75da29b0f468983a4616922ab6d", size = 1349112, upload-time = "2026-11-09T16:08:59.787Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/13/1133a82eda54d8f0a0012cd892999f96998f22463f9f5696948b38da1b4b/xgrammar-0.2.9-cp314-cp314-win_amd64.whl", hash = "sha256:0c8fca71c4280dc000f5d890883bc37ffbf0ff348bf307eeb6128a63ea0a90ce", size = 1180388, upload-time = "2026-11-09T16:09:01.141Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/64/279d5ee4dcbe2f1a3569f565f6abdf18718eae3b2fb178957238356004bd/xgrammar-0.2.9-cp314-cp314-win_arm64.whl", hash = "sha256:a022d3de1d4212991ab33106ecbb7f9f4feade0fd744892de1e097a270cf0775", size = 1146233, upload-time = "2026-11-09T16:09:02.474Z" },
+    { url = "https://files.pythonhosted.org/packages/08/13/f4b1df5986e243dd08628773e61bcb7bc533e90e7ccc777193f20d38da10/xgrammar-0.2.9-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:8f8e356703a341d24d1e2d1a9f593dd9c25b42409ee1903a4ef05537669d0b38", size = 1539180, upload-time = "2026-11-09T16:09:03.998Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/89/fda0fc72ac66c11d769f50a41e303ce053bef7959d6f8bda9859a792abe2/xgrammar-0.2.9-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:f17c7b0ab2b20ffc9627d0dc2dbcc437f0d57dc58f5e90cd75aeba4d5f3bfad3", size = 1312472, upload-time = "2026-11-09T16:09:06.379Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/cf/61df9e7b60a528553f36f4287be6d071d8fafbdb890006b80f058f063bd9/xgrammar-0.2.9-cp314-cp314t-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2441cf7d67f56998731a617413ec77cd118feebc14546a9f290264d2e967c81d", size = 1195206, upload-time = "2026-11-09T16:09:07.887Z" },
+    { url = "https://files.pythonhosted.org/packages/05/2a/3f09ad305ba20540cd8cf8e0a4e49ba6a9eb550fae9831f1ee3d724ee0e3/xgrammar-0.2.9-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0826fb5d20f316ff256afd649d0e85249bdc2f59e868cd2f0f7914edcb0a6d93", size = 1349099, upload-time = "2026-11-09T16:09:09.593Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/ad/fd3b804763b4ebb956ed37d6c71316e4cadd5928b578efba7b5c526f8058/xgrammar-0.2.9-cp314-cp314t-win_amd64.whl", hash = "sha256:038dad5eec40653d44b645437880ba1a3717ede26933839536252de557b4f242", size = 1180388, upload-time = "2026-11-09T16:09:11.373Z" },
+    { url = "https://files.pythonhosted.org/packages/76/b4/b0718a6fa157c71f4791e88c75689e67b252be4024adc2f43803f219f3a2/xgrammar-0.2.9-cp314-cp314t-win_arm64.whl", hash = "sha256:d9acab773893c31efa49ea328e644c1ef5185aecb0b5b8d339257712539d9b4c", size = 1146231, upload-time = "2026-11-09T16:09:12.96Z" },
 ]
 
 [[package]]

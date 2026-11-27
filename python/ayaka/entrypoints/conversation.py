@@ -32,7 +32,7 @@ from ayaka.utils.parsing import parse_json_strict
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from ayaka.core.constraints import ConstraintKind
+    from ayaka.core.constraints import ConstraintKind, StructuralTagSpec
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import FinishReason
 
@@ -113,6 +113,7 @@ class Turn:
         tool_calls: The calls an assistant turn makes.
         tool_call_id: For a ``tool`` turn, the call it answers.
         name: For a ``tool`` turn, the function that was called, when it is known.
+        reasoning: Optional reasoning text from an earlier assistant turn.
     """
 
     role: Role
@@ -120,6 +121,7 @@ class Turn:
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
     name: str | None = None
+    reasoning: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +141,10 @@ class OutputRequest:
 
     response: ConstraintKind | None = None
     schema: Mapping[str, object] | None = None
+    pattern: str | None = None
+    choices: tuple[str, ...] = ()
+    grammar: str | None = None
+    structural_tag: StructuralTagSpec | None = None
     tool_choice: str = "auto"
     strict: bool = False
 
@@ -169,6 +175,8 @@ class Conversation:
             messages.append({"role": "system", "content": self.system})
         for turn in self.turns:
             message: dict[str, object] = {"role": turn.role, "content": turn.text}
+            if turn.reasoning is not None:
+                message["reasoning_content"] = turn.reasoning
             if turn.tool_calls:
                 message["tool_calls"] = [
                     {
@@ -244,9 +252,15 @@ class ConversationBuilder:
         """Add a user message."""
         self._turns.append(Turn(role="user", text=text))
 
-    def assistant(self, text: str, tool_calls: Sequence[ToolCall] = ()) -> None:
-        """Add an assistant message, with the tool calls it makes."""
-        self._turns.append(Turn(role="assistant", text=text))
+    def assistant(
+        self,
+        text: str,
+        tool_calls: Sequence[ToolCall] = (),
+        *,
+        reasoning: str | None = None,
+    ) -> None:
+        """Add an assistant message, with optional reasoning and the tool calls it makes."""
+        self._turns.append(Turn(role="assistant", text=text, reasoning=reasoning))
         for call in tool_calls:
             self.tool_call(call)
 
@@ -258,7 +272,10 @@ class ConversationBuilder:
         last = self._turns[-1] if self._turns else None
         if last is not None and last.role == "assistant":
             self._turns[-1] = Turn(
-                role="assistant", text=last.text, tool_calls=(*last.tool_calls, call)
+                role="assistant",
+                text=last.text,
+                tool_calls=(*last.tool_calls, call),
+                reasoning=last.reasoning,
             )
         else:
             self._turns.append(Turn(role="assistant", tool_calls=(call,)))

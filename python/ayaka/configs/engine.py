@@ -19,7 +19,7 @@ building, not an input. Checks that need it happen there.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Literal, cast
 
 from ayaka.configs.base import ConfigMixin
 from ayaka.configs.cache import CacheConfig
@@ -63,8 +63,15 @@ class EngineConfig(ConfigMixin):
     cache: CacheConfig = field(default_factory=CacheConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     host_memory: HostMemoryConfig = field(default_factory=HostMemoryConfig)
+    structured_backend: Literal["llguidance", "xgrammar"] = "llguidance"
 
     def __post_init__(self) -> None:
+        if self.structured_backend not in ("llguidance", "xgrammar"):  # pyright: ignore[reportUnnecessaryComparison]
+            raise ConfigError(
+                "engine.structured_backend",
+                "INVALID_CHOICE",
+                f"must be llguidance or xgrammar, got {self.structured_backend!r}",
+            )
         for name, kind in (
             ("source", ModelSourceConfig),
             ("device", DeviceConfig),

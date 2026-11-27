@@ -488,7 +488,10 @@ def build_engine(
         runner=runner,
         kv=kv,
         input_processor=InputProcessor(
-            service, max_model_len=context, vocab_size=model_config.vocab_size
+            service,
+            max_model_len=context,
+            vocab_size=model_config.vocab_size,
+            structured_backend=config.structured_backend,
         ),
         output_processor=OutputProcessor(service, abort=scheduler.abort),
         tokenizer=service,
@@ -577,16 +580,7 @@ def _startup_run(
 
 
 def _release_cached_device_memory(device: DeviceConfig) -> int:
-    """Give memory torch caches but no tensor uses back to the driver, before the baseline is read.
-
-    Only matters when this process already used the GPU (an earlier engine, a test): the baseline
-    must be what is free to this engine, not what an earlier one left in torch's cache. In a fresh
-    process torch is not imported yet and nothing happens.
-
-    Returns:
-        What torch's allocator still holds afterwards (tensors that are still alive), so the
-        start-up run counts only what this engine reserves on top; 0 in a fresh process.
-    """
+    """Release unused cached device memory before taking the baseline reading."""
     torch = sys.modules.get("torch")
     if device.device_type != "cuda" or torch is None or not torch.cuda.is_initialized():
         return 0

@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+# The protocol encoders below import aiohttp, which the adapters job does not install.
+pytest.importorskip("aiohttp")
+
 from ayaka.configs.server import ServerConfig
 from ayaka.core.errors import ConfigError, OutOfMemoryError, PreemptedTimeoutError
 from ayaka.core.outputs import CompletionOutput, RequestOutput
@@ -214,3 +217,89 @@ def test_http_rejects_overlong_by_default_and_truncates_when_opted_in(
 
     assert asyncio.run(check(reject=True)) == 400
     assert asyncio.run(check(reject=False)) == 200
+
+
+def _linear_truncation(groups: list[int], limit: int) -> int | None:
+    """The reference: the fewest leading groups whose removal makes the rest fit."""
+    for start in range(1, len(groups)):
+        if sum(groups[start:]) <= limit:
+            return start
+    return None
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_truncation_bisection_finds_the_cut_of_the_linear_scan_in_log_renders(seed: int) -> None:
+    import math
+    import random
+
+    rng = random.Random(seed)  # noqa: S311  # test data, not secrets
+    sizes = [rng.randint(1, 40) for _ in range(rng.randint(2, 300))]
+    limit = rng.randint(sizes[-1], sum(sizes) + 10)
+    turns = tuple(Turn(role="user", text=f"t{index}") for index in range(len(sizes)))
+    cost = {turn.text: size for turn, size in zip(turns, sizes, strict=True)}
+    calls = 0
+
+    def fits(candidate: Conversation) -> tuple[bool, int]:
+        nonlocal calls
+        calls += 1
+        count = sum(cost[turn.text] for turn in candidate.turns)
+        return count <= limit, count
+
+    trimmed, dropped = truncate_conversation(
+        Conversation(system="s", turns=turns), fits, max_prompt_tokens=limit
+    )
+    expected = 0 if sum(sizes) <= limit else _linear_truncation(sizes, limit)
+    assert dropped == expected
+    assert trimmed.turns == turns[dropped:]
+    # The first call checks the whole conversation; the bisection then needs ceil(log2(n)).
+    assert calls <= 1 + math.ceil(math.log2(len(sizes))) + 1
+
+
+def test_http_responses_truncation_auto_truncates_under_the_reject_policy(
+    checkpoint: TinyCheckpoint,
+) -> None:
+    items = [
+        {"role": "user", "content": "old-turn-" + "a" * 80},
+        {"role": "assistant", "content": "old-reply-" + "b" * 80},
+        {"role": "user", "content": "hi"},
+    ]
+
+    async def check(truncation: str) -> int:
+        async with serve(checkpoint.directory, config=ServerConfig()) as (client, _, _):
+            cli: TestClient[Any, Any] = client
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "tiny",
+                    "input": items,
+                    "max_output_tokens": 4,
+                    "temperature": 0,
+                    "truncation": truncation,
+                },
+            )
+            return resp.status
+
+    assert asyncio.run(check("disabled")) == 400
+    assert asyncio.run(check("auto")) == 200
+
+
+def test_http_anthropic_messages_follow_the_truncate_policy(checkpoint: TinyCheckpoint) -> None:
+    messages = [
+        {"role": "user", "content": "old-turn-" + "a" * 80},
+        {"role": "assistant", "content": "old-reply-" + "b" * 80},
+        {"role": "user", "content": "hi"},
+    ]
+
+    async def check(policy: str) -> int:
+        cfg = ServerConfig(overlong_policy=policy)  # type: ignore[arg-type]
+        async with serve(checkpoint.directory, config=cfg) as (client, _, _):
+            cli: TestClient[Any, Any] = client
+            resp = await cli.post(
+                "/v1/messages",
+                json={"model": "tiny", "max_tokens": 4, "temperature": 0, "messages": messages},
+                headers={"anthropic-version": "2023-06-01"},
+            )
+            return resp.status
+
+    assert asyncio.run(check("reject")) == 400
+    assert asyncio.run(check("truncate")) == 200

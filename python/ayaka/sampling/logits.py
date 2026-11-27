@@ -30,7 +30,7 @@ from ayaka.core.params import LogprobMode
 from ayaka.sampling.penalties import uses_penalties
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from numpy.typing import NDArray
 
@@ -136,6 +136,7 @@ def build_controls(
     penalties: PenaltyStates | None,
     device: torch.device | str,
     constraints: ConstraintRuntime | None = None,
+    draft_tokens: Mapping[RequestId, Sequence[TokenId]] | None = None,
 ) -> LogitControls | None:
     """The transforms of a step, or ``None`` when no row asks for one.
 
@@ -146,18 +147,32 @@ def build_controls(
             ``min_tokens`` unless a request sets ``ignore_eos``.
         penalties: The requests' token counts.
         device: Where the logits are.
-        constraints: The running output constraints; a row whose constraint is active gets its
-            structural mask. Only the first row of a request's window has one (no speculation
-            runs with a constraint).
+        constraints: The running output constraints; each row of a request's verification window
+            receives the exact mask after tentatively advancing through prior draft tokens.
+        draft_tokens: Optional speculative draft tokens keyed by ``request_id`` for guided
+            speculative verification windows.
     """
     has_eos = bool(eos_token_ids)
     structural: list[NDArray[np.uint32] | None] = [None] * len(rows)
     if constraints is not None and len(constraints):
-        seen: set[RequestId] = set()
+        windows: dict[RequestId, list[NDArray[np.uint32] | None]] = {}
+        offsets: dict[RequestId, int] = {}
         for index, row in enumerate(rows):
-            if row.request_id not in seen:
-                seen.add(row.request_id)
-                structural[index] = constraints.mask(row.request_id)
+            rid = row.request_id
+            window = windows.get(rid)
+            if window is None:
+                drafts = draft_tokens.get(rid, ()) if draft_tokens is not None else ()
+                window = constraints.window_masks(rid, drafts)
+                if window is None:
+                    windows[rid] = []
+                    offsets[rid] = 0
+                    continue
+                windows[rid] = window
+                offsets[rid] = 0
+            offset = offsets[rid]
+            if offset < len(window):
+                structural[index] = window[offset]
+                offsets[rid] = offset + 1
     if all(mask is None for mask in structural) and not any(
         needs_controls(row.params, row.produced, has_eos=has_eos) for row in rows
     ):

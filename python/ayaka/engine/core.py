@@ -265,8 +265,8 @@ class EngineCore:
 
     def _admit_constraint(self, request: TokenizedRequest) -> None:
         """Start the request's output constraint from its compiled grammar, if it has one."""
-        if request.constraint_id is not None:
-            matcher = self._input.compiler.matcher(request.constraint_id)
+        if request.constraint_id is not None and request.structured is not None:
+            matcher = self._input.compiler.matcher(request.constraint_id, request.structured)
             self._runner.constraints.admit(request.request_id, matcher)
 
     def _admit_family(self, request: TokenizedRequest, stream: bool) -> None:

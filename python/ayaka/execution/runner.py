@@ -268,6 +268,11 @@ class ModelRunner:
         if count == 0:
             return [], []  # prefill chunks that all continue: the cache is written, none drawn
         logits = self._model.compute_logits(hidden.index_select(0, inputs.logit_rows))
+        draft_by_req = {
+            step.request_ids[index]: inputs.draft_tokens[index]
+            for index in range(step.num_requests)
+            if inputs.draft_tokens[index]
+        }
         controls = build_controls(
             _logit_rows(step, inputs.logit_counts),
             vocab_size=int(logits.shape[-1]),
@@ -275,6 +280,7 @@ class ModelRunner:
             penalties=self._penalties,
             device=self._device,
             constraints=self._constraints,
+            draft_tokens=draft_by_req,
         )
         logprobs = self._sampler.sample(logits, inputs.sampling, inputs.sampled, controls)
         return self._builder.read_sampled(count), logprobs

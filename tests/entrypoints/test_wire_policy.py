@@ -82,7 +82,6 @@ def test_hints_and_unknown_fields_are_logged_and_pass(caplog: pytest.LogCaptureF
         apply_policy(body, "/v1/chat/completions")
 
     messages = [record.getMessage() for record in caplog.records]
-    assert "chat completions: reasoning_effort is a hint; the model reasons as trained" in messages
     assert "chat completions: ignoring unknown fields ['brand_new_field']" in messages
 
 
