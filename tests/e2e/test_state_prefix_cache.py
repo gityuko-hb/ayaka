@@ -6,36 +6,36 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from ayaka.configs.model import ModelConfig
-from ayaka.configs.scheduler import SchedulerConfig
-from ayaka.core.params import SamplingParams
-from ayaka.core.request import TokenizedRequest
-from ayaka.core.types import FinishReason, RequestId
-from ayaka.execution.runner import ModelRunner
-from ayaka.kvcache.manager import KVCacheManager
-from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
-from ayaka.kvcache.prefix.hashing import ChainRoot
-from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool
-from ayaka.kvcache.storage.pool import KVPool, RecurrentStatePool
-from ayaka.kvcache.storage.spec import (
+torch: Any = pytest.importorskip("torch")
+
+from ayaka.configs.model import ModelConfig  # noqa: E402
+from ayaka.configs.scheduler import SchedulerConfig  # noqa: E402
+from ayaka.core.params import SamplingParams  # noqa: E402
+from ayaka.core.request import TokenizedRequest  # noqa: E402
+from ayaka.core.types import FinishReason, RequestId  # noqa: E402
+from ayaka.execution.runner import ModelRunner  # noqa: E402
+from ayaka.kvcache.manager import KVCacheManager  # noqa: E402
+from ayaka.kvcache.prefix.hash_cache import HashPrefixCache  # noqa: E402
+from ayaka.kvcache.prefix.hashing import ChainRoot  # noqa: E402
+from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool  # noqa: E402
+from ayaka.kvcache.storage.pool import KVPool, RecurrentStatePool  # noqa: E402
+from ayaka.kvcache.storage.spec import (  # noqa: E402
     KVGroup,
     KVSpec,
     RecurrentStateGroup,
     RecurrentStateSpec,
 )
-from ayaka.layers.attention.dense import Attention
-from ayaka.layers.attention.linear import GatedDeltaNetAttention
-from ayaka.layers.embedding.token import LMHead, TokenEmbedding
-from ayaka.layers.norm import RMSNorm
-from ayaka.layers.rope import RotaryEmbedding
-from ayaka.models.base import CausalLM
-from ayaka.ops.backend import load_backend
-from ayaka.ops.kvcache import RAW_CODEC
-from ayaka.scheduler.scheduler import Scheduler
-from ayaka.utils.dtypes import DType
-from ayaka.weights.mapping import WeightMapping
-
-torch: Any = pytest.importorskip("torch")
+from ayaka.layers.attention.dense import Attention  # noqa: E402
+from ayaka.layers.attention.linear import GatedDeltaNetAttention  # noqa: E402
+from ayaka.layers.embedding.token import LMHead, TokenEmbedding  # noqa: E402
+from ayaka.layers.norm import RMSNorm  # noqa: E402
+from ayaka.layers.rope import RotaryEmbedding  # noqa: E402
+from ayaka.models.base import CausalLM  # noqa: E402
+from ayaka.ops.backend import load_backend  # noqa: E402
+from ayaka.ops.kvcache import RAW_CODEC  # noqa: E402
+from ayaka.scheduler.scheduler import Scheduler  # noqa: E402
+from ayaka.utils.dtypes import DType  # noqa: E402
+from ayaka.weights.mapping import WeightMapping  # noqa: E402
 
 if TYPE_CHECKING:
     from torch import Tensor

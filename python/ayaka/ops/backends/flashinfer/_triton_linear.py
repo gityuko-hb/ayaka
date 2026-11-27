@@ -4,25 +4,21 @@
 
 from __future__ import annotations
 
+import functools
 import warnings
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
-import triton  # pyright: ignore[reportMissingTypeStubs]
-import triton.language as tl  # pyright: ignore[reportMissingTypeStubs]
+from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import torch
 
 __all__ = ["launch_causal_conv1d_decode", "launch_delta_decode"]
 
+# Populated lazily by `_kernels()` so importing this module requires neither `triton` nor CUDA.
+tl: Any = None
 
-def _triton_jit(fn: Callable[..., Any]) -> Any:
-    return cast("Any", triton.jit(fn))
 
-
-@_triton_jit
 def _causal_conv1d_decode_kernel(
     x_ptr,
     weight_ptr,
@@ -82,7 +78,6 @@ def _causal_conv1d_decode_kernel(
     tl.store(out_ptr + out_offsets, y.to(out_ptr.dtype.element_ty), mask=mask_c)
 
 
-@_triton_jit
 def _delta_decode_kernel(
     q_ptr,
     k_ptr,
@@ -184,6 +179,25 @@ def _delta_decode_kernel(
     tl.store(out_base, y_vec.to(out_ptr.dtype.element_ty), mask=mask_v)
 
 
+@functools.cache
+def _kernels() -> tuple[Any, Any, Any]:
+    triton = require_module(
+        "triton",
+        capability="ops.flashinfer",
+        remedy="install it on Linux or WSL2 with `uv sync --extra cu130 --extra flashinfer`",
+    )
+    globals()["tl"] = require_module(
+        "triton.language",
+        capability="ops.flashinfer",
+        remedy="install it on Linux or WSL2 with `uv sync --extra cu130 --extra flashinfer`",
+    )
+    return (
+        triton,
+        triton.jit(_causal_conv1d_decode_kernel),
+        triton.jit(_delta_decode_kernel),
+    )
+
+
 def launch_causal_conv1d_decode(
     x: torch.Tensor,
     w2: torch.Tensor,
@@ -195,6 +209,7 @@ def launch_causal_conv1d_decode(
     kernel_size: int,
 ) -> None:
     """Launch the Triton single-step causal conv1d decode kernel."""
+    _, conv1d_kernel, _ = _kernels()
     rows = int(x.shape[0])
     block_c = 128
     grid = (rows, (conv_dim + block_c - 1) // block_c)
@@ -202,7 +217,7 @@ def launch_causal_conv1d_decode(
     with warnings.catch_warnings():
         # Triton 3.8 AST visitor emits an AnnAssign DeprecationWarning on Python 3.13 during JIT.
         warnings.filterwarnings("ignore", message=".*AnnAssign.*", category=DeprecationWarning)
-        _causal_conv1d_decode_kernel[grid](
+        conv1d_kernel[grid](
             x,
             w2,
             b_ptr,
@@ -244,6 +259,7 @@ def launch_delta_decode(
     per_channel_g: bool,
 ) -> None:
     """Launch the Triton single-step GDN/KDA delta-rule decode kernel."""
+    triton, _, delta_kernel = _kernels()
     rows = int(q.shape[0])
     block_k = int(triton.next_power_of_2(k_dim))
     block_v = min(64, int(triton.next_power_of_2(v_dim)))
@@ -252,7 +268,7 @@ def launch_delta_decode(
     with warnings.catch_warnings():
         # Triton 3.8 AST visitor emits an AnnAssign DeprecationWarning on Python 3.13 during JIT.
         warnings.filterwarnings("ignore", message=".*AnnAssign.*", category=DeprecationWarning)
-        _delta_decode_kernel[grid](
+        delta_kernel[grid](
             q,
             k,
             v,
