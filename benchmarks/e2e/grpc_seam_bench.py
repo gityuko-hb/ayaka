@@ -92,6 +92,61 @@ async def _round(base: str, model: str, concurrency: int, tokens: int, salt: int
     }
 
 
+async def _measure_arm(args: argparse.Namespace, base: str, *, salt_offset: int) -> dict[str, Any]:
+    await _round(base, args.model, 2, 16, 0)  # warm: graphs replayed, caches filled
+    concurrency_out: dict[str, Any] = {}
+    for concurrency in args.concurrency:
+        rounds_data: list[dict[str, Any]] = []
+        for index in range(args.rounds):
+            salt = 1000 * (index + 1) + salt_offset
+            rounds_data.append(await _round(base, args.model, concurrency, args.tokens, salt))
+        medians = {
+            key: round(statistics.median(row[key] for row in rounds_data), 4)
+            for key in ("gap_ms_p50", "gap_ms_p90", "ttft_ms_p50", "tok_s")
+        }
+        concurrency_out[str(concurrency)] = {"medians": medians, "rounds": rounds_data}
+        print(f"{args.arm or 'arm'} C={concurrency}: {json.dumps(medians)}", flush=True)
+    return {
+        "arm": args.arm,
+        "url": base,
+        "model": args.model,
+        "tokens": args.tokens,
+        "rounds": args.rounds,
+        "concurrency": concurrency_out,
+    }
+
+
+def _compare(in_process_path: Path, grpc_path: Path) -> dict[str, Any]:
+    in_proc = json.loads(in_process_path.read_text(encoding="utf-8"))
+    grpc = json.loads(grpc_path.read_text(encoding="utf-8"))
+    out: dict[str, Any] = {
+        "model": in_proc.get("model"),
+        "tokens": in_proc.get("tokens"),
+        "rounds": in_proc.get("rounds"),
+        "concurrency": {},
+    }
+    for key in sorted(in_proc["concurrency"], key=int):
+        if key not in grpc["concurrency"]:
+            continue
+        m_in = in_proc["concurrency"][key]["medians"]
+        m_gr = grpc["concurrency"][key]["medians"]
+        entry = {
+            "in-process": m_in,
+            "grpc": m_gr,
+            "gap_added_ms_p50": round(m_gr["gap_ms_p50"] - m_in["gap_ms_p50"], 4),
+            "tok_s_ratio": round(m_gr["tok_s"] / m_in["tok_s"], 4),
+            "in_process_rounds": in_proc["concurrency"][key]["rounds"],
+            "grpc_rounds": grpc["concurrency"][key]["rounds"],
+        }
+        out["concurrency"][key] = entry
+        print(
+            f"compare C={key}: gap_added_ms_p50={entry['gap_added_ms_p50']} ms, "
+            f"tok_s_ratio={entry['tok_s_ratio']}",
+            flush=True,
+        )
+    return out
+
+
 async def _main(args: argparse.Namespace) -> dict[str, Any]:
     arms = {"in-process": args.in_process, "grpc": args.grpc}
     out: dict[str, Any] = {"tokens": args.tokens, "rounds": args.rounds, "concurrency": {}}
@@ -121,15 +176,38 @@ async def _main(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--in-process", required=True, help="base URL of the in-process server")
-    parser.add_argument("--grpc", required=True, help="base URL of the --engine-grpc gateway")
+    parser.add_argument("--in-process", help="base URL of the in-process server")
+    parser.add_argument("--grpc", help="base URL of the --engine-grpc gateway")
+    parser.add_argument(
+        "--arm",
+        choices=("in-process", "grpc"),
+        help="measure one arm sequentially on a single-GPU machine",
+    )
+    parser.add_argument("--url", help="base URL of the server when using --arm")
+    parser.add_argument(
+        "--compare",
+        type=Path,
+        nargs=2,
+        metavar=("IN_PROCESS_JSON", "GRPC_JSON"),
+        help="compare two single-arm JSON outputs",
+    )
     parser.add_argument("--model", default="Qwen/Qwen3-8B")
     parser.add_argument("--tokens", type=int, default=256)
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 8])
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
-    result = asyncio.run(_main(args))
+    if args.compare is not None:
+        result = _compare(args.compare[0], args.compare[1])
+    elif args.arm is not None:
+        if not args.url:
+            parser.error("--arm requires --url")
+        offset = 0 if args.arm == "in-process" else 500
+        result = asyncio.run(_measure_arm(args, args.url, salt_offset=offset))
+    else:
+        if not args.in_process or not args.grpc:
+            parser.error("pass either --arm/--url, --compare, or both --in-process and --grpc")
+        result = asyncio.run(_main(args))
     if args.out is not None:
         args.out.write_text(json.dumps(result, indent=2) + "\n")
 
