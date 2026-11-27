@@ -153,7 +153,15 @@ def test_protobuf_roundtrip_for_requests_outputs_and_all_seven_constraints() -> 
         decode_engine_health(deserialize_proto(serialize_proto(encode_engine_health(health))))
         == health
     )
-    info = EngineInfo(max_model_len=8192, max_context_tokens=4096, prefix_caching=True)
+    info = EngineInfo(
+        max_model_len=8192,
+        max_context_tokens=4096,
+        prefix_caching=True,
+        device="cuda",
+        dtype="bf16",
+        backends=("flashinfer", "torch"),
+        cuda_graph=True,
+    )
     assert decode_engine_info(deserialize_proto(serialize_proto(encode_engine_info(info)))) == info
 
 

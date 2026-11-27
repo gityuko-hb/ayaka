@@ -524,14 +524,28 @@ def encode_engine_info(info: EngineInfo) -> dict[str, object]:
         "max_model_len": info.max_model_len,
         "max_context_tokens": info.max_context_tokens,
         "prefix_caching": info.prefix_caching,
+        "device": info.device,
+        "dtype": info.dtype,
+        "backends": list(info.backends),
+        "cuda_graph": info.cuda_graph,
     }
 
 
 def decode_engine_info(data: dict[str, object]) -> EngineInfo:
+    backends_raw = data.get("backends")
+    backends = (
+        tuple(str(b) for b in cast("list[object]", backends_raw))
+        if isinstance(backends_raw, list)
+        else ()
+    )
     return EngineInfo(
         max_model_len=_as_int(data.get("max_model_len"), 0),
         max_context_tokens=_as_int(data.get("max_context_tokens"), 0),
         prefix_caching=bool(data.get("prefix_caching", False)),
+        device=str(data.get("device") or ""),
+        dtype=str(data.get("dtype") or ""),
+        backends=backends,
+        cuda_graph=bool(data.get("cuda_graph", False)),
     )
 
 

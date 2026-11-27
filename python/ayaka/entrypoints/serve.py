@@ -39,6 +39,7 @@ from ayaka.engine.recorder import SessionRecorder
 from ayaka.entrypoints.http import create_app
 from ayaka.entrypoints.parsers.output import OutputFormat
 from ayaka.entrypoints.serving import Serving
+from ayaka.entrypoints.settings import describe_remote_engine
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput
 from ayaka.utils.gc_control import freeze_startup_objects
 
@@ -178,18 +179,23 @@ async def serve(
         site = web.TCPSite(runner, config.host, config.port)
         await site.start()
         host, port = runner.addresses[0][:2]
-        say(f"listening on http://{_format_host(host)}:{port}; loading {model_name}")
         if config.engine_grpc is not None:
             if callable(engine):
                 raise EngineError("--engine-grpc requires an EngineConfig, not a local builder")
+            say(
+                f"listening on http://{_format_host(host)}:{port}; "
+                f"connecting to {config.engine_grpc}"
+            )
             from ayaka.entrypoints.grpc.client import GrpcEngineClient
 
             remote = await GrpcEngineClient(config.engine_grpc).connect()
             llm = remote
+            say(describe_remote_engine(config.engine_grpc, remote.info, model_name))
             tokenizer = await asyncio.to_thread(
                 _remote_tokenizer, engine, remote.info.max_model_len
             )
         else:
+            say(f"listening on http://{_format_host(host)}:{port}; loading {model_name}")
             if record is not None:
                 recorder = SessionRecorder(record)
                 recorder.recording = False  # the warm-up is not a request of the session

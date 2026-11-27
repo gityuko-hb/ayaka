@@ -65,7 +65,9 @@ async def serve_engine_grpc(
         llm.start()
         server = InferenceGrpcServer(llm, target=listen)
         bound = await server.start()
-        say(f"gRPC inference server ready on {bound}")
+        info = core.info
+        where = f" ({info.device} {info.dtype})" if info.device and info.dtype else ""
+        say(f"gRPC inference server ready on {bound}{where}")
         await stop_event.wait()
     finally:
         if server is not None:

@@ -52,11 +52,19 @@ class EngineInfo:
         max_context_tokens: The longest sequence one request can get on this machine: the
             model's limit or the KV cache's, whichever is smaller.
         prefix_caching: Whether identical prompt prefixes are read from the cache.
+        device: The target device string (e.g. ``"cuda"``, ``"cpu"``), or ``""`` when unknown.
+        dtype: The compute dtype label (e.g. ``"bf16"``, ``"fp16"``), or ``""`` when unknown.
+        backends: Configured ops backend names in preference order.
+        cuda_graph: Whether decode CUDA graph replay is enabled on this engine.
     """
 
     max_model_len: int
     max_context_tokens: int
     prefix_caching: bool
+    device: str = ""
+    dtype: str = ""
+    backends: tuple[str, ...] = ()
+    cuda_graph: bool = False
 
 
 class EngineState(StrEnum):

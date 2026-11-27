@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from ayaka.configs.device import DeviceConfig
+from ayaka.configs.engine import EngineConfig
+from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.server import ServerConfig
 from ayaka.core.errors import InvalidRequestError, OverloadedError, UnsupportedFeatureError
 from ayaka.core.outputs import CompletionOutput, RequestOutput
@@ -19,8 +22,11 @@ from ayaka.entrypoints.cli_parsers import build_cli_parser
 from ayaka.entrypoints.grpc.client import GrpcEngineClient
 from ayaka.entrypoints.grpc.inference import InferenceGrpcServer
 from ayaka.entrypoints.parsers.output import OutputFormat
+from ayaka.entrypoints.settings import describe_remote_engine, describe_server
+from ayaka.tokenizers.factory import DefaultTokenizerFactory
+from ayaka.utils.dtypes import DType
 from fake_engine import FakeEngine, script
-from tokenizer_fakes import make_service
+from tokenizer_fakes import FakeTokenizer, loaded_for, make_service
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -217,3 +223,76 @@ def test_grpc_cli_subcommands_and_config_flags() -> None:
     a3 = parser.parse_args(["render-server", "m", "--listen", "127.0.0.1:50052"])
     assert a3.command == "render-server"
     assert a3.listen == "127.0.0.1:50052"
+
+
+def test_engine_grpc_startup_logs_remote_device_and_dtype(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("grpc")
+    pytest.importorskip("google.protobuf")
+    pytest.importorskip("aiohttp")
+    from ayaka.entrypoints.serve import serve
+
+    loaded = loaded_for(FakeTokenizer())
+    monkeypatch.setattr(DefaultTokenizerFactory, "from_config", staticmethod(lambda _cfg: loaded))
+    local_defaults = EngineConfig(
+        source=ModelSourceConfig(str(tmp_path)),
+        device=DeviceConfig(device="cpu", dtype=DType.FP32),
+    )
+    server_cfg = ServerConfig(port=0, engine_grpc="127.0.0.1:50051")
+    pre_lines = describe_server(server_cfg, local_defaults, "Qwen/Qwen3-8B")
+    assert "cpu" not in pre_lines[0]
+    assert "fp32" not in pre_lines[0]
+    assert "remote engine 127.0.0.1:50051" in pre_lines[0]
+
+    remote_info = EngineInfo(
+        max_model_len=8192,
+        max_context_tokens=4096,
+        prefix_caching=True,
+        device="cuda",
+        dtype="bf16",
+        backends=("flashinfer", "torch"),
+        cuda_graph=True,
+    )
+    remote_line = describe_remote_engine("127.0.0.1:50051", remote_info, "Qwen/Qwen3-8B")
+    assert "on cuda in bf16" in remote_line
+    assert "flashinfer, torch" in remote_line
+    assert "CUDA graphs" in remote_line
+
+    async def main() -> None:
+        fake = FakeEngine(remote_info, [script("ok")])
+        grpc_server = InferenceGrpcServer(fake, target="127.0.0.1:0")
+        bound = await grpc_server.start()
+        stop = asyncio.Event()
+        said: list[str] = []
+        ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+        def on_ready(_host: str, _port: int) -> None:
+            if not ready.done():
+                ready.set_result(None)
+
+        task = asyncio.create_task(
+            serve(
+                ServerConfig(port=0, engine_grpc=bound),
+                local_defaults,
+                model_name="Qwen/Qwen3-8B",
+                say=said.append,
+                stop=stop,
+                handle_signals=False,
+                on_ready=on_ready,
+            )
+        )
+        try:
+            await asyncio.wait_for(ready, timeout=15)
+            joined = "\n".join(said)
+            assert "on cuda in bf16" in joined
+            assert "flashinfer, torch" in joined
+            assert "CUDA graphs" in joined
+            assert "cpu" not in joined
+            assert "fp32" not in joined
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, timeout=15)
+            await grpc_server.shutdown()
+
+    asyncio.run(main())

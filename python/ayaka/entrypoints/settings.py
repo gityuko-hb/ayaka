@@ -20,11 +20,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ayaka.configs.engine import EngineConfig
+    from ayaka.engine.seam import EngineInfo
 
 
 __all__ = [
     "SERVER_FLAGS",
     "config_file_path",
+    "describe_remote_engine",
     "describe_server",
     "flag_values",
     "read_config_file",
@@ -136,12 +138,18 @@ def read_key(path: Path) -> str:
 
 def describe_server(config: ServerConfig, engine: EngineConfig, model: str) -> list[str]:
     """The lines ``serve`` prints before it starts: the effective settings, never the key."""
-    device = engine.device
-    graphs = ", decode in CUDA graphs" if device.cuda_graph else ""
     names = ", ".join(config.served_model_names) or model
+    if config.engine_grpc is not None:
+        head = f"serving {model} as {names} via remote engine {config.engine_grpc}"
+    else:
+        device = engine.device
+        graphs = ", decode in CUDA graphs" if device.cuda_graph else ""
+        head = (
+            f"serving {model} as {names} on {device.device} in {device.dtype.label} "
+            f"(ops backends: {', '.join(device.backends)}{graphs})"
+        )
     lines = [
-        f"serving {model} as {names} on {device.device} in {device.dtype.label} "
-        f"(ops backends: {', '.join(device.backends)}{graphs})",
+        head,
         f"reasoning parser: {config.reasoning_parser or 'none'}; "
         f"tool-call parser: {config.tool_call_parser or 'none (requests with tools get 400)'}; "
         f"API key: {'required' if config.api_key else 'none'}; "
@@ -153,3 +161,23 @@ def describe_server(config: ServerConfig, engine: EngineConfig, model: str) -> l
             "anyone who can reach this port can use the model; set --api-key-file"
         )
     return lines
+
+
+def describe_remote_engine(target: str, info: EngineInfo, model: str) -> str:
+    """Describe the remote gRPC engine's actual device, dtype, and backends after connecting."""
+    graphs = ", decode in CUDA graphs" if info.cuda_graph else ""
+    backends = ", ".join(info.backends)
+    details: list[str] = []
+    if backends:
+        details.append(f"ops backends: {backends}{graphs}")
+    elif graphs:
+        details.append("decode in CUDA graphs")
+    suffix = f" ({'; '.join(details)})" if details else ""
+    if info.device and info.dtype:
+        return f"connected to {model} at {target} on {info.device} in {info.dtype}{suffix}"
+    if info.device:
+        return f"connected to {model} at {target} on {info.device}{suffix}"
+    return (
+        f"connected to {model} at {target} "
+        f"(max_model_len={info.max_model_len}, max_context_tokens={info.max_context_tokens})"
+    )

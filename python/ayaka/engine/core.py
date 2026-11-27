@@ -107,6 +107,10 @@ class EngineCore:
         stats: StatLoggerManager | None = None,
         recorder: SessionRecorder | None = None,
         clock: Callable[[], float] = time.perf_counter,
+        device: str = "",
+        dtype: str = "",
+        backends: tuple[str, ...] = (),
+        cuda_graph: bool = False,
     ) -> None:
         self._scheduler = scheduler
         self._runner = runner
@@ -119,6 +123,10 @@ class EngineCore:
         self.startup = startup
         self._stats = stats
         self._clock = clock
+        self._device = device
+        self._dtype = dtype
+        self._backends = backends
+        self._cuda_graph = cuda_graph
         self._families: dict[RequestId, tuple[RequestId, ...]] = {}
         self._recorder = recorder
         self._dead: EngineDeadError | None = None
@@ -137,6 +145,10 @@ class EngineCore:
             max_model_len=longest,
             max_context_tokens=min(longest, self._kv.max_context_tokens),
             prefix_caching=self._kv.prefix_caching,
+            device=self._device,
+            dtype=self._dtype,
+            backends=self._backends,
+            cuda_graph=self._cuda_graph,
         )
 
     @property

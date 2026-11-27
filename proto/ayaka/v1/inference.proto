@@ -189,6 +189,10 @@ message EngineInfo {
   int32 max_model_len = 1;
   int32 max_context_tokens = 2;
   bool prefix_caching = 3;
+  string device = 4;
+  string dtype = 5;
+  repeated string backends = 6;
+  bool cuda_graph = 7;
 }
 
 message WatchEngineStateRequest {
