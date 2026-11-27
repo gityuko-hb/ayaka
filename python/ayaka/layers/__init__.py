@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from ayaka.layers.ffn.dense import MLP, GatedMLP
     from ayaka.layers.ffn.moe import MoEBlock, StackedExperts
     from ayaka.layers.linear import Linear
-    from ayaka.layers.norm import LayerNorm, RMSNorm
+    from ayaka.layers.norm import LayerNorm, RMSNorm, RMSNormGated, ScalelessRMSNorm
     from ayaka.layers.rope import RotaryEmbedding, rope_inverse_frequencies
 
 __all__ = [
@@ -44,7 +44,9 @@ __all__ = [
     "MoEBlock",
     "MultiHeadLatentAttention",
     "RMSNorm",
+    "RMSNormGated",
     "RotaryEmbedding",
+    "ScalelessRMSNorm",
     "SiLUAndMul",
     "StackedExperts",
     "StateCheckpointCapture",
@@ -62,7 +64,7 @@ _EXPORTS = {
     "ffn.dense": ("MLP", "GatedMLP"),
     "ffn.moe": ("MoEBlock", "StackedExperts"),
     "linear": ("Linear",),
-    "norm": ("LayerNorm", "RMSNorm"),
+    "norm": ("LayerNorm", "RMSNorm", "RMSNormGated", "ScalelessRMSNorm"),
     "rope": ("RotaryEmbedding", "rope_inverse_frequencies"),
 }
 

@@ -214,8 +214,8 @@ class _BaseDeltaAttention(nn.Module):
     def _gated_rms_norm(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         xf = x.float()
         variance = xf.pow(2).mean(dim=-1, keepdim=True)
-        normed = xf * torch.rsqrt(variance + self.norm_eps) * self.norm_weight.float()
-        gated = normed * functional.silu(z.float())
+        normed = (xf * torch.rsqrt(variance + self.norm_eps)).to(x.dtype)
+        gated = (self.norm_weight * normed) * functional.silu(z.float())
         return gated.to(x.dtype)
 
     def _run_prefill_with_checkpoints(

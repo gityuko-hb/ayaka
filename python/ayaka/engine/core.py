@@ -38,6 +38,7 @@ call that found out and from every call after it, rather than keep running on st
 
 from __future__ import annotations
 
+import gc
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -109,7 +110,7 @@ class EngineCore:
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._scheduler = scheduler
-        self._runner = runner
+        self._runner: ModelRunner | None = runner
         self._kv = kv
         self._input = input_processor
         self._output = output_processor
@@ -147,6 +148,8 @@ class EngineCore:
     @property
     def runner(self) -> ModelRunner:
         """The model runner, for reading what it captured; steps go through the engine."""
+        if self._runner is None:
+            raise EngineError("the engine is shut down")
         return self._runner
 
     @property
@@ -249,7 +252,7 @@ class EngineCore:
         self._scheduler.add_request(request)
         try:
             self._output.register(request, stream=stream)
-            self._runner.penalties.admit(
+            self.runner.penalties.admit(
                 request.request_id, request.prompt_token_ids, request.sampling
             )
             self._admit_constraint(request)
@@ -263,7 +266,7 @@ class EngineCore:
         """Start the request's output constraint from its compiled grammar, if it has one."""
         if request.constraint_id is not None:
             matcher = self._input.compiler.matcher(request.constraint_id)
-            self._runner.constraints.admit(request.request_id, matcher)
+            self.runner.constraints.admit(request.request_id, matcher)
 
     def _admit_family(self, request: TokenizedRequest, stream: bool) -> None:
         """Queue the ``n`` sequences of a request as siblings; all of them or none."""
@@ -290,7 +293,7 @@ class EngineCore:
                 added.append(child.request_id)
             self._output.register_family(parent, children, stream=stream)
             for child in children:
-                self._runner.penalties.admit(
+                self.runner.penalties.admit(
                     child.request_id, child.prompt_token_ids, child.sampling
                 )
                 self._admit_constraint(child)
@@ -324,7 +327,8 @@ class EngineCore:
 
     def _cycle(self) -> list[RequestOutput]:
         scheduler = self._scheduler
-        step = scheduler.schedule(self._runner.plan_lookahead())
+        runner = self.runner
+        step = scheduler.schedule(runner.plan_lookahead())
         outputs = self._deliver()
         if step is None:
             if not outputs and self.has_unfinished:
@@ -334,7 +338,7 @@ class EngineCore:
                 )
             return outputs
         started = self._clock()
-        answer = self._runner.execute(step)
+        answer = runner.execute(step)
         seconds = self._clock() - started
         scheduler.update(answer)
         counts = scheduler.take_stats()
@@ -353,8 +357,8 @@ class EngineCore:
         taken and ignored in the same cycle instead of surfacing a cycle later.
         """
         outputs: list[RequestOutput] = []
-        penalties = self._runner.penalties
-        constraints = self._runner.constraints
+        penalties = self.runner.penalties
+        constraints = self.runner.constraints
         while events := self._scheduler.take_events():
             if len(penalties) or len(constraints):
                 for event in events:
@@ -377,7 +381,7 @@ class EngineCore:
     # -- life cycle ------------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Stop accepting work and close the tokenizer; safe to call more than once."""
+        """Stop accepting work, release device buffers and close the tokenizer."""
         if self._closed:
             return
         self._closed = True
@@ -385,6 +389,14 @@ class EngineCore:
             self._recorder.close()
         self._input.compiler.close()
         self._tokenizer.close()
+        runner = self._runner
+        self._runner = None
+        if runner is not None:
+            runner.release()
+            runner_cls = type(runner)
+            del runner
+            gc.collect()
+            runner_cls.clear_device_cache()
 
     def _require_running(self) -> None:
         if self._dead is not None:
