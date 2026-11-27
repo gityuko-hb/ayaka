@@ -1147,8 +1147,20 @@ and HTTP `400` refusal of remote HTTPS image URLs:
 
 ### `ayaka plan` and `ayaka bench --quick` (`plans.json`, `bench-*/results.json`)
 
-| Model | Planned context (`max_running`) | KV groups (`bytes/tok`) | State / Vision (weights + workspace) | Prose 4K read | Gen after 4K | Long 8K read / gen | `1024x768` image (`cold / warm`) | Sanity checks | Result |
+| Model | Planned context (`max_running`) | KV groups (`bytes/tok`) | State / Vision (weights + workspace) | Prose 4K read | Gen after 4K | Long 32K read / gen | `1024x768` image (`cold / warm`) | Sanity checks | Result |
 | --- | --- | ---: | --- | ---: | ---: | ---: | --- | --- | --- |
-| `Qwen/Qwen3.5-9B` | 262,144 (`6`) | 1 (`32,768`) | 346 MiB state / 870 MiB + 81 MiB | 9,335 tok/s | 61.0 tok/s | 9,216 tok/s / 59.8 tok/s | 363 ms / 287 ms (`801` tok) | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-qwen35-9b/results.json) |
-| `google/gemma-4-E2B-it` | 131,072 (`27`) | 2 (`12,288`) | 0 B state / 321 MiB + 44 MiB | 15,201 tok/s | 36.6 tok/s | 13,161 tok/s / 36.1 tok/s | 184 ms / 182 ms (`297` tok) | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gemma4-e2b/results.json) |
-| `openai/gpt-oss-20b` | 131,072 (`9`) | 2 (`24,576`) | 0 B / 0 B (MXFP4 sliced dequant) | 2,570 tok/s | 13.0 tok/s | 2,442 tok/s / 12.9 tok/s | — | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gpt-oss-20b/results.json) |
+| `Qwen/Qwen3.5-9B` | 262,144 (`6`) | 1 (`32,768`) | 346 MiB state / 870 MiB + 81 MiB | 9,352 tok/s | 60.7 tok/s | 8,311 tok/s / 54.1 tok/s | 378 ms / 297 ms (`801` tok) | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-qwen35-9b/results.json) |
+| `google/gemma-4-E2B-it` | 131,072 (`27`) | 2 (`12,288`) | 0 B state / 321 MiB + 44 MiB | 15,225 tok/s | 36.6 tok/s | 6,912 tok/s / 33.9 tok/s | 183 ms / 180 ms (`297` tok) | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gemma4-e2b/results.json) |
+| `openai/gpt-oss-20b` | 131,072 (`9`) | 2 (`24,576`) | 0 B / 0 B (MXFP4 sliced dequant) | 2,582 tok/s | 13.0 tok/s | 2,483 tok/s / 12.6 tok/s | — | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gpt-oss-20b/results.json) |
+
+### DeepSeek-V2 Multi-head Latent Attention on NVIDIA A100 (`mla-gpu-parity-and-capacity.json`)
+
+Because no multi-hundred-gigabyte DeepSeek checkpoint is cached locally on this host, FlashInfer MLA
+and CUDA graph capture (`buckets = [1, 2, 4]`, `chunk_tokens = 16`) were verified end-to-end on A100
+against Hugging Face `DeepseekV2ForCausalLM` using a synthetic 4-layer `bf16` checkpoint matching
+canonical geometry (`kv_lora_rank = 512`, `qk_rope_head_dim = 64`, `qk_nope_head_dim = 128`,
+`v_head_dim = 128`, `num_attention_heads = 16`, `head_dim = 128`):
+
+- **Greedy parity vs Hugging Face**: `16/16` exact token match on a 32-token prompt (`exact_greedy_match_vs_hf = true`).
+- **Warm prefix cache + CUDA graphs**: `16` cached tokens reused, generating `16` warm decode tokens in `60.3 ms`.
+- **Latent KV cache sizing**: `4,608 B/tok` for the 4-layer model (`69,120 B/tok` scaled to 60 layers vs `491,520 B/tok` standard 16-head bf16 KV, `0.140625x`, an 85.94% reduction).
