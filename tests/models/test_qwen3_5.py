@@ -7,27 +7,26 @@ from typing import Any
 
 import pytest
 
-from ayaka.configs.model import ModelConfig
-from ayaka.configs.scheduler import SchedulerConfig
-from ayaka.core.params import SamplingParams
-from ayaka.core.request import TokenizedRequest
-from ayaka.core.types import ForwardMode, KVLayoutKind, RequestId
-from ayaka.execution.runner import ModelRunner
-from ayaka.kvcache.manager import KVCacheManager
-from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
-from ayaka.kvcache.prefix.hashing import ChainRoot
-from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool
-from ayaka.kvcache.storage.pool import KVPool, RecurrentStatePool
-from ayaka.kvcache.storage.spec import KVGroup, RecurrentStateGroup
-from ayaka.layers.context import ForwardContext
-from ayaka.ops.backend import load_backend
-from ayaka.ops.linear_attention import LinearAttentionMetadata
-from ayaka.scheduler.scheduler import Scheduler
-from ayaka.utils.dtypes import DType
-
 torch: Any = pytest.importorskip("torch")
 
+from ayaka.configs.model import ModelConfig  # noqa: E402
+from ayaka.configs.scheduler import SchedulerConfig  # noqa: E402
+from ayaka.core.params import SamplingParams  # noqa: E402
+from ayaka.core.request import TokenizedRequest  # noqa: E402
+from ayaka.core.types import ForwardMode, KVLayoutKind, RequestId  # noqa: E402
+from ayaka.execution.runner import ModelRunner  # noqa: E402
+from ayaka.kvcache.manager import KVCacheManager  # noqa: E402
+from ayaka.kvcache.prefix.hash_cache import HashPrefixCache  # noqa: E402
+from ayaka.kvcache.prefix.hashing import ChainRoot  # noqa: E402
+from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool  # noqa: E402
+from ayaka.kvcache.storage.pool import KVPool, RecurrentStatePool  # noqa: E402
+from ayaka.kvcache.storage.spec import KVGroup, RecurrentStateGroup  # noqa: E402
+from ayaka.layers.context import ForwardContext  # noqa: E402
 from ayaka.models.qwen3_5 import Qwen3_5ForConditionalGeneration  # noqa: E402
+from ayaka.ops.backend import load_backend  # noqa: E402
+from ayaka.ops.linear_attention import LinearAttentionMetadata  # noqa: E402
+from ayaka.scheduler.scheduler import Scheduler  # noqa: E402
+from ayaka.utils.dtypes import DType  # noqa: E402
 from gpt2_support import load_hf_state  # noqa: E402
 
 _LINEAR = "linear_attention"

@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 from typing import Any
 
 import pytest
 
-from ayaka.configs.model import ModelConfig, RopeScaling
-from ayaka.core.types import ForwardMode, KVLayoutKind
-from ayaka.kvcache.storage.pool import KVPool
-from ayaka.layers.context import ForwardContext
-from ayaka.ops.backend import load_backend
-from ayaka.utils.dtypes import DType
-from ayaka.weights.mxfp4 import FP4_E2M1_LUT, dequantize_mxfp4
-from ayaka.weights.quant import QuantFormat
-
 torch: Any = pytest.importorskip("torch")
 
+from ayaka.configs.model import ModelConfig, RopeScaling  # noqa: E402
+from ayaka.core.types import ForwardMode, KVLayoutKind  # noqa: E402
+from ayaka.kvcache.storage.pool import KVPool  # noqa: E402
+from ayaka.layers.context import ForwardContext  # noqa: E402
 from ayaka.models.gpt_oss import GptOssForCausalLM  # noqa: E402
+from ayaka.ops.backend import load_backend  # noqa: E402
+from ayaka.utils.dtypes import DType  # noqa: E402
+from ayaka.weights.mxfp4 import FP4_E2M1_LUT, dequantize_mxfp4  # noqa: E402
+from ayaka.weights.quant import QuantFormat  # noqa: E402
 from gpt2_support import load_hf_state  # noqa: E402
 
 
@@ -147,7 +147,9 @@ def test_gpt_oss_mxfp4_gathered_vs_grouped_paths_agree() -> None:
 @pytest.mark.integration
 def test_gpt_oss_matches_transformers_and_mxfp4_dequant() -> None:
     transformers: Any = pytest.importorskip("transformers")
-    from transformers.integrations.mxfp4 import convert_moe_packed_tensors
+    convert_moe_packed_tensors = importlib.import_module(
+        "transformers.integrations.mxfp4"
+    ).convert_moe_packed_tensors
 
     # Verify dequantize_mxfp4 matches transformers bit-for-bit
     torch.manual_seed(5)

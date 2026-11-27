@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import gc
+import importlib
 from typing import Any
 
 import pytest
 
-from ayaka.configs.cache import CacheConfig
-from ayaka.configs.device import DeviceConfig
-from ayaka.configs.engine import EngineConfig
-from ayaka.configs.model_source import ModelSourceConfig
-from ayaka.configs.scheduler import SchedulerConfig
-from ayaka.core.params import SamplingParams
-from ayaka.engine.llm import LLM
-from ayaka.utils.dtypes import DType
-
 torch: Any = pytest.importorskip("torch")
 transformers: Any = pytest.importorskip("transformers")
+
+from ayaka.configs.cache import CacheConfig  # noqa: E402
+from ayaka.configs.device import DeviceConfig  # noqa: E402
+from ayaka.configs.engine import EngineConfig  # noqa: E402
+from ayaka.configs.model_source import ModelSourceConfig  # noqa: E402
+from ayaka.configs.scheduler import SchedulerConfig  # noqa: E402
+from ayaka.core.params import SamplingParams  # noqa: E402
+from ayaka.engine.llm import LLM  # noqa: E402
+from ayaka.utils.dtypes import DType  # noqa: E402
 
 pytestmark = pytest.mark.gpu
 
@@ -40,9 +41,8 @@ def _hf_tokens(model_id: str, prompt: str, max_new: int = 12) -> tuple[list[int]
     )
     extra: dict[str, Any] = {}
     if "gpt-oss" in model_id:
-        from transformers.utils.quantization_config import Mxfp4Config
-
-        extra["quantization_config"] = Mxfp4Config(dequantize=True)
+        quant_cfg = importlib.import_module("transformers.utils.quantization_config")
+        extra["quantization_config"] = quant_cfg.Mxfp4Config(dequantize=True)
     hf_model: Any = cls.from_pretrained(
         model_id, local_files_only=True, dtype=torch.bfloat16, **extra
     ).to("cuda")

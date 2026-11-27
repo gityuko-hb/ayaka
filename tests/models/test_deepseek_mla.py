@@ -7,17 +7,16 @@ from typing import Any
 
 import pytest
 
-from ayaka.configs.model import ModelConfig
-from ayaka.core.types import ForwardMode, KVLayoutKind
-from ayaka.kvcache.storage.pool import LatentKVPool
-from ayaka.kvcache.storage.spec import LatentKVGroup, LatentKVSpec
-from ayaka.layers.context import ForwardContext
-from ayaka.ops.backend import load_backend
-from ayaka.utils.dtypes import DType
-
 torch: Any = pytest.importorskip("torch")
 
+from ayaka.configs.model import ModelConfig  # noqa: E402
+from ayaka.core.types import ForwardMode, KVLayoutKind  # noqa: E402
+from ayaka.kvcache.storage.pool import LatentKVPool  # noqa: E402
+from ayaka.kvcache.storage.spec import LatentKVGroup, LatentKVSpec  # noqa: E402
+from ayaka.layers.context import ForwardContext  # noqa: E402
 from ayaka.models.deepseek_mla import DeepseekV2ForCausalLM  # noqa: E402
+from ayaka.ops.backend import load_backend  # noqa: E402
+from ayaka.utils.dtypes import DType  # noqa: E402
 from gpt2_support import load_hf_state  # noqa: E402
 
 
