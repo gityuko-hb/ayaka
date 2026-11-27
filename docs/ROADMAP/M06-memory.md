@@ -1,9 +1,10 @@
-# M6 — Memory (`v0.2.0-a3`)
+# Memory (`v0.2.0-a2`)
 
 - **Goal:** Running out of VRAM never stops or corrupts the server, and evicted conversations are
   preserved in host RAM instead of lost.
-- **Status:** Next (not filed yet)
-- **Target Checkpoint:** `v0.2.0-a3` (internal tag on the road to `0.2.0` GA)
+- **Status:** Planned (not filed yet). It starts after the Serving Core v2 exit audit (Serving Core v2 step 12).
+- **Target Checkpoint:** `v0.2.0-a2` (internal tag on the road to `0.2.0` GA)
+- **Hardware this round:** NVIDIA A100-SXM4-80GB (sm_80) is the development GPU. Gates written for the NVIDIA L4 stay unverified until they run on an NVIDIA L4; no L4 result is claimed in this file.
 - **Structure:** Two waves — Wave 1 makes the server unkillable under OOM/pressure; Wave 2 adds
   host-RAM KV tiering, atomic pool resize, and recorded session replay.
 
@@ -31,9 +32,9 @@
 
 ### Wave 1 — Crash Resilience, Preemption & Diagnostics
 
-#### `M6-N01` — `ayaka doctor` Diagnostic CLI
+#### memory step 1 — `ayaka doctor` Diagnostic CLI
 - **Status:** `BLOCKED`
-- **Depends On:** `M5-N12`
+- **Depends On:** Serving Core v2 step 12
 - **Hardware:** `CPU` + `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/entrypoints/doctor.py`, `python/ayaka/entrypoints/cli.py`, `python/ayaka/device/`, `python/ayaka/memory/`, `tests/entrypoints/`, `docs/TROUBLESHOOTING.md`
 - **Deliverable:**
@@ -44,9 +45,9 @@
 - **Exit Check:** Unit tests with mocked probes + live Linux L4 and WSL2 RTX 3050 doctor reports
   green; `tests/test_docs.py` verifies `ayaka doctor` flags.
 
-#### `M6-N02` — Memory Wire Error Codes & Over-Long Conversation Policy
+#### memory step 2 — Memory Wire Error Codes & Over-Long Conversation Policy
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N01`
+- **Depends On:** memory step 1
 - **Hardware:** `CPU`
 - **Touches:** `python/ayaka/core/errors.py`, `python/ayaka/entrypoints/wire/`, `python/ayaka/engine/`, `docs/AI_REFERENCE.md`, `tests/entrypoints/`
 - **Deliverable:**
@@ -56,9 +57,9 @@
 - **Exit Check:** Golden-byte error tests green across OpenAI & Anthropic adapters;
   `tests/test_docs.py` wire-reference drift test passes.
 
-#### `M6-N03` — Pressure Watermarks & Scheduler Preemption
+#### memory step 3 — Pressure Watermarks & Scheduler Preemption
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N02`
+- **Depends On:** memory step 2
 - **Hardware:** `CPU` + `GPU-L4`
 - **Touches:** `python/ayaka/scheduler/`, `python/ayaka/kvcache/`, `python/ayaka/metrics/`, `tests/scheduler/`, `tests/kvcache/`
 - **Deliverable:**
@@ -68,9 +69,9 @@
 - **Exit Check:** Scheduler preemption tests pass; `kv_manager.check_integrity()` clean after every
   preemption/resume cycle; Prometheus preemption counters exposed.
 
-#### `M6-N04` — Step-Level CUDA OOM Recovery
+#### memory step 4 — Step-Level CUDA OOM Recovery
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N03`
+- **Depends On:** memory step 3
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/execution/runner.py`, `python/ayaka/engine/`, `python/ayaka/scheduler/`, `tests/engine/`
 - **Deliverable:**
@@ -80,9 +81,9 @@
 - **Exit Check:** Injected OOM mid-step leaves engine thread healthy, finishes surviving requests,
   and passes `check_integrity()`.
 
-#### `M6-N05` — Wave 1 Fault-Injection Suite
+#### memory step 5 — Wave 1 Fault-Injection Suite
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N04`
+- **Depends On:** memory step 4
 - **Hardware:** `CPU` + `GPU-L4`
 - **Touches:** `tests/e2e/test_memory_faults.py`, `tests/engine/`
 - **Deliverable:**
@@ -94,9 +95,9 @@
 
 ### Wave 2 — Host-RAM KV Tier, Atomic Resize & Session Replay
 
-#### `M6-N06` — Host Memory Policy & Linux/WSL2 Pinning Probe
+#### memory step 6 — Host Memory Policy & Linux/WSL2 Pinning Probe
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N01`
+- **Depends On:** memory step 1
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/configs/`, `python/ayaka/memory/`, `benchmarks/memory/`, `docs/EXPERIMENTS.md`
 - **Deliverable:**
@@ -106,9 +107,9 @@
 - **Exit Check:** Measurements recorded in `docs/EXPERIMENTS.md`; config validation unit tests
   green.
 
-#### `M6-N07` — Host-RAM KV Store, Async Write-Behind, Promotion & Prefix Pinning
+#### memory step 7 — Host-RAM KV Store, Async Write-Behind, Promotion & Prefix Pinning
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N03`, `M6-N06`
+- **Depends On:** memory step 3, memory step 6
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/kvcache/`, `python/ayaka/memory/`, `python/ayaka/scheduler/`, `tests/kvcache/`
 - **Deliverable:**
@@ -118,9 +119,9 @@
 - **Exit Check:** Evicted-and-promoted conversations generate **identical token IDs** to un-evicted
   runs; concurrency race/stress tests pass; `check_integrity()` clean.
 
-#### `M6-N08` — Wait for In-Flight Prefixes & Prewarm
+#### memory step 8 — Wait for In-Flight Prefixes & Prewarm
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N07`
+- **Depends On:** memory step 7
 - **Hardware:** `CPU` + `GPU-L4`
 - **Touches:** `python/ayaka/kvcache/`, `python/ayaka/scheduler/`, `tests/scheduler/`
 - **Deliverable:**
@@ -129,9 +130,9 @@
 - **Exit Check:** Two simultaneous cold requests with identical 4K prefix compute prefill once and
   both complete with exact tokens and `cached_tokens > 0` on the waiter.
 
-#### `M6-N09` — Atomic Runtime KV Pool Resize
+#### memory step 9 — Atomic Runtime KV Pool Resize
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N07`
+- **Depends On:** memory step 7
 - **Hardware:** `GPU-L4`
 - **Touches:** `python/ayaka/kvcache/`, `python/ayaka/engine/`, `tests/kvcache/`
 - **Deliverable:**
@@ -140,18 +141,18 @@
 - **Exit Check:** Success resize + forced-OOM rollback tests pass with zero lost conversations and
   clean `check_integrity()`.
 
-#### `M6-N10` — Session Replay (`entrypoints/replay.py`), Host-Tier Gate & `v0.2.0-a3`
+#### memory step 10 — Session Replay (`entrypoints/replay.py`), Host-Tier Gate & `v0.2.0-a2`
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N05`, `M6-N08`, `M6-N09`
+- **Depends On:** memory step 5, memory step 8, memory step 9
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/entrypoints/replay.py`, `benchmarks/e2e/`, `docs/EXPERIMENTS.md`, `docs/CAPABILITIES.md`, `docs/ROADMAP/decisions.md`
 - **Deliverable:**
   - `entrypoints/replay.py` replaying `--record` token sessions under tight VRAM to verify
     preemption + host-tier exactness.
   - Measure host-tier promotion vs cold prefill (`< 0.5×` on `≥ 4K`), write-behind steady overhead
-    (`≤ 2%`), time-budgeted chunking, and overlapped scheduling; tag internal checkpoint `v0.2.0-a3`.
-- **Exit Check:** All 5 M6 exit conditions green; numbers recorded in `docs/EXPERIMENTS.md`; tag
-  `v0.2.0-a3`.
+    (`≤ 2%`), time-budgeted chunking, and overlapped scheduling; tag internal checkpoint `v0.2.0-a2`.
+- **Exit Check:** All 5 memory milestone exit conditions green; numbers recorded in `docs/EXPERIMENTS.md`; tag
+  `v0.2.0-a2`.
 
 ## Risks
 

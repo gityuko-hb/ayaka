@@ -1,11 +1,13 @@
-# M7 — Fast Quantized Kernels: FP8 & W4A16 (`v0.2.0-a4`)
+# Fast quantized kernels: FP8 & W4A16 (`v0.2.0-a3`)
 
-- **Goal:** Eliminate the `0.11–0.12×` FP8 decode bottleneck measured in M3 (#121) and add fast
+- **Goal:** Eliminate the `0.11–0.12×` FP8 decode bottleneck measured in models and quantization milestone (#121) and add fast
   4-bit weight execution (`W4A16`, prioritizing safetensors INT4/AWQ/GPTQ via Marlin/Triton) so 14B
   models run fast on 12–24 GB cards and 7B–8B models fit fast on 4–8 GB laptops — using existing
   GPU kernel libraries without requiring custom `csrc/` compilation yet.
-- **Status:** Planned (not filed yet)
-- **Target Checkpoint:** `v0.2.0-a4` (also triggers early parallel spike `M13-N00` upon completion)
+- **Status:** Planned (not filed yet). It starts after the memory exit audit (memory step 10).
+- **Target Checkpoint:** `v0.2.0-a3` (also triggers early parallel spike native kernel engine step 0 upon completion)
+- **Hardware this round:** NVIDIA A100-SXM4-80GB (sm_80) is the development GPU. sm_80 has no FP8 tensor cores, so on A100 an FP8 checkpoint runs as weight-only FP8 (W8A16) kernels. Native FP8 GEMM remains an sm_89+ path (NVIDIA L4 and newer). The L4 gates in this file stay unverified until they run on an NVIDIA L4, and the RTX 3050 gates until they run on that card. No L4 or RTX 3050 result is claimed here.
+- **Reference models this round:** `Qwen/Qwen3-8B` (bf16), with `Qwen/Qwen3-8B-FP8` and `Qwen/Qwen3-8B-AWQ` for quantized kernels and `z-lab/Qwen3-8B-DFlash-b16` for speculative decoding; `Qwen/Qwen3-0.6B` for fast tests.
 
 ## Exit Conditions
 
@@ -34,9 +36,9 @@
 
 ## Execution Nodes (5 Nodes)
 
-### `M7-N01` — Quantized GEMM Op Contracts & `sm_arch` Backend Dispatch
+### fast quantized kernels step 1 — Quantized GEMM Op Contracts & `sm_arch` Backend Dispatch
 - **Status:** `BLOCKED`
-- **Depends On:** `M6-N10`
+- **Depends On:** memory step 10
 - **Hardware:** `CPU`
 - **Touches:** `python/ayaka/ops/`, `python/ayaka/layers/quantization/`, `python/ayaka/device/`, `tests/ops/`
 - **Deliverable:**
@@ -47,9 +49,9 @@
 - **Exit Check:** Unit & reference-parity tests green on CPU; lazy-import boundary preserved
   (`import ayaka` loads no torch/triton).
 
-### `M7-N02` — Fast Per-Tensor / Per-Row FP8 GEMM (`sm_89`+)
+### fast quantized kernels step 2 — Fast Per-Tensor / Per-Row FP8 GEMM (`sm_89`+)
 - **Status:** `BLOCKED`
-- **Depends On:** `M7-N01`
+- **Depends On:** fast quantized kernels step 1
 - **Hardware:** `GPU-L4`
 - **Touches:** `python/ayaka/ops/backends/`, `python/ayaka/layers/quantization/`, `tests/ops/`
 - **Deliverable:**
@@ -59,9 +61,9 @@
 - **Exit Check:** Op parity vs dequant reference passes; CUDA graph capture & replay green on L4;
   Llama-3.1-8B-FP8 clears `≥ 1.2×` bf16 gate and Phi-4 14B clears `≥ 10 tok/s`.
 
-### `M7-N03` — Fast 128×128 Block-FP8 GEMM (`sm_89`+)
+### fast quantized kernels step 3 — Fast 128×128 Block-FP8 GEMM (`sm_89`+)
 - **Status:** `BLOCKED`
-- **Depends On:** `M7-N01`
+- **Depends On:** fast quantized kernels step 1
 - **Hardware:** `GPU-L4`
 - **Touches:** `pyproject.toml`, `python/ayaka/ops/backends/triton/`, `python/ayaka/layers/quantization/`, `tests/ops/`
 - **Deliverable:**
@@ -70,9 +72,9 @@
 - **Exit Check:** Block-FP8 op parity passes; `Qwen3-8B-FP8` replays CUDA graphs on L4 and clears
   `≥ 1.2×` bf16 with KL `≤ 0.05 nats`.
 
-### `M7-N04` — Fast Safetensors W4A16 (INT4 / AWQ / GPTQ Marlin) Loader & Kernel
+### fast quantized kernels step 4 — Fast Safetensors W4A16 (INT4 / AWQ / GPTQ Marlin) Loader & Kernel
 - **Status:** `BLOCKED`
-- **Depends On:** `M7-N01`
+- **Depends On:** fast quantized kernels step 1
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `python/ayaka/weights/`, `python/ayaka/layers/quantization/`, `python/ayaka/ops/backends/`, `python/ayaka/memory/`, `tests/layers/`
 - **Deliverable:**
@@ -83,18 +85,18 @@
 - **Exit Check:** Op parity + CUDA graph capture green on L4 (`sm_89`) and RTX 3050 (`sm_86`);
   `ayaka plan` matches startup reconciliation; 8B W4A16 clears `≥ 1.8×` bf16 on L4.
 
-### `M7-N05` — Quantization Benchmark Record, `llama.cpp` Comparison & `v0.2.0-a4`
+### fast quantized kernels step 5 — Quantization Benchmark Record, `llama.cpp` Comparison & `v0.2.0-a3`
 - **Status:** `BLOCKED`
-- **Depends On:** `M7-N02`, `M7-N03`, `M7-N04`
+- **Depends On:** fast quantized kernels step 2, fast quantized kernels step 3, fast quantized kernels step 4
 - **Hardware:** `GPU-L4` + `GPU-4GB-WSL2`
 - **Touches:** `benchmarks/e2e/`, `docs/EXPERIMENTS.md`, `docs/capabilities.toml`, `docs/CAPABILITIES.md`, `docs/TROUBLESHOOTING.md`
 - **Deliverable:**
   - 3-round alternating `ayaka bench` + `quant_kl.py` + head-to-head `llama.cpp` (`Q8_0` / `Q4_K_M`)
     runs on L4 and RTX 3050.
   - Update `docs/TROUBLESHOOTING.md` (retire the *"FP8 fits, but is slow"* limitation for `sm_89`+),
-    regenerate `docs/CAPABILITIES.md`, tag `v0.2.0-a4`, and unblock parallel early spike `M13-N00`.
-- **Exit Check:** All M7 exit conditions and pre-registered gates verified; `tests/test_docs.py`
-  green; tag `v0.2.0-a4`.
+    regenerate `docs/CAPABILITIES.md`, tag `v0.2.0-a3`, and unblock parallel early spike native kernel engine step 0.
+- **Exit Check:** All fast quantized kernels milestone exit conditions and pre-registered gates verified; `tests/test_docs.py`
+  green; tag `v0.2.0-a3`.
 
 ## Risks
 
