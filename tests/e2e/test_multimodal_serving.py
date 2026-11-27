@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import importlib.util
 import json
 import os
@@ -33,10 +34,9 @@ def _require_gpu_and_model(repo_id: str) -> None:
         if os.environ.get("AYAKA_REQUIRE_GPU") == "1":
             pytest.fail("AYAKA_REQUIRE_GPU=1 but CUDA is unavailable")
         pytest.skip("CUDA unavailable")
-    from huggingface_hub import snapshot_download
-
     try:
-        snapshot_download(repo_id, local_files_only=True)
+        huggingface_hub: Any = importlib.import_module("huggingface_hub")
+        huggingface_hub.snapshot_download(repo_id, local_files_only=True)
     except Exception:
         if os.environ.get("AYAKA_REQUIRE_GPU") == "1":
             pytest.fail(f"missing cached model {repo_id}")

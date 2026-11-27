@@ -3,30 +3,32 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import struct
 import zlib
 from typing import Any
 
 import pytest
-import torch
 
-from ayaka.core.errors import InvalidRequestError
-from ayaka.core.multimodal import ImageInput, VisionSpec
-from ayaka.multimodal.png import (
+torch: Any = pytest.importorskip("torch")
+
+from ayaka.core.errors import InvalidRequestError  # noqa: E402
+from ayaka.core.multimodal import ImageInput, VisionSpec  # noqa: E402
+from ayaka.multimodal.png import (  # noqa: E402
     decode_data_url_image,
     decode_png_rgb,
     encode_png_rgb,
     make_ide_screenshot_png,
     read_png_dimensions,
 )
-from ayaka.multimodal.preprocess import (
+from ayaka.multimodal.preprocess import (  # noqa: E402
     aspect_ratio_preserving_size,
     image_token_count,
     preprocess_gemma4,
     preprocess_qwen3_5,
     smart_resize,
 )
-from ayaka.multimodal.tokens import expand_image_placeholders
+from ayaka.multimodal.tokens import expand_image_placeholders  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
@@ -197,8 +199,10 @@ def test_qwen3_5_and_gemma4_geometry_and_pixel_parity() -> None:
 
 @pytest.mark.integration
 def test_placeholder_expansion_and_geometry_match_transformers() -> None:
-    transformers = pytest.importorskip("transformers")
-    from transformers.models.gemma4.processing_gemma4 import get_aspect_ratio_preserving_size
+    transformers: Any = pytest.importorskip("transformers")
+    get_aspect_ratio_preserving_size = importlib.import_module(
+        "transformers.models.gemma4.processing_gemma4"
+    ).get_aspect_ratio_preserving_size
 
     for h, w in ((768, 1024), (240, 320), (500, 900)):
         assert aspect_ratio_preserving_size(

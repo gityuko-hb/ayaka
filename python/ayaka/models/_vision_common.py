@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import warnings
 from typing import TYPE_CHECKING, Protocol, cast
 
 import torch
-from safetensors import safe_open
 from torch import nn
 
 from ayaka.core.errors import ModelLoadError
+from ayaka.weights.safetensors import SafetensorsFile
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
-    from contextlib import AbstractContextManager
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from ayaka.core.multimodal import ImageInput, VisionSpec
@@ -97,11 +98,6 @@ class VisionLifecycle:
         self._directory = None
 
 
-class _SafeHandle(Protocol):
-    def keys(self) -> Iterable[str]: ...
-    def get_tensor(self, name: str) -> torch.Tensor: ...
-
-
 def count_module_tensor_bytes(module: nn.Module, element_bytes: int) -> int:
     """Return total byte size of all parameters and persistent buffers on ``module``."""
     total = 0
@@ -134,6 +130,35 @@ def _safetensors_files(directory: Path, key_prefixes: tuple[str, ...]) -> list[P
     return shards
 
 
+def _copy_vision_tensor(
+    st_file: SafetensorsFile,
+    key: str,
+    target: torch.Tensor,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> None:
+    ref = st_file.tensors[key]
+    if ref.shape != tuple(target.shape):
+        raise ModelLoadError(
+            f"vision weight {key} has shape {list(ref.shape)}, expected {list(target.shape)}"
+        )
+    stored_dtype = cast("torch.dtype", ref.dtype.torch_dtype)
+    if ref.spec.numel == 0:
+        target.data.copy_(torch.empty(ref.shape, dtype=stored_dtype, device=device).to(dtype))
+        return
+    view = st_file.read(key)
+    with warnings.catch_warnings():
+        # Mapped buffer is read-only and copied immediately below.
+        warnings.filterwarnings(
+            "ignore",
+            message="The given buffer is not writable.*",
+            category=UserWarning,
+        )
+        tensor = torch.frombuffer(view, dtype=stored_dtype).reshape(ref.shape)
+        target.data.copy_(tensor.to(device=device, dtype=dtype))
+
+
 def load_prefixed_weights(
     module: nn.Module,
     directory: Path,
@@ -161,10 +186,10 @@ def load_prefixed_weights(
     }
     loaded: set[str] = set()
 
-    open_st = cast("Callable[[Path, str, str], AbstractContextManager[_SafeHandle]]", safe_open)
     for path in _safetensors_files(directory, prefixes):
-        with open_st(path, "pt", "cpu") as handle:
-            for key in handle.keys():  # noqa: SIM118  # safetensors handle is not a dict
+        st_file = SafetensorsFile(path)
+        try:
+            for key in st_file.tensors:
                 if not any(key.startswith(prefix) for prefix in prefixes):
                     continue
                 local = key
@@ -177,14 +202,13 @@ def load_prefixed_weights(
                     target = expected_buffers.get(local)
                 if target is None:
                     continue
-                tensor = handle.get_tensor(key)
-                if tuple(tensor.shape) != tuple(target.shape):
-                    raise ModelLoadError(
-                        f"vision weight {key} has shape {list(tensor.shape)}, "
-                        f"expected {list(target.shape)}"
-                    )
-                target.data.copy_(tensor.to(device=target_device, dtype=dtype))
+                _copy_vision_tensor(st_file, key, target, device=target_device, dtype=dtype)
                 loaded.add(local)
+        except BaseException:
+            with contextlib.suppress(BufferError):
+                st_file.close()
+            raise
+        st_file.close()
 
     missing = (set(expected_params) | set(expected_buffers)) - loaded
     if missing:

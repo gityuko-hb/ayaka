@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import pytest
 
-from ayaka.core.errors import InvalidRequestError
-from ayaka.entrypoints.anthropic.protocol import parse_messages_request
-from ayaka.entrypoints.openai.protocol import parse_chat_request
-from ayaka.entrypoints.openai.responses import parse_responses_request
-from ayaka.entrypoints.wire.reader import JsonObject
-from ayaka.multimodal.png import make_ide_screenshot_png
+aiohttp: Any = pytest.importorskip("aiohttp")
+
+from ayaka.core.errors import InvalidRequestError  # noqa: E402
+from ayaka.entrypoints.anthropic.protocol import parse_messages_request  # noqa: E402
+from ayaka.entrypoints.openai.protocol import parse_chat_request  # noqa: E402
+from ayaka.entrypoints.openai.responses import parse_responses_request  # noqa: E402
+from ayaka.entrypoints.wire.reader import JsonObject  # noqa: E402
+from ayaka.multimodal.png import make_ide_screenshot_png  # noqa: E402
 
 pytestmark = pytest.mark.unit
 

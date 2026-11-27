@@ -7,36 +7,24 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from ayaka.configs.device import DeviceConfig
-from ayaka.configs.model import ModelConfig
-from ayaka.configs.model_source import ModelSourceConfig, RequestFormat
-from ayaka.configs.scheduler import SchedulerConfig
-from ayaka.core.multimodal import ImageInput, ImageSpan
-from ayaka.core.params import SamplingParams
-from ayaka.core.request import TokenizedRequest
-from ayaka.core.types import ForwardMode, KVLayoutKind, RequestId
-from ayaka.execution.runner import ModelRunner
-from ayaka.kvcache.manager import KVCacheManager
-from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
-from ayaka.kvcache.prefix.hashing import ChainRoot
-from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool
-from ayaka.kvcache.storage.pool import KVPool, RecurrentStatePool
-from ayaka.kvcache.storage.spec import KVGroup
-from ayaka.model_loader.loader import load_model
-from ayaka.multimodal.png import make_ide_screenshot_png
-from ayaka.multimodal.preprocess import preprocess_gemma4, preprocess_qwen3_5
-from ayaka.multimodal.tokens import expand_image_placeholders
-from ayaka.ops.backend import load_backend
-from ayaka.scheduler.scheduler import Scheduler
-from ayaka.utils.dtypes import DType
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 torch: Any = pytest.importorskip("torch")
 
-from safetensors.torch import save_file  # noqa: E402
-
+from ayaka.configs.device import DeviceConfig  # noqa: E402
+from ayaka.configs.model import ModelConfig  # noqa: E402
+from ayaka.configs.model_source import ModelSourceConfig, RequestFormat  # noqa: E402
+from ayaka.configs.scheduler import SchedulerConfig  # noqa: E402
+from ayaka.core.multimodal import ImageInput, ImageSpan  # noqa: E402
+from ayaka.core.params import SamplingParams  # noqa: E402
+from ayaka.core.request import TokenizedRequest  # noqa: E402
+from ayaka.core.types import ForwardMode, KVLayoutKind, RequestId  # noqa: E402
+from ayaka.execution.runner import ModelRunner  # noqa: E402
+from ayaka.kvcache.manager import KVCacheManager  # noqa: E402
+from ayaka.kvcache.prefix.hash_cache import HashPrefixCache  # noqa: E402
+from ayaka.kvcache.prefix.hashing import ChainRoot  # noqa: E402
+from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool  # noqa: E402
+from ayaka.kvcache.storage.pool import KVPool, RecurrentStatePool  # noqa: E402
+from ayaka.kvcache.storage.spec import KVGroup  # noqa: E402
+from ayaka.model_loader.loader import load_model  # noqa: E402
 from ayaka.models._vision_gemma4 import Gemma4VisionTower  # noqa: E402
 from ayaka.models._vision_qwen3_5 import Qwen3_5VisionTower  # noqa: E402
 from ayaka.models.gemma4 import Gemma4ForConditionalGeneration  # noqa: E402
@@ -45,6 +33,17 @@ from ayaka.models.qwen3_5 import (  # noqa: E402
     _qwen3_5_delta,  # pyright: ignore[reportPrivateUsage]
     _qwen3_5_positions,  # pyright: ignore[reportPrivateUsage]
 )
+from ayaka.multimodal.png import make_ide_screenshot_png  # noqa: E402
+from ayaka.multimodal.preprocess import preprocess_gemma4, preprocess_qwen3_5  # noqa: E402
+from ayaka.multimodal.tokens import expand_image_placeholders  # noqa: E402
+from ayaka.ops.backend import load_backend  # noqa: E402
+from ayaka.scheduler.scheduler import Scheduler  # noqa: E402
+from ayaka.utils.dtypes import DType  # noqa: E402
+from gpt2_support import tensor_data  # noqa: E402
+from safetensors_files import write_safetensors  # noqa: E402
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _tiny_qwen3_5_vision_cfg() -> dict[str, Any]:
@@ -197,7 +196,10 @@ def _export_qwen3_5_checkpoint(directory: Path, raw_cfg: dict[str, Any]) -> None
 
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "config.json").write_text(json.dumps(raw_cfg), encoding="utf-8")
-    save_file(tensors, directory / "model.safetensors")
+    write_safetensors(
+        directory / "model.safetensors",
+        {name: tensor_data(tensor, tensor.dtype) for name, tensor in tensors.items()},
+    )
 
 
 @pytest.mark.unit
