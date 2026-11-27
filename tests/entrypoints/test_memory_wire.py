@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+# The protocol encoders below import aiohttp, which the adapters job does not install.
+pytest.importorskip("aiohttp")
+
 from ayaka.configs.server import ServerConfig
 from ayaka.core.errors import ConfigError, OutOfMemoryError, PreemptedTimeoutError
 from ayaka.core.outputs import CompletionOutput, RequestOutput
@@ -229,7 +232,7 @@ def test_truncation_bisection_finds_the_cut_of_the_linear_scan_in_log_renders(se
     import math
     import random
 
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311  # test data, not secrets
     sizes = [rng.randint(1, 40) for _ in range(rng.randint(2, 300))]
     limit = rng.randint(sizes[-1], sum(sizes) + 10)
     turns = tuple(Turn(role="user", text=f"t{index}") for index in range(len(sizes)))
