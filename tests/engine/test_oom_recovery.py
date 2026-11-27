@@ -172,3 +172,37 @@ def test_persistent_minimal_oom_fails_only_bad_request_and_keeps_async_llm_alive
             await llm.shutdown(0.0)
 
     asyncio.run(body())
+
+
+def test_one_transient_oom_of_a_lone_decode_is_retried_not_failed(
+    checkpoint: TinyCheckpoint,
+) -> None:
+    # One request alone in its decode steps, one OOM: the runner released the cache, so the
+    # step runs again instead of ending the request with out_of_memory.
+    engine = build_engine(tiny_engine_config(checkpoint.directory), tokenizer=tiny_tokenizer())
+    runner = engine._runner
+    original_forward = runner._forward
+    tripped = {"count": 0}
+
+    def oom_once(step: Any, inputs: Any) -> Any:
+        if tripped["count"] == 0 and step.mode is ForwardMode.DECODE:
+            tripped["count"] += 1
+            raise torch.OutOfMemoryError("transient OOM")
+        return original_forward(step, inputs)
+
+    runner._forward = oom_once  # type: ignore[method-assign]
+    try:
+        engine.add_request(_request("lone", "hello", 6))
+        outputs: list[Any] = []
+        while engine.has_unfinished:
+            outputs.extend(engine.step())
+        final = [o for o in outputs if o.finished][-1]
+        tokens = [t for o in outputs for t in o.outputs[0].token_ids]
+        assert tripped["count"] == 1
+        assert final.outputs[0].finish_reason is FinishReason.LENGTH
+        assert final.error is None
+        assert tokens == _expected(checkpoint, "hello", 6)
+        engine._kv.check_integrity()
+        assert_cache_released(engine)
+    finally:
+        engine.shutdown()

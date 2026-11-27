@@ -131,6 +131,8 @@ class Scheduler:
         self._prefill_streak = 0
         self._admit_delay = 0.0
         self._oom_recoveries = 0
+        # The minimal step that ran out of memory once and is retried before it fails.
+        self._oom_retried: tuple[RequestId, ...] | None = None
         self._stats: SchedulerStats | None = None
 
     # -- reading ---------------------------------------------------------------------------
@@ -463,6 +465,8 @@ class Scheduler:
         flight = self._flight
         if flight is None:
             raise EngineError("update() called without a step in flight")
+        if output.error is None:
+            self._oom_retried = None
         if output.step_id != flight.step_id or output.request_ids != flight.request_ids:
             raise EngineError(
                 f"update() got an answer for step {output.step_id} {output.request_ids}, "
@@ -493,10 +497,11 @@ class Scheduler:
         """Recover from a step-level out-of-memory error without crashing the engine.
 
         Preempts a victim when multiple requests ran, halves the prefill chunk
-        budget when a large prefill chunk failed, or fails only the single
-        minimal request that could not fit. Returns ``True`` if the batch was
-        reduced/retried without failing a request, ``False`` if the minimal
-        request was ended with ``error``.
+        budget when a large prefill chunk failed, retries a minimal step once (the
+        runner has released the allocator's cache, which often frees what a transient
+        OOM needed), and fails the single minimal request only when that retry runs out
+        of memory too. Returns ``True`` if the batch was reduced or retried without
+        failing a request, ``False`` if the minimal request was ended with ``error``.
         """
         flight = self._flight
         if flight is None:
@@ -515,8 +520,11 @@ class Scheduler:
             and flight.rows[0] > self._kv.block_size
         ):
             self._effective_budget = max(self._kv.block_size, flight.rows[0] // 2)
+        elif self._oom_retried != flight.request_ids:
+            self._oom_retried = flight.request_ids  # once: the next OOM of this step fails it
         else:
             recovered = False
+            self._oom_retried = None
             self._effective_budget = self._budget
             for request_id in flight.request_ids:
                 request = self._requests.get(request_id)
