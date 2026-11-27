@@ -52,7 +52,7 @@ threshold before flipping the default.
 | **Serving Core v2** | Should Render/Parsers ever port to Rust/PyO3? | Keep pure Python 3.13 unless concurrent serving benchmarks show CPU parse/render `> 5%` of GPU step time |
 | **Serving Core v2** | gRPC transport overhead (`GrpcEngineClient` vs in-process) | Must stay `≤ 0.3 ms` p50/token added latency and `≤ 2%` throughput delta on L4 (Serving Core v2 step 12) |
 | **Memory** | Exact wire error codes (`out_of_memory`, `preempted_timeout`, `FinishEvent.limit="memory"`) | Finalized in memory step 2 RFC / PR against OpenAI & Anthropic wire compatibility |
-| **Memory** | Host KV tier on by default & default `ram_keep`? | Opt-in until WSL2/Linux pinned-RAM ceiling measured, promotion `< 0.5×` cold prefill (`≥ 4K`), and write-behind overhead `≤ 2%` |
+| **Memory** | Host KV tier on by default & default `ram_keep`? | Opt-in until L4 & WSL2 RTX 3050 multi-device baselines are measured; A100-SXM4-80GB gates validated (`0.410×`/`0.324×` promotion, `+0.14%` eager / `+1.01%` CUDA-graph write-behind overhead, pinning OK to `8,192 MiB`) |
 | **Memory** | Time-budgeted chunking & overlapped scheduling? | Decided from memory replay/concurrency measurements |
 | **Fast quantized kernels** | GGUF `Q4_K_M` direct execution timing (after safetensors AWQ/GPTQ Marlin in fast quantized kernels step 4) | Evaluated as opt-in follow-up if user demand exceeds safetensors INT4 availability |
 | **Hybrid, state and vision** | State checkpoint density, KV FP8 default, vision lazy vs eager load, flagship hybrid model | Measured when the milestone opens (note: #99 already showed FlashInfer 0.7.4 FP8 KV is `1.28–1.50×` slower at batch 1) |

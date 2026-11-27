@@ -1085,13 +1085,40 @@ Pre-registered evaluation protocol before enabling host-RAM KV offloading (`--ho
   - Gate 2 (overhead & default): steady-state asynchronous write-behind overhead must stay `<= 2%`; until Linux and
     WSL2 GPU numbers satisfy both gates, `HostMemoryConfig.enabled` stays `False` (opt-in via `--host-kv`).
 - **Status:** Probe, host KV store, atomic pool resize, and `ayaka replay` verified on CPU (`torch 2.14.1+cpu`,
-  unit and tiny-model parity suites passing). Gate 1 measured on one other GPU: NVIDIA A100-SXM4-80GB, `Qwen/Qwen3-8B`
-  bf16, pinned host memory, 5 alternating rounds (`bench_host_kv_tier.py --prompt-tokens 4096 8192`):
+  unit and tiny-model parity suites passing). Validated on **NVIDIA A100-SXM4-80GB** (`sm_80`, 80.0 GiB, driver
+  `580.82.07`, CUDA `13.0`, Python `3.13.16`, `torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, 12 vCPUs) with
+  `Qwen/Qwen3-8B` (`revision b968826d`, `bf16`, `flashinfer` attention, pinned host memory):
 
-  | Prompt | Recompute | Host tier | Ratio | Token parity |
-  | ---: | ---: | ---: | ---: | --- |
-  | 4,096 | 440.35 ms | 179.57 ms | 0.408 | yes |
-  | 8,192 | 936.72 ms | 300.00 ms | 0.320 | yes |
+  - **Pinning probe & doctor** (`probe_host_pinning.py --sizes-mb 16 64 256 1024 4096 8192 --json`): all tested
+    sizes up to `8,192 MiB` succeeded with `pinned_ok = true`, `pageable_fallback = false`, sustained `12.31–12.35 GB/s`
+    H2D and `13.13–13.19 GB/s` D2H at `1–8 GiB` (`alloc_ms = 4,056.0 ms` at `8,192 MiB`). `ayaka doctor --output json`
+    returned `ok = true` (5 pass, 1 warn on `RLIMIT_MEMLOCK = 8 MiB`).
+  - **Gate 1 — promotion vs cold recomputation** (`bench_host_kv_tier.py --prompt-tokens 4096 8192 --rounds 5 --write-behind-overhead`,
+    5 alternating rounds; initial measurement `0.408` / `0.320`, repeated alongside Gate 2):
 
-  This is not the run the gate names (L4 with Llama-3.1-8B, RTX 3050 with Llama-3.2-1B), and Gate 2 is not measured,
-  so the host tier stays opt-in. The L4, WSL2 and write-behind overhead measurements are **pending GPU runs**.
+    | Prompt | Recompute | Host tier | Ratio | Token parity |
+    | ---: | ---: | ---: | ---: | --- |
+    | 4,096 | 440.66 ms | 180.79 ms (251 blocks) | 0.410 | yes (32/32) |
+    | 8,192 | 939.03 ms | 303.91 ms (507 blocks) | 0.324 | yes (32/32) |
+
+    Both lengths pass Gate 1 (`< 0.5×`) with exact greedy token parity.
+  - **Gate 2 — steady-state asynchronous write-behind overhead** (`bench_host_kv_tier.py --write-behind-overhead
+    --wb-prompt 1024 --wb-decode 128 --wb-requests 4 --rounds 5`, `284` evicted blocks offloaded per round,
+    `pinned_memory = true`):
+
+    | Execution mode | Baseline wall | Host-tier wall | Wall delta | Decode delta | Threshold |
+    | --- | ---: | ---: | ---: | ---: | --- |
+    | Eager (`cuda_graph=false`) | 34,955.62 ms | 35,005.89 ms | +0.14% | +0.18% | `<= 2%` (Pass) |
+    | CUDA graphs (`cuda_graph=true`) | 9,066.37 ms | 9,158.13 ms | +1.01% | +0.39% | `<= 2%` (Pass) |
+
+  - **Pressure preemption, step-OOM, resize & batched bf16 token parity** (`benchmarks/e2e/memory_pressure.py`,
+    `Qwen/Qwen3-8B`, `pool_blocks = 242`, `blocks_needed_at_once = 483`, 3 requests × 512 prompt + 2,048 tokens):
+    `alone_twice_equal = true` (`[null, null, null]`), pressure finished `3/3` over `4,359` steps (`433` preemptions,
+    `integrity_checked_every_step = true`, `338.76 s`), injected step OOM kept `engine_alive = true` (`3/3` finished),
+    and pool resize (`242 -> 483 -> 241` blocks) finished `3/3` (`all_conditions_met = true`). Batched vs solo runs
+    differed starting at tokens `[168, 38, 40]` (pressure and resize) and `[168, 38, 63]` (step OOM) solely from bf16
+    non-associative reduction tree differences across batch shapes, with clean KV integrity after every step.
+
+  Both Gate 1 (`< 0.5×`) and Gate 2 (`<= 2%`) are validated on NVIDIA A100-SXM4-80GB. `HostMemoryConfig.enabled` stays
+  `False` (`--host-kv` opt-in) while **NVIDIA L4 (Llama-3.1-8B)** and **WSL2 RTX 3050 (Llama-3.2-1B)** remain future
+  multi-device baselines.

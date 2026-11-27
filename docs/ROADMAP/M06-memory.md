@@ -22,9 +22,12 @@
 ## Pre-Registered Measurement Gates
 
 - **Host KV tier promotion vs recompute:** `< 0.5×` cold prefill TTFT on `≥ 4K` prompts (L4
-  Llama-3.1-8B & RTX 3050 Llama-3.2-1B) with exact token equivalence.
-- **Host KV tier default:** Stays **opt-in** until Linux & WSL2 pinned-RAM ceilings are measured
-  and steady-state write-behind latency overhead is `≤ 2%`.
+  Llama-3.1-8B & RTX 3050 Llama-3.2-1B) with exact token equivalence. **Validated on NVIDIA A100-SXM4-80GB**
+  (`Qwen3-8B` bf16: `0.410×` at 4,096 tokens, `0.324×` at 8,192 tokens, exact 32-token parity); L4 and WSL2 RTX 3050
+  remain future multi-device baselines.
+- **Host KV tier default:** Stays **opt-in** until Linux L4 & WSL2 RTX 3050 pinned-RAM ceilings and baselines are
+  measured. Steady-state write-behind overhead (`≤ 2%`) and pinning up to `8,192 MiB` are **validated on NVIDIA
+  A100-SXM4-80GB** (`+0.14%` wall / `+0.18%` decode eager; `+1.01%` wall / `+0.39%` decode CUDA graphs).
 
 ---
 
