@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from ayaka.core.constraints import ConstraintKind
+from ayaka.core.constraints import ConstraintKind, StructuralTagItem, StructuralTagSpec
 from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
 from ayaka.core.types import FinishReason
 from ayaka.entrypoints.conversation import (
@@ -29,6 +29,7 @@ from ayaka.entrypoints.conversation import (
     ToolSpec,
     parse_arguments,
 )
+from ayaka.entrypoints.render.reasoning import ThinkingRequest, parse_reasoning_effort
 from ayaka.entrypoints.wire.policy import apply_policy
 from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
 
@@ -165,6 +166,12 @@ class ChatRequest:
     tools: bool
     parallel_tool_calls: bool
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
+    thinking: ThinkingRequest = dataclasses.field(default_factory=ThinkingRequest)
+    chat_template_kwargs: Mapping[str, object] = dataclasses.field(
+        default_factory=dict[str, object]
+    )
+    continue_final_message: bool = False
+    named_tool_choice: bool = False
 
 
 def parse_chat_request(body: JsonObject) -> ChatRequest:
@@ -179,6 +186,67 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
     if modalities is not None and any(item != "text" for item in modalities):
         raise _unsupported("modalities", "only text output is available")
     response, schema = response_format(body.child("response_format"), "response_format")
+    guided_regex = body.string("guided_regex")
+    guided_grammar = body.string("guided_grammar")
+    raw_choices = body.raw("guided_choice")
+    guided_choices: tuple[str, ...] = ()
+    if raw_choices is not None:
+        if not isinstance(raw_choices, list) or not all(
+            isinstance(item, str) and item for item in cast("list[object]", raw_choices)
+        ):
+            raise InvalidRequestError(
+                "guided_choice: must be a non-empty array of strings",
+                context={"param": "guided_choice"},
+            )
+        guided_choices = tuple(cast("list[str]", raw_choices))
+        if not guided_choices:
+            raise InvalidRequestError(
+                "guided_choice: must be a non-empty array of strings",
+                context={"param": "guided_choice"},
+            )
+    rf_child = body.child("response_format")
+    rf_type = rf_child.string("type") if rf_child is not None else None
+    structural_spec = _parse_structural_tag(body.child("structural_tag"), "structural_tag")
+    pattern: str | None = None
+    choices: tuple[str, ...] = ()
+    grammar: str | None = None
+    if rf_type == "regex" and rf_child is not None:
+        response = ConstraintKind.REGEX
+        pattern = rf_child.text("regex")
+    elif rf_type == "choice" and rf_child is not None:
+        response = ConstraintKind.CHOICE
+        choices = _parse_choice_array(rf_child, "response_format.choices")
+    elif rf_type == "grammar" and rf_child is not None:
+        response = ConstraintKind.GRAMMAR
+        grammar = rf_child.text("grammar")
+    elif rf_type == "structural_tag" and rf_child is not None:
+        response = ConstraintKind.STRUCTURAL_TAG
+        structural_spec = _parse_structural_tag(
+            rf_child.child("structural_tag") or rf_child, "response_format.structural_tag"
+        )
+    elif guided_regex is not None:
+        response = ConstraintKind.REGEX
+        pattern = guided_regex
+    elif guided_choices:
+        response = ConstraintKind.CHOICE
+        choices = guided_choices
+    elif guided_grammar is not None:
+        response = ConstraintKind.GRAMMAR
+        grammar = guided_grammar
+    elif structural_spec is not None:
+        response = ConstraintKind.STRUCTURAL_TAG
+
+    effort_raw = body.string("reasoning_effort")
+    effort = None
+    if effort_raw is not None:
+        try:
+            effort = parse_reasoning_effort(effort_raw, where="reasoning_effort")
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc), context={"param": "reasoning_effort"}) from exc
+
+    template_kwargs_obj = body.child("chat_template_kwargs")
+    template_kwargs = dict(template_kwargs_obj.data) if template_kwargs_obj is not None else {}
+    continue_final = body.flag("continue_final_message")
 
     builder = ConversationBuilder()
     messages = body.objects("messages")
@@ -188,7 +256,14 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         )
     for message in messages:
         _chat_message(message, builder)
+    conversation = builder.build()
+    if continue_final and conversation.turns[-1].role != "assistant":
+        raise InvalidRequestError(
+            "continue_final_message: requires a final assistant message",
+            context={"param": "continue_final_message"},
+        )
     tools, choice, strict = _chat_tools(body, builder)
+    conversation = builder.build()
 
     max_tokens = body.integer("max_completion_tokens")
     if max_tokens is None:
@@ -198,14 +273,27 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         logprobs = 0
     return ChatRequest(
         model=body.string("model"),
-        conversation=builder.build(),
+        conversation=conversation,
         sampling=_sampling(body, logprobs=logprobs),
         max_tokens=max_tokens,
         stream=body.flag("stream"),
         include_usage=_stream_options(body),
         tools=tools,
         parallel_tool_calls=body.flag("parallel_tool_calls", default=True),
-        output=OutputRequest(response=response, schema=schema, tool_choice=choice, strict=strict),
+        output=OutputRequest(
+            response=response,
+            schema=schema,
+            pattern=pattern,
+            choices=choices,
+            grammar=grammar,
+            structural_tag=structural_spec,
+            tool_choice=choice,
+            strict=strict,
+        ),
+        thinking=ThinkingRequest(effort=effort),
+        chat_template_kwargs=template_kwargs,
+        continue_final_message=continue_final,
+        named_tool_choice=choice not in ("auto", "required"),
     )
 
 
@@ -229,9 +317,13 @@ def response_format(
         return None, None
     if kind == "json_object":
         return ConstraintKind.JSON_OBJECT, None
+    if kind in ("regex", "choice", "grammar", "structural_tag"):
+        return None, None
     if kind != "json_schema":
         raise InvalidRequestError(
-            f"{field}.type: must be text, json_object or json_schema", context={"param": field}
+            f"{field}.type: must be text, json_object, json_schema, regex, choice, grammar "
+            "or structural_tag",
+            context={"param": field},
         )
     holder = value.child("json_schema") or value
     schema = holder.child("schema")
@@ -241,6 +333,62 @@ def response_format(
             context={"param": field},
         )
     return ConstraintKind.JSON_SCHEMA, schema.data
+
+
+def _parse_choice_array(holder: JsonObject, field: str) -> tuple[str, ...]:
+    raw = holder.raw("choices")
+    if not isinstance(raw, list) or not all(
+        isinstance(item, str) and item for item in cast("list[object]", raw)
+    ):
+        raise InvalidRequestError(
+            f"{field}: must be a non-empty array of non-empty strings", context={"param": field}
+        )
+    values = tuple(cast("list[str]", raw))
+    if not values:
+        raise InvalidRequestError(
+            f"{field}: must be a non-empty array of non-empty strings", context={"param": field}
+        )
+    return values
+
+
+def _parse_structural_tag(value: JsonObject | None, field: str) -> StructuralTagSpec | None:
+    if value is None:
+        return None
+    tags_raw = (
+        value.objects("structures")
+        if value.raw("structures") is not None
+        else value.objects("tags")
+    )
+    if not tags_raw:
+        raise InvalidRequestError(
+            f"{field}: requires at least one tag definition", context={"param": field}
+        )
+    items: list[StructuralTagItem] = []
+    for entry in tags_raw:
+        begin = entry.text("begin")
+        end = entry.string("end") or ""
+        schema_child = entry.child("schema")
+        grammar = entry.string("grammar")
+        items.append(
+            StructuralTagItem(
+                begin=begin,
+                schema=schema_child.data if schema_child is not None else None,
+                grammar=grammar,
+                end=end,
+            )
+        )
+    triggers_raw = value.array("triggers")
+    triggers = (
+        tuple(str(item) for item in triggers_raw if isinstance(item, str) and item)
+        if triggers_raw is not None
+        else ()
+    )
+    return StructuralTagSpec(
+        tags=tuple(items),
+        triggers=triggers,
+        at_least_one=value.flag("at_least_one", default=False),
+        stop_after_first=value.flag("stop_after_first", default=False),
+    )
 
 
 def _text_parts(message: JsonObject, key: str, *, allow_null: bool) -> str:
@@ -281,7 +429,10 @@ def _chat_message(message: JsonObject, builder: ConversationBuilder) -> None:
             builder.user(_text_parts(message, "content", allow_null=False))
         case "assistant":
             calls = [_chat_tool_call(call) for call in message.objects("tool_calls")]
-            builder.assistant(_text_parts(message, "content", allow_null=True), calls)
+            reasoning = message.string("reasoning_content")
+            builder.assistant(
+                _text_parts(message, "content", allow_null=True), calls, reasoning=reasoning
+            )
         case "tool":
             builder.tool_result(
                 message.text("tool_call_id"), _text_parts(message, "content", allow_null=False)

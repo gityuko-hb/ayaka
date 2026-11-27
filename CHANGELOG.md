@@ -29,6 +29,20 @@
 - MiMo-7B checkpoints (`MiMoForCausalLM`, such as MiMo-7B-RL), which are Qwen2 checkpoints. The multi-token-prediction
   layer they also store (`model.mtp_layers.*`) is set aside, not loaded and not counted by `ayaka plan`; using it for
   speculative decoding is tracked in #128.
+- Serving Core version 2 (#136):
+  - Prompt rendering layer (`ayaka.entrypoints.render`) that inspects each chat template's thinking policy, enables
+    request-scoped thinking controls (`reasoning_effort`, `reasoning`, `thinking`), `chat_template_kwargs`,
+    `continue_final_message`, assistant prefill, the `developer` role, and historical reasoning turns, and keeps
+    prompt tokens, parser interpretation, and structured constraint start synchronized per request.
+  - Multi-family reasoning parsers with unclosed-block `tool_start` recovery (`deepseek_r1`, `deepseek_v3`, `glm45`,
+    `minimax_m3`), JSON tool-call families (`hermes`, `llama3_json`, `qwen3_json`, `deepseek_json`), tagged
+    Extensible Markup Language tool-call families (`qwen3_coder`, `mimo`, `glm_xml`, `minimax_m2`, `minimax_m3`,
+    `deepseek_dsml`), JSON-Schema parameter coercion (`ToolSchemas`), and `ToolStrictLevel` grammar generation.
+  - Structured output version 2 supporting regular expressions, fixed choices, custom grammars, and structural tags
+    alongside JSON schema, JSON object, and tool-call grammars, plus an optional `xgrammar` compiler extra, token
+    validation and rollback, and guided speculative verification windows.
+  - Optional remote procedure call transport (`grpc` extra): `ayaka engine-server`, `ayaka serve --engine-grpc`, and
+    the engine-free `ayaka render-server` (without `torch`).
 
 ### Fixed
 

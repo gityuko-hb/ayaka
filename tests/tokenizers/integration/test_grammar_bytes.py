@@ -53,7 +53,9 @@ def test_the_table_concatenates_to_the_decoded_text_after_a_context(
 
 @pytest.mark.parametrize("kind", ["metaspace", "byte_fallback"])
 def test_the_grammar_sees_the_space_a_word_initial_token_writes(tmp_path: Path, kind: str) -> None:
-    from ayaka.sampling.structured.compiler import _Vocabulary  # pyright: ignore[reportPrivateUsage]
+    from ayaka.sampling.structured.llguidance_backend import (  # pyright: ignore[reportPrivateUsage]
+        _Vocabulary,
+    )
 
     tokenizer = _load(tmp_path, kind)
     word = next(token for token in ("▁hello", "▁wo", "▁h") if token in tokenizer.get_vocab())
@@ -76,7 +78,9 @@ def test_a_byte_fallback_token_is_its_byte(tmp_path: Path) -> None:
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_grammar_tokenizes_a_text_into_tokens_that_spell_it(tmp_path: Path, kind: str) -> None:
     """llguidance trusts these ids for the bytes it forces, such as ``{"`` at an answer's start."""
-    from ayaka.sampling.structured.compiler import _Vocabulary  # pyright: ignore[reportPrivateUsage]
+    from ayaka.sampling.structured.llguidance_backend import (  # pyright: ignore[reportPrivateUsage]
+        _Vocabulary,
+    )
 
     tokenizer = _load(tmp_path, kind)
     vocabulary = _Vocabulary(tokenizer, tokenizer.vocab_size, eos=tokenizer.eos_token_ids)

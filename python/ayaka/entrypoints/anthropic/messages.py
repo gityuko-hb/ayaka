@@ -46,6 +46,8 @@ from ayaka.entrypoints.conversation import (
 )
 from ayaka.entrypoints.failures import failure_for_event
 from ayaka.entrypoints.http import read_body
+from ayaka.entrypoints.parsers.parameters import ToolSchemas
+from ayaka.entrypoints.render.selection import RenderRequest
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import sse_json
 
@@ -255,7 +257,16 @@ async def create_message(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         message.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation, max_tokens=message.max_tokens)
+    rendered = await serving.render_chat(
+        RenderRequest(
+            conversation=conversation,
+            thinking=message.thinking,
+            continue_final_message=message.continue_final_message,
+            named_tool_choice=message.named_tool_choice,
+        ),
+        max_tokens=message.max_tokens,
+    )
+    prompt = rendered.token_ids
     sampling = message.sampling.build(serving.output_tokens(len(prompt), message.max_tokens))
     public_id = request[REQUEST_ID]
     generation = await serving.start(
@@ -269,7 +280,10 @@ async def create_message(request: web.Request) -> web.StreamResponse:
             conversation,
             tools=message.tools,
             parallel_tool_calls=message.parallel_tool_calls,
+            rendered=rendered,
         ),
+        rendered=rendered,
+        tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
     )
     message_id = f"msg_{public_id}"
     try:

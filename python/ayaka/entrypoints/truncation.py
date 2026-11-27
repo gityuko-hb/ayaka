@@ -8,6 +8,7 @@ the tool definitions and the final turn group.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from ayaka.core.errors import ContextLengthError
@@ -19,9 +20,15 @@ if TYPE_CHECKING:
 
     from ayaka.configs.tokenizer import EncodeResult
     from ayaka.entrypoints.conversation import Turn
+    from ayaka.entrypoints.render.selection import PromptRenderer, RenderedChat, RenderRequest
     from ayaka.tokenizers.service import TokenizerService
 
-__all__ = ["encode_truncated_chat", "group_turns", "truncate_conversation"]
+__all__ = [
+    "encode_truncated_chat",
+    "group_turns",
+    "render_truncated_chat",
+    "truncate_conversation",
+]
 
 _LOG = logging.getLogger("ayaka.serve")
 
@@ -78,26 +85,28 @@ def truncate_conversation(
             max_context_tokens=max_prompt_tokens + 1,
         )
 
-    dropped_turns = 0
-    for start in range(1, len(groups)):
-        dropped_turns += len(groups[start - 1])
+    # Dropping more groups never lengthens the prompt, so the fewest groups to drop is found by
+    # bisection: O(log n) renders of a long agent session instead of one per dropped group.
+    def candidate_from(start: int) -> Conversation:
         kept = tuple(turn for group in groups[start:] for turn in group)
-        candidate = Conversation(
-            system=conversation.system,
-            turns=kept,
-            tools=conversation.tools,
-        )
+        return Conversation(system=conversation.system, turns=kept, tools=conversation.tools)
+
+    low, high = 1, len(groups) - 1  # groups[0:start] dropped; the last group is always kept
+    best: tuple[Conversation, int] | None = None
+    while low <= high:
+        start = (low + high) // 2
+        candidate = candidate_from(start)
         ok, count = fits_within(candidate)
         if ok and count <= max_prompt_tokens:
-            return candidate, dropped_turns
+            best = (candidate, start)
+            high = start - 1
+        else:
+            low = start + 1
+    if best is not None:
+        candidate, start = best
+        return candidate, sum(len(group) for group in groups[:start])
 
-    kept = groups[-1]
-    candidate = Conversation(
-        system=conversation.system,
-        turns=kept,
-        tools=conversation.tools,
-    )
-    _, count = fits_within(candidate)
+    _, count = fits_within(candidate_from(len(groups) - 1))
     raise ContextLengthError(
         prompt_tokens=count,
         output_tokens=1,
@@ -130,3 +139,28 @@ def encode_truncated_chat(
     if dropped:
         _LOG.info("truncated %d oldest turn(s) to fit %d prompt tokens", dropped, max_prompt_tokens)
     return service.encode(trimmed.template_data(), EncodeOptions(max_output_tokens=1), vouch=vouch)
+
+
+def render_truncated_chat(
+    renderer: PromptRenderer,
+    request: RenderRequest,
+    *,
+    max_prompt_tokens: int,
+    vouch: bool,
+) -> RenderedChat:
+    """Drop the oldest turn groups if needed, then render ``request`` with its own thinking."""
+
+    def fits(candidate: Conversation) -> tuple[bool, int]:
+        try:
+            rendered = renderer.render(replace(request, conversation=candidate), vouch=False)
+        except ContextLengthError as exc:
+            return False, exc.prompt_tokens
+        count = len(rendered.token_ids)
+        return count <= max_prompt_tokens, count
+
+    trimmed, dropped = truncate_conversation(
+        request.conversation, fits, max_prompt_tokens=max_prompt_tokens
+    )
+    if dropped:
+        _LOG.info("truncated %d oldest turn(s) to fit %d prompt tokens", dropped, max_prompt_tokens)
+    return renderer.render(replace(request, conversation=trimmed), vouch=vouch)

@@ -1,0 +1,202 @@
+syntax = "proto3";
+
+package ayaka.v1;
+
+// Token-in / token-out inference engine contract exposed by `ayaka engine-server`.
+service InferenceService {
+  rpc Generate(GenerateRequest) returns (stream RequestOutputChunk);
+  rpc Abort(AbortRequest) returns (AbortResponse);
+  rpc AbortAll(AbortAllRequest) returns (AbortAllResponse);
+  rpc Health(HealthRequest) returns (EngineHealth);
+  rpc GetEngineInfo(GetEngineInfoRequest) returns (EngineInfo);
+  rpc WatchEngineState(WatchEngineStateRequest) returns (stream EngineStateSnapshot);
+}
+
+enum ConstraintKind {
+  CONSTRAINT_KIND_UNSPECIFIED = 0;
+  CONSTRAINT_KIND_JSON_SCHEMA = 1;
+  CONSTRAINT_KIND_JSON_OBJECT = 2;
+  CONSTRAINT_KIND_TOOL_CALL = 3;
+  CONSTRAINT_KIND_REGEX = 4;
+  CONSTRAINT_KIND_CHOICE = 5;
+  CONSTRAINT_KIND_GRAMMAR = 6;
+  CONSTRAINT_KIND_STRUCTURAL_TAG = 7;
+}
+
+enum EngineState {
+  ENGINE_STATE_UNSPECIFIED = 0;
+  ENGINE_STATE_RUNNING = 1;
+  ENGINE_STATE_STOPPED = 2;
+  ENGINE_STATE_DEAD = 3;
+}
+
+message LogitBiasEntry {
+  int32 token_id = 1;
+  double bias = 2;
+}
+
+message SamplingParams {
+  int32 n = 1;
+  bool best_of_set = 2;
+  int32 best_of = 3;
+  double temperature = 4;
+  double top_p = 5;
+  int32 top_k = 6;
+  double min_p = 7;
+  double repetition_penalty = 8;
+  double frequency_penalty = 9;
+  double presence_penalty = 10;
+  optional int32 max_tokens = 11;
+  int32 min_tokens = 12;
+  bool ignore_eos = 13;
+  repeated string stop = 14;
+  repeated int32 stop_token_ids = 15;
+  bool include_stop_str_in_output = 16;
+  bool skip_special_tokens = 17;
+  bool spaces_between_special_tokens = 18;
+  optional int64 seed = 19;
+  repeated int32 allowed_token_ids = 20;
+  bool has_allowed_token_ids = 21;
+  repeated LogitBiasEntry logit_bias = 22;
+  optional int32 logprobs = 23;
+  repeated int32 logprob_token_ids = 24;
+  bool prompt_logprobs = 25;
+}
+
+message ToolSchema {
+  string name = 1;
+  string parameters_json = 2;
+}
+
+message ToolCallSyntax {
+  string open = 1;
+  string close = 2;
+  optional int32 open_token = 3;
+  optional int32 close_token = 4;
+  repeated int32 open_ids = 5;
+  string arguments_key = 6;
+  string separator = 7;
+}
+
+message StructuralTagItem {
+  string begin = 1;
+  string end = 2;
+  optional string schema_json = 3;
+  optional string grammar = 4;
+}
+
+message StructuralTagSpec {
+  repeated StructuralTagItem tags = 1;
+  repeated string triggers = 2;
+  bool at_least_one = 3;
+  bool stop_after_first = 4;
+}
+
+message StructuredOutput {
+  ConstraintKind kind = 1;
+  optional string schema_json = 2;
+  repeated ToolSchema tools = 3;
+  optional ToolCallSyntax syntax = 4;
+  string tool_choice = 5;
+  bool strict = 6;
+  bool parallel = 7;
+  optional int32 start_after = 8;
+  optional int32 reasoning_open = 9;
+  optional string pattern = 10;
+  repeated string choices = 11;
+  optional string grammar = 12;
+  optional StructuralTagSpec structural_tag = 13;
+}
+
+message GenerateRequest {
+  string request_id = 1;
+  repeated int32 prompt_token_ids = 2;
+  optional string prompt_text = 3;
+  SamplingParams sampling = 4;
+  optional StructuredOutput structured = 5;
+  optional string client_request_id = 6;
+  int32 priority = 7;
+  optional string cache_salt = 8;
+  bool prefix_cache = 9;
+}
+
+message TokenLogprob {
+  int32 token_id = 1;
+  double logprob = 2;
+  int32 rank = 3;
+  repeated TokenLogprob top = 4;
+}
+
+message CompletionOutput {
+  int32 index = 1;
+  string text = 2;
+  repeated int32 token_ids = 3;
+  optional string finish_reason = 4;
+  repeated TokenLogprob logprobs = 5;
+}
+
+message Usage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+  int32 reasoning_tokens = 4;
+  int32 cached_tokens = 5;
+}
+
+message RequestMetrics {
+  double arrival_time = 1;
+  optional double first_token_time = 2;
+  optional double finish_time = 3;
+  optional double queued_at = 4;
+}
+
+message ErrorInfo {
+  string code = 1;
+  string message = 2;
+  string kind = 3;
+}
+
+message RequestOutputChunk {
+  string request_id = 1;
+  repeated CompletionOutput outputs = 2;
+  bool finished = 3;
+  optional Usage usage = 4;
+  optional RequestMetrics metrics = 5;
+  optional ErrorInfo error = 6;
+}
+
+message AbortRequest {
+  string request_id = 1;
+}
+
+message AbortResponse {}
+
+message AbortAllRequest {}
+
+message AbortAllResponse {}
+
+message HealthRequest {}
+
+message EngineHealth {
+  EngineState state = 1;
+  double progress_at = 2;
+  bool busy = 3;
+}
+
+message GetEngineInfoRequest {}
+
+message EngineInfo {
+  int32 max_model_len = 1;
+  int32 max_context_tokens = 2;
+  bool prefix_caching = 3;
+}
+
+message WatchEngineStateRequest {
+  double poll_interval_seconds = 1;
+}
+
+message EngineStateSnapshot {
+  EngineHealth health = 1;
+  EngineInfo info = 2;
+  double observed_at = 3;
+}

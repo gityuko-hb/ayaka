@@ -97,10 +97,22 @@ class ServerConfig(ConfigMixin):
     served_model_names: tuple[str, ...] = ()
     reasoning_parser: str | None = None
     tool_call_parser: str | None = None
+    tool_strict_level: Literal["auto", "function", "parameter"] = "auto"
+    engine_grpc: str | None = None
     normalize_prompts: bool = True
     overlong_policy: OverlongPolicy = "reject"
 
     def __post_init__(self) -> None:
+        if self.tool_strict_level not in ("auto", "function", "parameter"):  # pyright: ignore[reportUnnecessaryComparison]
+            raise ConfigError(
+                "server.tool_strict_level",
+                "INVALID_CHOICE",
+                f"must be auto, function or parameter, got {self.tool_strict_level!r}",
+            )
+        if self.engine_grpc is not None and (
+            not isinstance(self.engine_grpc, str) or not self.engine_grpc  # pyright: ignore[reportUnnecessaryIsInstance]
+        ):
+            raise ConfigError("server.engine_grpc", "INVALID", "must be a non-empty gRPC target")
         if not isinstance(self.host, str) or not self.host:  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ConfigError("server.host", "INVALID", "must be a non-empty host name or address")
         _int(self.port, "server.port", 0, 65535)

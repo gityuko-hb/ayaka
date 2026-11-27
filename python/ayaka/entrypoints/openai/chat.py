@@ -50,6 +50,8 @@ from ayaka.entrypoints.openai.protocol import (
     parse_chat_request,
     parse_completion_request,
 )
+from ayaka.entrypoints.parsers.parameters import ToolSchemas
+from ayaka.entrypoints.render.selection import RenderRequest
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
 
@@ -318,7 +320,17 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         chat.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation, max_tokens=chat.max_tokens)
+    rendered = await serving.render_chat(
+        RenderRequest(
+            conversation=conversation,
+            thinking=chat.thinking,
+            chat_template_kwargs=chat.chat_template_kwargs,
+            continue_final_message=chat.continue_final_message,
+            named_tool_choice=chat.named_tool_choice,
+        ),
+        max_tokens=chat.max_tokens,
+    )
+    prompt = rendered.token_ids
     sampling = chat.sampling.build(serving.output_tokens(len(prompt), chat.max_tokens))
     public_id = request[REQUEST_ID]
     structured = serving.constraint(
@@ -326,6 +338,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         conversation,
         tools=chat.tools,
         parallel_tool_calls=chat.parallel_tool_calls,
+        rendered=rendered,
     )
     generation = await serving.start(
         prompt,
@@ -334,6 +347,8 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         tools=chat.tools,
         parallel_tool_calls=chat.parallel_tool_calls,
         structured=structured,
+        rendered=rendered,
+        tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
     )
     meta = _Meta(f"chatcmpl-{public_id}", int(time.time()), serving.model_name)
     try:

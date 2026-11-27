@@ -39,7 +39,9 @@ The extras fall into three groups — one extra per real install decision.
 | Extra | What it adds | When |
 | --- | --- | --- |
 | `serve` | aiohttp, for `ayaka serve` | serving HTTP clients |
-| `structured` | llguidance, for JSON answers and forced tool calls | `response_format`, `tool_choice`, strict tools |
+| `structured` | llguidance, for JSON answers and tool grammars | `response_format`, `tool_choice`, strict tools (default backend) |
+| `xgrammar` | xgrammar, optional second grammar compiler | `--structured-backend xgrammar` |
+| `grpc` | grpcio and protobuf, for remote engine/render services | `ayaka engine-server`, `ayaka render-server`, `--engine-grpc` |
 
 A machine with an NVIDIA GPU under Linux or WSL2, serving coding tools:
 

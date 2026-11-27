@@ -1,52 +1,54 @@
-"""From :class:`~ayaka.core.constraints.StructuredParams` to the text of a grammar.
-
-The grammars are written in llguidance's Lark dialect, where ``%json { ... }`` embeds a JSON
-schema as one rule. Building the text needs no grammar library, so this module is plain Python
-and its output is tested as text; :mod:`ayaka.sampling.structured.compiler` hands it to llguidance.
-
-A tool call is the body the parser of :mod:`ayaka.entrypoints.parsers.tool_calls` reads: an
-optional newline, one JSON object ``{"name": ..., "arguments": {...}}``, an optional newline, the
-closing marker (demanded as its token when it is one). The opening marker is not part of the
-grammar: the constraint starts once the model emitted it (a lazy call) or once the matcher made it
-emit it (a forced call). With ``strict`` the arguments follow each tool's schema; without it they
-are any JSON object.
-
-A format without markers (Llama 3.x, ``llama3_json``) is only constrained when the call is forced:
-the grammar is the answer itself, one object, or with ``parallel`` several joined by the format's
-separator. The key of the arguments comes from the format (``parameters`` for Llama).
-"""
+"""From :class:`~ayaka.core.constraints.StructuredParams` to the text of a Lark grammar."""
 
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Final
 
 from ayaka.core.constraints import ConstraintKind
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ayaka.core.constraints import StructuredParams, ToolSchema
+    from ayaka.core.constraints import StructuralTagSpec, StructuredParams, ToolSchema
 
-__all__ = ["call_schema", "grammar_text"]
+__all__ = [
+    "JSON_SEPARATORS",
+    "call_schema",
+    "compact_schema",
+    "grammar_text",
+    "prefix_lark_grammar",
+]
+
+_RULE_DEF_RE = re.compile(r"(?m)^([a-zA-Z_][a-zA-Z0-9_]*)\s*:")
 
 
 def _json(value: object) -> str:
-    # Never sort keys: the grammar writes properties in the schema's order, so sorting would
-    # put ``arguments`` before ``name`` and reorder every client schema.
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
-def _compact(schema: Mapping[str, object], *, lenient: bool = False) -> Mapping[str, object]:
-    """The schema with llguidance's compact JSON layout, unless the request chose its own.
+#: The separators of constrained JSON: the layout ``json.dumps`` writes by default, and the one
+#: models write unconstrained. No other whitespace is allowed, so a model has none to spend its
+#: budget on. With no space after a colon (``{"name":"``) Qwen3-8B reads the next token as the
+#: start of a string and writes placeholders such as ``":name:"`` (see #145).
+JSON_SEPARATORS: Final[tuple[str, str]] = (", ", ": ")
 
-    Without layout whitespace inside the JSON, a small model cannot spend its tokens on spaces.
-    ``lenient`` makes llguidance skip the keywords it does not implement (an unknown ``format``)
-    instead of refusing the schema: for a constraint the request did not ask for.
+
+def compact_schema(schema: Mapping[str, object], *, lenient: bool = False) -> Mapping[str, object]:
+    """Return ``schema`` with llguidance options for the single-line :data:`JSON_SEPARATORS` layout.
+
+    A schema that carries its own ``x-guidance`` options keeps them. ``lenient`` makes llguidance
+    skip the keywords it does not implement instead of refusing the schema.
     """
     if "x-guidance" in schema:
         return schema
-    options: dict[str, object] = {"whitespace_flexible": False}
+    item, key = JSON_SEPARATORS
+    options: dict[str, object] = {
+        "whitespace_flexible": False,
+        "item_separator": item,
+        "key_separator": key,
+    }
     if lenient:
         options["lenient"] = True
     return {**schema, "x-guidance": options}
@@ -59,15 +61,7 @@ def call_schema(
     only: str | None = None,
     arguments_key: str = "arguments",
 ) -> Mapping[str, object]:
-    """The JSON schema of one call body: a tool name and its arguments.
-
-    Args:
-        tools: The functions the request offers.
-        strict: Whether the arguments follow each tool's schema.
-        only: The one tool a request forces, or ``None`` for any of them.
-        arguments_key: The key of the arguments in the model's format (``parameters`` for
-            ``llama3_json``).
-    """
+    """Build the JSON schema of a single tool call payload."""
     chosen = [tool for tool in tools if only is None or tool.name == only]
     if not strict:
         return {
@@ -94,19 +88,122 @@ def call_schema(
     return variants[0] if len(variants) == 1 else {"anyOf": variants}
 
 
-def grammar_text(params: StructuredParams) -> str:
-    """The Lark text of the grammar a constraint follows once it is on."""
+def prefix_lark_grammar(text: str, prefix: str) -> tuple[str, str]:
+    """Rename top-level rules/terminals in ``text`` with ``prefix``; return ``(entry, text)``."""
+    names = [m.group(1) for m in _RULE_DEF_RE.finditer(text)]
+    if not names:
+        return "start", text
+    mapping = {name: f"{prefix}{name}" for name in dict.fromkeys(names)}
+    pattern = re.compile(
+        r'(?<!\\)"(?:\\.|[^"\\])*"|(?<!\\)/(?:\\.|[^/\\])*/|\b('
+        + "|".join(re.escape(n) for n in sorted(mapping, key=len, reverse=True))
+        + r")\b"
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        ident = match.group(1)
+        if ident is None:
+            return match.group(0)
+        return mapping.get(ident, ident)
+
+    entry = mapping.get("start") or mapping.get("root") or next(iter(mapping.values()))
+    return entry, pattern.sub(replace, text)
+
+
+def _lark_marker(text: str, special_tokens: Mapping[str, int] | None) -> str:
+    """Render ``text`` in Lark, substituting special-token markers with ``<[id]>`` references."""
+    if not text:
+        return ""
+    if not special_tokens:
+        return _json(text)
+    parts: list[str] = []
+    pos = 0
+    ordered = sorted(special_tokens, key=len, reverse=True)
+    while pos < len(text):
+        matched = next((tok for tok in ordered if tok and text.startswith(tok, pos)), None)
+        if matched is not None:
+            parts.append(f"<[{special_tokens[matched]}]>")
+            pos += len(matched)
+            continue
+        end = pos + 1
+        while end < len(text) and not any(tok and text.startswith(tok, end) for tok in ordered):
+            end += 1
+        parts.append(_json(text[pos:end]))
+        pos = end
+    return " ".join(parts)
+
+
+def _structural_tag_grammar(
+    spec: StructuralTagSpec, special_tokens: Mapping[str, int] | None = None
+) -> str:
+    tag_rules: list[str] = []
+    extra_defs: list[str] = []
+    for idx, item in enumerate(spec.tags):
+        begin_lit = _lark_marker(item.begin, special_tokens)
+        end_lit = _lark_marker(item.end, special_tokens) if item.end else ""
+        if item.grammar is not None:
+            entry, body_defs = prefix_lark_grammar(item.grammar.strip(), f"st{idx}_")
+            extra_defs.append(body_defs)
+            body_ref = entry
+        else:
+            schema = item.schema if item.schema is not None else {"type": "object"}
+            extra_defs.append(f"st{idx}_json: %json {_json(compact_schema(schema))}")
+            body_ref = f"st{idx}_json"
+        end_part = f" {end_lit}" if end_lit else ""
+        tag_rules.append(f"st_tag_{idx}: {begin_lit} {body_ref}{end_part}")
+
+    any_tag = " | ".join(f"st_tag_{idx}" for idx in range(len(spec.tags)))
+    tag_union = f"st_any_tag: {any_tag}"
+    if spec.at_least_one:
+        start_rule = (
+            "start: st_ws? st_any_tag st_ws?"
+            if spec.stop_after_first
+            else "start: st_ws? st_any_tag (st_ws? st_any_tag)* st_ws?"
+        )
+    elif spec.stop_after_first:
+        start_rule = "start: st_text? (st_any_tag st_text?)?"
+    else:
+        start_rule = "start: st_text? (st_any_tag st_text?)*"
+
+    lines = [
+        start_rule,
+        tag_union,
+        *tag_rules,
+        *extra_defs,
+        "st_text: /[^<]+/",
+        "st_ws: /[ \\t\\r\\n]+/",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def grammar_text(
+    params: StructuredParams,
+    *,
+    special_tokens: Mapping[str, int] | None = None,
+) -> str:
+    """Return the Lark grammar text corresponding to ``params``."""
     if params.kind is ConstraintKind.JSON_SCHEMA:
-        assert params.schema is not None  # noqa: S101  # StructuredParams requires it
-        return f"start: %json {_json(_compact(params.schema))}\n"
+        assert params.schema is not None  # noqa: S101
+        return f"start: %json {_json(compact_schema(params.schema))}\n"
     if params.kind is ConstraintKind.JSON_OBJECT:
-        return f"start: %json {_json(_compact({'type': 'object'}))}\n"
+        return f"start: %json {_json(compact_schema({'type': 'object'}))}\n"
+    if params.kind is ConstraintKind.REGEX:
+        assert params.pattern is not None  # noqa: S101
+        escaped = params.pattern.replace("/", r"\/")
+        return f"start: /{escaped}/\n"
+    if params.kind is ConstraintKind.CHOICE:
+        options = " | ".join(_json(choice) for choice in params.choices)
+        return f"start: {options}\n"
+    if params.kind is ConstraintKind.GRAMMAR:
+        assert params.grammar is not None  # noqa: S101
+        return params.grammar.rstrip() + "\n"
+    if params.kind is ConstraintKind.STRUCTURAL_TAG:
+        assert params.structural_tag is not None  # noqa: S101
+        return _structural_tag_grammar(params.structural_tag, special_tokens=special_tokens)
+
     syntax = params.syntax
-    assert syntax is not None  # noqa: S101  # StructuredParams requires it for a tool call
+    assert syntax is not None  # noqa: S101
     only = params.tool_choice if params.tool_choice not in ("auto", "required") else None
-    # An optional call in a format without markers starts only when the answer opens with `{`
-    # (the matcher decides): such an answer is nothing but calls, which are useless to a tool
-    # unless their arguments follow its schema, so they do even when the request is not strict.
     optional_bare = syntax.bare and params.tool_choice == "auto"
     schema = call_schema(
         params.tools,
@@ -116,19 +213,15 @@ def grammar_text(params: StructuredParams) -> str:
     )
     if syntax.bare:
         more = f" ({_json(syntax.separator)} call)*" if params.parallel and syntax.separator else ""
-        body = _json(_compact(schema, lenient=optional_bare and not params.strict))
+        body = _json(compact_schema(schema, lenient=optional_bare and not params.strict))
         if optional_bare:
-            # The token that opens the call may carry the whitespace before it (`▁{"`).
             return f"start: BLANK? call{more}\ncall: %json {body}\nBLANK: /[ \\t\\r\\n]+/\n"
         return f"start: call{more}\ncall: %json {body}\n"
-    # A one-token marker is demanded as that token: the parser matches it by id.
     token = syntax.close_token
     close = f"<[{token}]>" if token is not None else _json(syntax.close)
-    # One optional newline around the body, as Hermes writes it; unbounded layout would let a
-    # model spend its whole budget on whitespace before the call.
     return (
         "start: NEWLINE? call NEWLINE? close\n"
-        f"call: %json {_json(_compact(schema))}\n"
+        f"call: %json {_json(compact_schema(schema))}\n"
         f"close: {close}\n"
         'NEWLINE: "\\n"\n'
     )

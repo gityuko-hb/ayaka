@@ -1,18 +1,11 @@
-"""The running constraints of the requests in flight, keyed by request id.
-
-The runner holds one :class:`ConstraintRuntime`. The engine adds a request's matcher when it queues
-the request, feeds it the request's committed tokens before the next step, and drops it when the
-request ends; the runner asks it for the masks of a step's rows. A request without a constraint is
-never in it, and a constraint that has not started (a lazy tool call before the model opens one)
-gives no mask, so neither costs anything per step.
-"""
+"""The running constraints of requests in flight, keyed by request id."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     import numpy as np
     from numpy.typing import NDArray
@@ -24,7 +17,7 @@ __all__ = ["ConstraintRuntime"]
 
 
 class ConstraintRuntime:
-    """Matchers of the requests that have a constraint."""
+    """Matchers of the requests that have an active or pending constraint."""
 
     def __init__(self) -> None:
         self._matchers: dict[RequestId, ConstraintMatcher] = {}
@@ -45,6 +38,17 @@ class ConstraintRuntime:
         if matcher is not None:
             matcher.accept(token_ids)
 
+    def validate_tokens(self, request_id: RequestId, token_ids: Sequence[int]) -> bool:
+        """Check whether draft ``token_ids`` form a valid constrained continuation."""
+        matcher = self._matchers.get(request_id)
+        return True if matcher is None else matcher.validate_tokens(token_ids)
+
+    def rollback(self, request_id: RequestId, num_tokens: int) -> None:
+        """Undo ``num_tokens`` tentative or rolled-back steps for ``request_id``."""
+        matcher = self._matchers.get(request_id)
+        if matcher is not None:
+            matcher.rollback(num_tokens)
+
     def drop(self, request_id: RequestId) -> None:
         """Forget a request that ended."""
         self._matchers.pop(request_id, None)
@@ -58,3 +62,12 @@ class ConstraintRuntime:
         """The request's allowed tokens as ``uint32`` words, or ``None`` when free."""
         matcher = self._matchers.get(request_id)
         return matcher.mask() if matcher is not None else None
+
+    def window_masks(
+        self, request_id: RequestId, draft_tokens: Sequence[int]
+    ) -> list[NDArray[np.uint32] | None] | None:
+        """Per-row masks across a speculative verification window, or ``None`` when absent."""
+        matcher = self._matchers.get(request_id)
+        if matcher is None:
+            return None
+        return matcher.window_masks(draft_tokens)

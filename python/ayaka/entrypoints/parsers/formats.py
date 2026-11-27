@@ -7,11 +7,6 @@ tool-call parsers of this package, and the output constraint the server builds f
 :meth:`~ayaka.entrypoints.parsers.output.OutputFormat.constraint_start`), so the grammar starts
 exactly where the parser starts reading a call.
 
-* :class:`ReasoningFormat`: the two markers of the block, and who opens it: the model with its
-  first token (``think``), or the chat template in the prompt (``deepseek_r1``).
-* :class:`ToolCallFormat`: the markers around a call (or none), the key of its arguments, and
-  the separator between calls written without markers.
-
 Formats are chosen by name when the server starts (``--reasoning-parser``,
 ``--tool-call-parser``), never guessed from the output.
 """
@@ -19,7 +14,8 @@ Formats are chosen by name when the server starts (``--reasoning-parser``,
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from enum import StrEnum
+from typing import TYPE_CHECKING, Final, Literal
 
 from ayaka.core.errors import ConfigError
 from ayaka.entrypoints.parsers.markers import Marker, resolve_marker
@@ -30,12 +26,20 @@ if TYPE_CHECKING:
 __all__ = [
     "REASONING_FORMATS",
     "TOOL_CALL_FORMATS",
+    "ReasoningDefault",
     "ReasoningFormat",
     "ToolCallFormat",
     "reasoning_format",
     "suggest_tool_call_parser",
     "tool_call_format",
 ]
+
+
+class ReasoningDefault(StrEnum):
+    """Default template thinking behavior when the client sends no preference."""
+
+    ON_UNLESS = "on_unless"
+    OFF_UNLESS = "off_unless"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,12 +53,21 @@ class ReasoningFormat:
         starts_inside: Whether the chat template already opened the block in the prompt, so the
             output starts inside it. Otherwise the model opens it, and only with the first thing
             it writes: an opening marker after any answer text is text.
+        default_mode: Default request thinking mode when unspecified.
+        tool_start: Opening tool-call markers that recover an unclosed reasoning block when the
+            model forgets to emit ``close`` before calling a tool.
+        tool_start_at_line_start: Whether ``tool_start`` recovery requires a line boundary.
+        force_nonempty_content: Keep trailing text available if a block never produces content.
     """
 
     name: str
     open: str
     close: str
     starts_inside: bool = False
+    default_mode: ReasoningDefault = ReasoningDefault.OFF_UNLESS
+    tool_start: tuple[str, ...] = ()
+    tool_start_at_line_start: bool = False
+    force_nonempty_content: bool = False
 
     def markers(self, tokenizer: TokenizerLike | None = None) -> tuple[Marker, Marker]:
         """The opening and closing markers as ``tokenizer`` spells them (by text without one).
@@ -69,7 +82,41 @@ REASONING_FORMATS: Final[dict[str, ReasoningFormat]] = {
     # Qwen3, QwQ, SmolLM3 and others: the model writes both markers.
     "think": ReasoningFormat("think", "<think>", "</think>"),
     # DeepSeek-R1 and its distillations: the template ends the prompt with "<think>\n".
-    "deepseek_r1": ReasoningFormat("deepseek_r1", "<think>", "</think>", starts_inside=True),
+    "deepseek_r1": ReasoningFormat(
+        "deepseek_r1",
+        "<think>",
+        "</think>",
+        starts_inside=True,
+        default_mode=ReasoningDefault.ON_UNLESS,
+        tool_start=("<\uff5cDSML\uff5cfunction_calls>",),
+    ),
+    # DeepSeek-V3 / V3.1/3.2: optional thinking block with explicit opening marker or DSML call.
+    "deepseek_v3": ReasoningFormat(
+        "deepseek_v3",
+        "<think>",
+        "</think>",
+        starts_inside=False,
+        default_mode=ReasoningDefault.OFF_UNLESS,
+        tool_start=("<tool_call>", "<\uff5cDSML\uff5cfunction_calls>"),
+    ),
+    # GLM-4.5 / GLM-4.6: think block with recovery before <tool_call>.
+    "glm45": ReasoningFormat(
+        "glm45",
+        "<think>",
+        "</think>",
+        starts_inside=False,
+        tool_start=("<tool_call>",),
+        force_nonempty_content=True,
+    ),
+    # MiniMax M3: think block with line-start recovery on <minimax:tool_call> or <tool_call>.
+    "minimax_m3": ReasoningFormat(
+        "minimax_m3",
+        "<think>",
+        "</think>",
+        starts_inside=False,
+        tool_start=("<minimax:tool_call>", "<tool_call>"),
+        tool_start_at_line_start=True,
+    ),
 }
 
 
@@ -95,13 +142,12 @@ class ToolCallFormat:
 
     Attributes:
         name: The name the server option uses.
-        open: The marker before the JSON body, or ``None`` for a call written without markers.
+        open: The marker before the call body, or ``None`` for a call written without markers.
         close: The marker after it, or ``None`` with ``open``.
-        arguments: The key of the arguments in the call's JSON object.
-        typed_name: A second key that holds the function name when the object also says
-            ``"type": "function"``; ``None`` if only ``name`` does.
-        separator: Between two calls written without markers, the one character that leads to
-            the next call; ``None`` with markers.
+        arguments: The key of the arguments in the JSON call object.
+        typed_name: A second key holding the function name next to ``"type": "function"``.
+        separator: Between two calls written without markers, the one separator character.
+        style: Wire encoding of calls: ``"json"`` or ``"xml"``.
     """
 
     name: str
@@ -110,6 +156,7 @@ class ToolCallFormat:
     arguments: str = "arguments"
     typed_name: str | None = None
     separator: str | None = None
+    style: Literal["json", "xml"] = "json"
 
     def __post_init__(self) -> None:
         if (self.open is None) != (self.close is None):
@@ -129,14 +176,34 @@ class ToolCallFormat:
 
 
 TOOL_CALL_FORMATS: Final[dict[str, ToolCallFormat]] = {
-    # Hermes 2/3, Qwen2.5, Qwen3, SmolLM3 and others.
+    # Hermes 2/3, Qwen2.5, Qwen3 (JSON), SmolLM3 and others.
     "hermes": ToolCallFormat("hermes", "<tool_call>", "</tool_call>"),
-    # Llama 3.x: a bare JSON object, its arguments under "parameters". The chat templates of
-    # Llama-3.1 and Llama-3.2 both teach this layout; Llama-3.2-1B also writes the function name
-    # under "function" next to "type": "function" when the tools are shown wrapped that way.
-    # Several calls are objects separated by ";" (measured on Llama-3.2-1B-Instruct).
+    "qwen3_json": ToolCallFormat("qwen3_json", "<tool_call>", "</tool_call>"),
+    # DeepSeek V3/R1 JSON tool call markers.
+    "deepseek_json": ToolCallFormat("deepseek_json", "<|tool_call_begin|>", "<|tool_call_end|>"),
+    # Llama 3.x: a bare JSON object separated by ";".
     "llama3_json": ToolCallFormat(
         "llama3_json", None, None, arguments="parameters", typed_name="function", separator=";"
+    ),
+    # Qwen3-Coder: <tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>.
+    "qwen3_coder": ToolCallFormat("qwen3_coder", "<tool_call>", "</tool_call>", style="xml"),
+    # MiMo XML: <tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>.
+    "mimo": ToolCallFormat("mimo", "<tool_call>", "</tool_call>", style="xml"),
+    # GLM XML: <tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>.
+    "glm_xml": ToolCallFormat("glm_xml", "<tool_call>", "</tool_call>", style="xml"),
+    # MiniMax M2 / M3 XML: <minimax:tool_call><invoke name="NAME">...</minimax:tool_call>.
+    "minimax_m2": ToolCallFormat(
+        "minimax_m2", "<minimax:tool_call>", "</minimax:tool_call>", style="xml"
+    ),
+    "minimax_m3": ToolCallFormat(
+        "minimax_m3", "<minimax:tool_call>", "</minimax:tool_call>", style="xml"
+    ),
+    # DeepSeek DSML function_calls / invoke / parameter blocks.
+    "deepseek_dsml": ToolCallFormat(
+        "deepseek_dsml",
+        "<\uff5cDSML\uff5cfunction_calls>",
+        "</\uff5cDSML\uff5cfunction_calls>",
+        style="xml",
     ),
 }
 
@@ -165,6 +232,20 @@ def suggest_tool_call_parser(chat_template: str | None) -> str | None:
     """
     if not chat_template:
         return None
+    if "<\uff5cDSML\uff5cfunction_calls>" in chat_template or "DSML\uff5cinvoke" in chat_template:
+        return "deepseek_dsml"
+    if "<minimax:tool_call>" in chat_template:
+        if "reasoning_split" in chat_template or "minimax_m3" in chat_template.lower():
+            return "minimax_m3"
+        return "minimax_m2"
+    if "<arg_key>" in chat_template and "<arg_value>" in chat_template:
+        return "glm_xml"
+    if "<function=" in chat_template and "<parameter=" in chat_template:
+        if "mimo" in chat_template.lower():
+            return "mimo"
+        return "qwen3_coder"
+    if "<|tool_call_begin|>" in chat_template:
+        return "deepseek_json"
     hermes_open = TOOL_CALL_FORMATS["hermes"].open
     if hermes_open is not None and hermes_open in chat_template:
         return "hermes"

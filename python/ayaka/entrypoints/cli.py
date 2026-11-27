@@ -6,19 +6,13 @@
     ayaka serve MODEL --port 8000 --tool-call-parser hermes
     ayaka plan MODEL --device cuda --dtype fp16
     ayaka info
-    ayaka doctor
+    ayaka doctor [--output json]
     ayaka config show
     ayaka connect claude-code [--write | --check | --observe]
     ayaka bench MODEL [--quick] [--out DIR] [--record DIR]
 
-Exit codes are the contract of the command; :mod:`ayaka.entrypoints.console` lists them (0 done,
-1 a bug or failed diagnostic, 2 a wrong argument or request, 3 a model that does not load, 4
-something missing, 5 a plan that does not fit, 6 an engine failure, 130 interrupted).
-
-A problem the user can fix is one line, ``ayaka: error: ...``, never a traceback.
-
 Importing this module imports neither torch nor aiohttp: ``--help`` and every argument error are
-answered without them; torch loads once an engine is built, aiohttp once ``serve`` starts.
+answered without them.
 """
 
 from __future__ import annotations
@@ -26,7 +20,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sys
-from typing import TYPE_CHECKING, Final, TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from ayaka.configs.cache import CacheConfig
 from ayaka.configs.device import DeviceConfig
@@ -45,7 +39,7 @@ from ayaka.core.errors import (
 from ayaka.core.params import SamplingParams
 from ayaka.core.types import FinishReason
 from ayaka.engine.llm import LLM
-from ayaka.entrypoints.cli_parsers import build_parser
+from ayaka.entrypoints.cli_parsers import DTYPES, build_cli_parser
 from ayaka.entrypoints.console import (
     EXIT_BUG,
     EXIT_ENGINE,
@@ -65,7 +59,6 @@ from ayaka.entrypoints.settings import (
     server_config,
 )
 from ayaka.tokenizers.contracts import ChatMessage
-from ayaka.utils.dtypes import COMPUTE_DTYPES
 from ayaka.utils.logging import init_logger
 
 if TYPE_CHECKING:
@@ -76,25 +69,12 @@ if TYPE_CHECKING:
 
 __all__ = ["main"]
 
-_DTYPES: Final = {dtype.label: dtype for dtype in COMPUTE_DTYPES}
-
-
-def _parser() -> argparse.ArgumentParser:
-    """Return the CLI parser; kept here so callers importing from ``cli`` stay valid."""
-    return build_parser()
+_parser = build_cli_parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the command line and return its exit code.
-
-    Args:
-        argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-
-    Returns:
-        The exit code described in this module's docstring. Argument errors and ``--help`` exit
-        through ``SystemExit`` like any ``argparse`` program, with code 2 and 0.
-    """
-    parser = _parser()
+    """Run the command line and return its exit code."""
+    parser = build_cli_parser()
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_usage(sys.stderr)
@@ -106,7 +86,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if getattr(args, "verbose", 0):
         init_logger("ayaka", level=logging.DEBUG if args.verbose > 1 else logging.INFO)
     elif args.command == "serve":
-        # Request lines (ids, outcomes, token counts; never text) are part of serving.
         init_logger("ayaka", level=logging.INFO)
     try:
         handler = {
@@ -118,6 +97,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "config": _config_show,
             "connect": _connect,
             "bench": _bench,
+            "engine-server": _engine_server,
+            "render-server": _render_server,
         }[args.command]
         return handler(args)
     except KeyboardInterrupt:
@@ -133,21 +114,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _bench(args: argparse.Namespace) -> int:
-    """Run the benchmark and write its results; exit 2 when a sanity check failed."""
     from ayaka.entrypoints.bench import bench_command
 
     return bench_command(args, _engine_config(args, max_running=args.max_running))
 
 
-def _doctor(args: argparse.Namespace) -> int:
-    """Run environment and memory diagnostics."""
-    from ayaka.entrypoints.doctor import doctor_command
-
-    return doctor_command(args)
-
-
 def _run(args: argparse.Namespace) -> int:
-    """Build the engine from the flags, generate and print; raise typed errors for the caller."""
     prompt = _read_prompt(args.prompt)
     sampling = SamplingParams(
         temperature=args.temperature,
@@ -174,7 +146,6 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> EngineConfig:
-    """The engine configuration the flags describe; ``run`` runs one request at a time."""
     cache = CacheConfig(kv_reserve_tokens=args.kv_reserve_tokens, prefix_cache=args.prefix_cache)
     if args.memory_ratio is not None:
         cache = dataclasses.replace(cache, memory_ratio=args.memory_ratio)
@@ -184,17 +155,17 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
         ),
         device=DeviceConfig(
             device=args.device,
-            dtype=_DTYPES[args.dtype],
+            dtype=DTYPES[args.dtype],
             backends=tuple(name.strip() for name in args.backends.split(",") if name.strip()),
             cuda_graph=args.cuda_graph,
         ),
         cache=cache,
         scheduler=SchedulerConfig(max_running=max_running),
+        structured_backend=args.structured_backend,
     )
 
 
 def _serve(args: argparse.Namespace) -> int:
-    """Start the server and run it until a signal stops it."""
     import asyncio
 
     from ayaka.utils.import_utils import require_module
@@ -211,7 +182,6 @@ def _serve(args: argparse.Namespace) -> int:
 
 
 def _plan(args: argparse.Namespace) -> int:
-    """Print the memory plan of the model on this machine; exit 5 when it does not fit."""
     import json
     from dataclasses import asdict, replace
 
@@ -227,7 +197,6 @@ def _plan(args: argparse.Namespace) -> int:
     )
 
     config = _engine_config(args, max_running=args.max_running)
-    # A plan never downloads: a repo id must already be in the Hub cache.
     config = replace(config, source=replace(config.source, offline=True))
     try:
         plan = plan_engine(config)
@@ -253,8 +222,14 @@ def _plan(args: argparse.Namespace) -> int:
     return EXIT_MEMORY if fit is not None and fit.fits is False else EXIT_OK
 
 
+def _doctor(args: argparse.Namespace) -> int:
+    """Run environment and memory diagnostics."""
+    from ayaka.entrypoints.doctor import doctor_command
+
+    return doctor_command(args)
+
+
 def _info(args: argparse.Namespace) -> int:
-    """Print what this installation has."""
     import json
 
     from ayaka.entrypoints.info import info_lines, info_report
@@ -269,10 +244,9 @@ def _info(args: argparse.Namespace) -> int:
 
 
 def _config_show(args: argparse.Namespace) -> int:
-    """Print each server setting, its value and its source."""
     from ayaka.entrypoints.info import config_rows
 
-    server_config(args)  # the same checks serve makes: a bad value fails here too
+    server_config(args)
     file = config_file_path(args)
     rows = config_rows(flag_values(args), read_config_file(file) if file else {}, file)
     width = max(len(name) for name, _, _ in rows)
@@ -283,10 +257,48 @@ def _config_show(args: argparse.Namespace) -> int:
 
 
 def _connect(args: argparse.Namespace) -> int:
-    """Print, write, check or observe a tool's configuration (``ayaka.entrypoints.connect``)."""
     from ayaka.entrypoints.connect.command import connect_command
 
     return connect_command(args)
+
+
+def _engine_server(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ayaka.entrypoints.grpc.runners import serve_engine_grpc
+    from ayaka.utils.import_utils import require_module
+
+    require_module("grpc", capability="ayaka engine-server", remedy="uv sync --extra grpc")
+    engine = _engine_config(args, max_running=args.max_running)
+    asyncio.run(serve_engine_grpc(engine, listen=args.listen, say=say))
+    return EXIT_OK
+
+
+def _render_server(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from ayaka.configs.tokenizer import tokenizer_config_from_source
+    from ayaka.entrypoints.grpc.runners import serve_render_grpc
+    from ayaka.utils.import_utils import require_module
+
+    require_module("grpc", capability="ayaka render-server", remedy="uv sync --extra grpc")
+    cfg = server_config(args)
+    source = ModelSourceConfig(
+        args.model, revision=args.revision, tokenizer=args.tokenizer, offline=args.offline
+    )
+    tok_cfg = tokenizer_config_from_source(source)
+    asyncio.run(
+        serve_render_grpc(
+            source,
+            tok_cfg,
+            cfg,
+            model_name=args.model,
+            listen=args.listen,
+            max_model_len=args.max_model_len,
+            say=say,
+        )
+    )
+    return EXIT_OK
 
 
 def _read_prompt(prompt: str | None) -> str:
@@ -301,7 +313,6 @@ def _read_prompt(prompt: str | None) -> str:
 
 
 def _print(chunks: Iterator[RequestOutput], out: TextIO) -> int:
-    """Write the text of each chunk as it arrives; return the exit code of the last one."""
     last: RequestOutput | None = None
     wrote = ""
     for chunk in chunks:
@@ -327,7 +338,6 @@ def _print(chunks: Iterator[RequestOutput], out: TextIO) -> int:
 
 
 def _report(error: AyakaError) -> int:
-    """Print a typed error as one line (and its fix when it has one); return its exit code."""
     if isinstance(error, CapabilityError):
         say(f"error: {error.capability} is not available: {error.detail}")
         say(f"fix: {error.remedy}")
