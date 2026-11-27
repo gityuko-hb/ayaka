@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from ayaka.core.constraints import ConstraintKind
 
@@ -13,7 +13,13 @@ if TYPE_CHECKING:
 
     from ayaka.core.constraints import StructuralTagSpec, StructuredParams, ToolSchema
 
-__all__ = ["call_schema", "compact_schema", "grammar_text", "prefix_lark_grammar"]
+__all__ = [
+    "JSON_SEPARATORS",
+    "call_schema",
+    "compact_schema",
+    "grammar_text",
+    "prefix_lark_grammar",
+]
 
 _RULE_DEF_RE = re.compile(r"(?m)^([a-zA-Z_][a-zA-Z0-9_]*)\s*:")
 
@@ -22,11 +28,27 @@ def _json(value: object) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
+#: The separators of constrained JSON: the layout ``json.dumps`` writes by default, and the one
+#: models write unconstrained. No other whitespace is allowed, so a model has none to spend its
+#: budget on. With no space after a colon (``{"name":"``) Qwen3-8B reads the next token as the
+#: start of a string and writes placeholders such as ``":name:"`` (see #145).
+JSON_SEPARATORS: Final[tuple[str, str]] = (", ", ": ")
+
+
 def compact_schema(schema: Mapping[str, object], *, lenient: bool = False) -> Mapping[str, object]:
-    """Return ``schema`` configured with compact JSON layout for llguidance."""
+    """Return ``schema`` with llguidance options for the single-line :data:`JSON_SEPARATORS` layout.
+
+    A schema that carries its own ``x-guidance`` options keeps them. ``lenient`` makes llguidance
+    skip the keywords it does not implement instead of refusing the schema.
+    """
     if "x-guidance" in schema:
         return schema
-    options: dict[str, object] = {"whitespace_flexible": False}
+    item, key = JSON_SEPARATORS
+    options: dict[str, object] = {
+        "whitespace_flexible": False,
+        "item_separator": item,
+        "key_separator": key,
+    }
     if lenient:
         options["lenient"] = True
     return {**schema, "x-guidance": options}

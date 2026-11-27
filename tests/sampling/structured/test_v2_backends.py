@@ -111,8 +111,8 @@ def _all_kinds_cases() -> list[tuple[StructuredParams, list[str]]]:
         "additionalProperties": False,
     }
     return [
-        (StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema), ['{"ok":true}']),
-        (StructuredParams(kind=ConstraintKind.JSON_OBJECT), ['{"a":"b"}']),
+        (StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema), ['{"ok": true}']),
+        (StructuredParams(kind=ConstraintKind.JSON_OBJECT), ['{"a": "b"}']),
         (StructuredParams(kind=ConstraintKind.REGEX, pattern="[ab]+[12]+"), ["aba12"]),
         (StructuredParams(kind=ConstraintKind.CHOICE, choices=("aba", "c12")), ["aba"]),
         (
@@ -146,7 +146,7 @@ def _all_kinds_cases() -> list[tuple[StructuredParams, list[str]]]:
                 tool_choice="required",
                 strict=True,
             ),
-            ['<tool_call>{"name":"ok","arguments":{"ok":true}}</tool_call>'],
+            ['<tool_call>{"name": "ok", "arguments": {"ok": true}}</tool_call>'],
         ),
     ]
 
