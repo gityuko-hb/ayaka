@@ -14,7 +14,8 @@ How the request maps:
   (``any``, ``tool``) become output constraints; the other ``output_config`` fields are hints.
 * ``tool_use`` blocks become the assistant's tool calls, ``tool_result`` blocks tool turns;
   ``thinking`` blocks of earlier turns are dropped, as the chat templates of reasoning models do.
-* Images and documents are refused until vision lands.
+* ``image`` blocks on user turns decode base64 PNG payloads; documents and remote image URLs
+  are refused.
 * Tools without an ``input_schema`` (the provider's own tools, such as web search) are left out of
   the prompt with an info log line: only the provider can run them.
 * ``thinking.budget_tokens`` is checked as Anthropic checks it but not enforced: the model reasons
@@ -40,10 +41,12 @@ from ayaka.entrypoints.conversation import (
 )
 from ayaka.entrypoints.wire.policy import apply_policy
 from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
+from ayaka.multimodal.png import decode_base64_image, decode_data_url_image
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from ayaka.core.multimodal import ImageInput
     from ayaka.entrypoints.conversation import Conversation, FinishEvent, UsageEvent
     from ayaka.entrypoints.failures import ApiFailure
 
@@ -207,6 +210,22 @@ def _thinking(thinking: JsonObject | None, max_tokens: int) -> None:
         raise _invalid(thinking.where("type"), "must be enabled, disabled or adaptive")
 
 
+def _parse_anthropic_image(block: JsonObject) -> ImageInput:
+    source = block.child("source")
+    if source is None:
+        raise _invalid(block.where("source"), "an image block needs a source object")
+    kind = source.text("type")
+    if kind == "base64":
+        return decode_base64_image(
+            source.text("data"),
+            media_type=source.text("media_type"),
+            where=source.where("data"),
+        )
+    if kind == "url":
+        return decode_data_url_image(source.text("url"), where=source.where("url"))
+    raise _invalid(source.where("type"), "image source type must be base64 or url")
+
+
 def _text_blocks(value: object, where: str) -> str:
     """Text from an array of text blocks."""
     if not isinstance(value, list):
@@ -218,7 +237,9 @@ def _text_blocks(value: object, where: str) -> str:
         if kind == "text":
             texts.append(block.text("text"))
         elif kind in ("image", "document"):
-            raise _unsupported(block.where("type"), f"{kind} input needs a vision model")
+            raise _unsupported(
+                block.where("type"), f"{kind} input is only allowed on user messages"
+            )
         else:
             raise _unsupported(block.where("type"), f"{kind!r} blocks here")
     return PART_SEPARATOR.join(texts)
@@ -245,6 +266,7 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
     if not isinstance(content, list):
         raise _invalid(message.where("content"), "must be a string or an array of blocks")
     texts: list[str] = []
+    images: list[ImageInput] = []
     calls: list[ToolCall] = []
     for i, item in enumerate(cast("list[object]", content)):
         block = JsonObject.of(item, f"{message.where('content')}[{i}]")
@@ -252,13 +274,16 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
         match kind:
             case "text":
                 texts.append(block.text("text"))
+            case "image" if role == "user":
+                images.append(_parse_anthropic_image(block))
             case "tool_use" if role == "assistant":
                 arguments = block.child("input") or JsonObject({})
                 calls.append(ToolCall(block.text("id"), block.text("name"), arguments.data))
             case "tool_result" if role == "user":
-                if texts:
-                    builder.user(PART_SEPARATOR.join(texts))
+                if texts or images:
+                    builder.user(PART_SEPARATOR.join(texts), images=images)
                     texts = []
+                    images = []
                 result = block.raw("content")
                 text = result if isinstance(result, str) else ""
                 if result is not None and not isinstance(result, str):
@@ -272,8 +297,8 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
                 raise _unsupported(block.where("type"), f"{kind!r} blocks in {role} messages")
     if role == "assistant":
         builder.assistant(PART_SEPARATOR.join(texts), calls)
-    elif texts:
-        builder.user(PART_SEPARATOR.join(texts))
+    elif texts or images:
+        builder.user(PART_SEPARATOR.join(texts), images=images)
 
 
 def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, str, bool]:

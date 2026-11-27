@@ -62,6 +62,7 @@ from ayaka.entrypoints.stream import (
     collect_events,
     pump,
 )
+from ayaka.multimodal.tokens import expand_image_placeholders
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
 from ayaka.utils.import_utils import has_module
 
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
 
     from ayaka.configs.server import ServerConfig
     from ayaka.configs.tokenizer import EncodeResult
+    from ayaka.core.multimodal import ImageInput, ImageSpan, VisionSpec
     from ayaka.core.params import SamplingParams
     from ayaka.engine.async_llm import RequestStream
     from ayaka.engine.seam import EngineClient
@@ -161,6 +163,7 @@ class Serving:
         self.max_model_len = 0
         self.max_context_tokens = 0
         self.prefix_cache: bool | None = None
+        self.vision_spec: VisionSpec | None = None
         self.suggested_tool_call_parser: str | None = None
         # Requests whose event stream is open, by id(): an aiohttp request is not hashable.
         self._streaming: dict[int, web.Request] = {}
@@ -211,6 +214,7 @@ class Serving:
         self.max_model_len = info.max_model_len
         self.max_context_tokens = info.max_context_tokens
         self.prefix_cache = info.prefix_caching
+        self.vision_spec: VisionSpec | None = info.vision
         self.suggested_tool_call_parser = suggest_tool_call_parser(tokenizer.chat_template)
         if output_format is not None:
             self.output_format = output_format
@@ -295,6 +299,31 @@ class Serving:
 
     # -- the generation path ---------------------------------------------------------------
 
+    async def prepare_chat(
+        self, conversation: Conversation, *, max_tokens: int | None = None, vouch: bool = True
+    ) -> tuple[tuple[int, ...], tuple[ImageSpan, ...]]:
+        """Render and tokenize ``conversation``, expanding any attached image placeholders."""
+        if conversation.images and self.vision_spec is None:
+            raise UnsupportedFeatureError(
+                "image input requires a vision-capable model",
+                context={"features": ("image_url",)},
+            )
+        token_ids = await self._encode(conversation.template_data, max_tokens, vouch=vouch)
+        if not conversation.images:
+            return token_ids, ()
+        assert self.vision_spec is not None  # noqa: S101  # checked above
+        expanded, spans = expand_image_placeholders(
+            token_ids, conversation.images, self.vision_spec
+        )
+        wanted = max(max_tokens or 1, 1)
+        if len(expanded) + wanted > self.max_model_len:
+            raise ContextLengthError(
+                prompt_tokens=len(expanded),
+                output_tokens=wanted,
+                max_context_tokens=self.max_model_len,
+            )
+        return expanded, spans
+
     async def tokenize_chat(
         self, conversation: Conversation, *, max_tokens: int | None = None, vouch: bool = True
     ) -> tuple[int, ...]:
@@ -313,7 +342,8 @@ class Serving:
             InvalidRequestError: If it cannot be rendered.
             OverloadedError: If the tokenizer is busy.
         """
-        return await self._encode(conversation.template_data, max_tokens, vouch=vouch)
+        prompt, _ = await self.prepare_chat(conversation, max_tokens=max_tokens, vouch=vouch)
+        return prompt
 
     async def tokenize_text(
         self, prompt: str | tuple[int, ...], *, max_tokens: int | None = None
@@ -452,6 +482,8 @@ class Serving:
         tools: bool,
         parallel_tool_calls: bool = True,
         structured: StructuredParams | None = None,
+        images: tuple[ImageInput, ...] = (),
+        image_spans: tuple[ImageSpan, ...] = (),
     ) -> Generation:
         """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
 
@@ -469,7 +501,12 @@ class Serving:
             )
         request_id = RequestId(f"ayaka-{public_id}")
         request = GenerateRequest(
-            request_id=request_id, prompt=prompt, sampling=sampling, structured=structured
+            request_id=request_id,
+            prompt=prompt,
+            sampling=sampling,
+            structured=structured,
+            images=images,
+            image_spans=image_spans,
         )
         try:
             try:

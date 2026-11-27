@@ -255,7 +255,7 @@ async def create_message(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         message.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation, max_tokens=message.max_tokens)
+    prompt, image_spans = await serving.prepare_chat(conversation, max_tokens=message.max_tokens)
     sampling = message.sampling.build(serving.output_tokens(len(prompt), message.max_tokens))
     public_id = request[REQUEST_ID]
     generation = await serving.start(
@@ -270,6 +270,8 @@ async def create_message(request: web.Request) -> web.StreamResponse:
             tools=message.tools,
             parallel_tool_calls=message.parallel_tool_calls,
         ),
+        images=conversation.images,
+        image_spans=image_spans,
     )
     message_id = f"msg_{public_id}"
     try:

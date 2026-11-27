@@ -219,7 +219,7 @@ class TestErrors:
             (
                 {"messages": [{"role": "user", "content": [{"type": "image_url"}]}]},
                 400,
-                "unsupported_feature",
+                "invalid_request",
                 None,
             ),
             (_chat("x", 2, model="gpt-4o"), 404, "not_found", None),

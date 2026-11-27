@@ -119,8 +119,8 @@ class TestReading:
             ({"max_tokens": None}, InvalidRequestError, "max_tokens: is required"),
             (
                 {"messages": [{"role": "user", "content": [{"type": "image", "source": {}}]}]},
-                UnsupportedFeatureError,
-                "vision",
+                InvalidRequestError,
+                r"source\.type",
             ),
             (
                 {
