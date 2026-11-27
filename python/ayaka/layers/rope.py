@@ -194,3 +194,35 @@ class RotaryEmbedding(nn.Module):
         ``max_positions`` (the op does not check, a check would read the device).
         """
         self._ops.apply(positions, q, k, self.cache, interleaved=self.interleaved)
+
+    def apply_mrope(
+        self,
+        positions_3d: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        section: tuple[int, ...],
+    ) -> None:
+        """Apply 3D multimodal RoPE (T, H, W axes) in place to ``q`` and ``k``."""
+        half = self.rotary_dim // 2
+        inv = torch.tensor(self._inv_freq, dtype=torch.float32, device=q.device)
+        angles = positions_3d[..., None].float() * inv
+        cos_all = angles.cos() * self.attention_factor
+        sin_all = angles.sin() * self.attention_factor
+        sec = section if len(section) >= 3 else (half, 0, 0)
+        cos_mix = cos_all[0].clone()
+        sin_mix = sin_all[0].clone()
+        for axis, offset in ((1, 1), (2, 2)):
+            limit = min(sec[axis] * 3, half)
+            cos_mix[:, offset:limit:3] = cos_all[axis, :, offset:limit:3]
+            sin_mix[:, offset:limit:3] = sin_all[axis, :, offset:limit:3]
+        cos_u = cos_mix[:, None, :]
+        sin_u = sin_mix[:, None, :]
+        for x in (q, k):
+            part = x[..., : self.rotary_dim]
+            wide = part.float()
+            first = wide[..., :half]
+            second = wide[..., half:]
+            rotated = torch.cat(
+                (first * cos_u - second * sin_u, second * cos_u + first * sin_u), dim=-1
+            )
+            part.copy_(rotated)

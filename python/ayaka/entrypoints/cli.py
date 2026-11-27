@@ -210,6 +210,7 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
             dtype=_DTYPES[args.dtype],
             backends=tuple(name.strip() for name in args.backends.split(",") if name.strip()),
             cuda_graph=args.cuda_graph,
+            vision_load=args.vision_load,
         ),
         cache=cache,
         scheduler=SchedulerConfig(max_running=max_running),

@@ -314,11 +314,19 @@ def parse_hf_model_fields(raw_config: Mapping[str, object]) -> dict[str, Any]:
         "v_head_dim": int(cast("int", config.get("v_head_dim") or 0)),
         "vision_config": vision_cfg,
         "image_token_id": cast("int | None", raw_config.get("image_token_id")),
+        "boi_token_id": cast("int | None", raw_config.get("boi_token_id")),
+        "eoi_token_id": cast("int | None", raw_config.get("eoi_token_id")),
         "vision_start_token_id": cast("int | None", raw_config.get("vision_start_token_id")),
         "vision_end_token_id": cast("int | None", raw_config.get("vision_end_token_id")),
         "vision_soft_tokens_per_image": cast(
             "int | None", raw_config.get("vision_soft_tokens_per_image")
         ),
+        "pad_token_id": int(
+            cast("int", config.get("pad_token_id", raw_config.get("pad_token_id")))
+            if config.get("pad_token_id", raw_config.get("pad_token_id")) is not None
+            else 0
+        ),
+        "use_bidirectional_vision": config.get("use_bidirectional_attention") == "vision",
         **rope_fields,
         **_hf_experts(config, num_layers, found["intermediate_size"]),
     }

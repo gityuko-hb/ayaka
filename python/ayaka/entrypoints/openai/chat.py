@@ -318,7 +318,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
     conversation = serving.normalized(
         chat.conversation, request.headers, request_id=request[REQUEST_ID]
     )
-    prompt = await serving.tokenize_chat(conversation, max_tokens=chat.max_tokens)
+    prompt, image_spans = await serving.prepare_chat(conversation, max_tokens=chat.max_tokens)
     sampling = chat.sampling.build(serving.output_tokens(len(prompt), chat.max_tokens))
     public_id = request[REQUEST_ID]
     structured = serving.constraint(
@@ -334,6 +334,8 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         tools=chat.tools,
         parallel_tool_calls=chat.parallel_tool_calls,
         structured=structured,
+        images=conversation.images,
+        image_spans=image_spans,
     )
     meta = _Meta(f"chatcmpl-{public_id}", int(time.time()), serving.model_name)
     try:

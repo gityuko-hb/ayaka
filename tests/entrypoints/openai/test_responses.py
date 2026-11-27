@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
+from ayaka.core.errors import InvalidRequestError
 from ayaka.core.types import FinishReason
 from ayaka.entrypoints.conversation import (
     ErrorEvent,
@@ -116,8 +116,8 @@ class TestReading:
             ),
             (
                 {"input": [{"role": "user", "content": [{"type": "input_image"}]}]},
-                UnsupportedFeatureError,
-                "input_image",
+                InvalidRequestError,
+                "image_url",
             ),
             (
                 {"text": {"format": {"type": "json_schema"}}},

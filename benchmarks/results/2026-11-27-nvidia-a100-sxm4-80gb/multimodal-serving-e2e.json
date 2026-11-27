@@ -1,0 +1,76 @@
+{
+  "benchmark": "multimodal_serving_e2e",
+  "machine": {
+    "date": "2026-11-27T15:08:24+00:00",
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "capability": [
+      8,
+      0
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "dacdbfb8f60b7b63135461550414ecf8754ebb66-dirty"
+  },
+  "results": [
+    {
+      "model": "Qwen/Qwen3.5-9B",
+      "openai_chat": {
+        "status": 200,
+        "prompt_tokens": 788,
+        "completion_tokens": 27,
+        "parsed_json": {
+          "panel_count": 2,
+          "summary": "The image displays a user interface with two main panels. The 'P"
+        },
+        "latency_ms": 7474.086291003914
+      },
+      "anthropic_messages": {
+        "status": 200,
+        "input_tokens": 3,
+        "cache_read_input_tokens": 768,
+        "cache_creation_input_tokens": 16,
+        "total_prompt_tokens": 787,
+        "output_tokens": 32,
+        "text": "The user wants a description of the top toolbar and sidebar based on the provided image.\n\n1.  **Analyze the Top Toolbar:**\n    *  ",
+        "latency_ms": 2085.631027002819
+      },
+      "remote_url_refused": {
+        "openai_status": 400,
+        "anthropic_status": 400
+      }
+    },
+    {
+      "model": "google/gemma-4-E2B-it",
+      "openai_chat": {
+        "status": 200,
+        "prompt_tokens": 285,
+        "completion_tokens": 27,
+        "parsed_json": {
+          "panel_count": 2,
+          "summary": "The image displays a dark-themed interface with two main visual/"
+        },
+        "latency_ms": 4329.377514004591
+      },
+      "anthropic_messages": {
+        "status": 200,
+        "input_tokens": 12,
+        "cache_read_input_tokens": 272,
+        "cache_creation_input_tokens": 0,
+        "total_prompt_tokens": 284,
+        "output_tokens": 32,
+        "text": "Based on the image provided, here is a description of the visible elements:\n\n**Top Toolbar:**\n* **Color Indicators:** In the very top left corner",
+        "latency_ms": 952.1152189990971
+      },
+      "remote_url_refused": {
+        "openai_status": 400,
+        "anthropic_status": 400
+      }
+    }
+  ]
+}

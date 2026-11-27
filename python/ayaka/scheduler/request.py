@@ -12,6 +12,7 @@ Whether a request is prefilling or decoding is derived from ``computed``, not a 
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from ayaka.core.errors import ErrorInfo
+    from ayaka.core.multimodal import ImageInput, ImageSpan
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.params import SamplingParams
     from ayaka.core.request import TokenizedRequest
@@ -147,6 +149,8 @@ class Request:
     pending_state_restore: bytes | None = None
     sequence_index: int = 0
     blocked_on: RequestId | None = None
+    images: tuple[ImageInput, ...] = ()
+    image_spans: tuple[ImageSpan, ...] = ()
     _status: RequestStatus = field(default=RequestStatus.WAITING, init=False)
 
     @classmethod
@@ -166,10 +170,12 @@ class Request:
             priority=request.priority,
             arrival=arrival,
             deadline=deadline,
-            cache_salt=request.cache_salt,
+            cache_salt=_with_image_salt(request.cache_salt, request.images),
             prefix_cache=request.prefix_cache,
             sequence_index=request.sequence_index,
             blocked_on=blocked_on,
+            images=request.images,
+            image_spans=request.image_spans,
         )
 
     @property
@@ -256,3 +262,15 @@ class Request:
         self.output.extend(kept)
         self.pending = kept[-1]
         return tuple(kept), reason, stop
+
+
+def _with_image_salt(cache_salt: str | None, images: tuple[ImageInput, ...]) -> str | None:
+    if not images:
+        return cache_salt
+    digest = hashlib.sha256()
+    if cache_salt is not None:
+        digest.update(cache_salt.encode("utf-8"))
+    digest.update(b"\x00")
+    for image in images:
+        digest.update(hashlib.sha256(image.data).digest())
+    return f"img:{digest.hexdigest()}"

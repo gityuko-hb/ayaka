@@ -135,6 +135,7 @@ def load_model(
     model.tie_weights()
     model.initialize_buffers()
     _stream(model, bound)
+    model.attach_vision_source(directory, lazy=(device.vision_load == "lazy"))
     model.eval()
     logger.info(
         "loaded %s from %s onto %s as %s in %.1fs",

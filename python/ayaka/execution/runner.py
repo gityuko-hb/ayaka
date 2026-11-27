@@ -39,7 +39,9 @@ This module imports torch. Import it through ``ayaka.execution``, which loads it
 from __future__ import annotations
 
 import gc
-from typing import TYPE_CHECKING, cast
+import hashlib
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Final, cast
 
 import torch
 
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
+    from ayaka.core.multimodal import ImageInput
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import RequestId, TokenId
     from ayaka.execution.graph import CapturedBucket
@@ -75,6 +78,8 @@ if TYPE_CHECKING:
     from ayaka.scheduler.step import StepInput
 
 __all__ = ["ModelRunner"]
+
+_MAX_VISION_CACHE: Final = 16
 
 
 class ModelRunner:
@@ -163,6 +168,7 @@ class ModelRunner:
             has_linear_attention=state_pool is not None,
         )
         self._graph: GraphRunner | None = None
+        self._vision_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
 
     @property
     def builder(self) -> InputBuilder:
@@ -242,6 +248,8 @@ class ModelRunner:
         self._state_buffers.clear()
         self._state_pool = None
         self._state_checkpoints = None
+        self._vision_cache.clear()
+        self._model.release_vision()
 
     @staticmethod
     def clear_device_cache() -> None:
@@ -276,6 +284,7 @@ class ModelRunner:
             with torch.inference_mode():
                 if (
                     drafts is None
+                    and not (step.images and self._model.uses_multimodal_decode_offsets())
                     and self._graph is not None
                     and self._graph.bucket_for(step)
                     and not self._needs_controls(step)
@@ -369,7 +378,18 @@ class ModelRunner:
             )
             else None
         )
-        hidden = self._model(inputs.token_ids, self._context(inputs, capture))
+        embeds, mrope_pos, rope_offsets, bidir_spans = self._prepare_multimodal(step, inputs)
+        hidden = self._model(
+            inputs.token_ids,
+            self._context(
+                inputs,
+                capture,
+                input_embeds=embeds,
+                mrope_positions=mrope_pos,
+                rope_position_offsets=rope_offsets,
+                bidirectional_spans=bidir_spans,
+            ),
+        )
         self._save_prefill_checkpoints(step, capture)
         count = int(inputs.logit_rows.shape[0])
         if count == 0:
@@ -410,8 +430,90 @@ class ModelRunner:
                 masks[index] = mask
         return masks
 
+    def _prepare_multimodal(
+        self, step: StepInput, inputs: ModelInputs
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        tuple[tuple[int, int], ...],
+    ]:
+        if not step.images:
+            return None, None, None, ()
+        mrope_pos, rope_offsets = self._model.multimodal_position_ids(
+            step.prompt_lengths,
+            step.image_spans,
+            step.start_positions,
+            step.rows_per_request,
+            is_prefill=(step.mode is ForwardMode.PREFILL),
+            device=self._device,
+        )
+        if step.mode is not ForwardMode.PREFILL:
+            return None, mrope_pos, rope_offsets, ()
+
+        missing: list[tuple[str, ImageInput]] = []
+        seen: set[str] = set()
+        for req_idx, (start, rows) in enumerate(
+            zip(step.start_positions, step.rows_per_request, strict=True)
+        ):
+            for span in step.image_spans[req_idx]:
+                if min(start + rows, span.token_offset + span.token_count) <= max(
+                    start, span.token_offset
+                ):
+                    continue
+                img = step.images[req_idx][span.image_index]
+                digest = hashlib.sha256(img.data).hexdigest()
+                if digest not in self._vision_cache and digest not in seen:
+                    seen.add(digest)
+                    missing.append((digest, img))
+
+        if missing:
+            encoded = self._model.encode_images([item[1] for item in missing])
+            for (digest, _), feat in zip(missing, encoded, strict=True):
+                self._vision_cache[digest] = feat
+                self._vision_cache.move_to_end(digest)
+                while len(self._vision_cache) > _MAX_VISION_CACHE:
+                    self._vision_cache.popitem(last=False)
+
+        embeds = self._model.embed_input_ids(inputs.token_ids).clone()
+        bidir_spans: list[tuple[int, int]] = []
+        use_bidir = self._model.uses_bidirectional_vision()
+        batch_offset = 0
+        for req_idx, (start, rows) in enumerate(
+            zip(step.start_positions, step.rows_per_request, strict=True)
+        ):
+            for span in step.image_spans[req_idx]:
+                lo = max(start, span.token_offset)
+                hi = min(start + rows, span.token_offset + span.token_count)
+                if hi <= lo:
+                    continue
+                img = step.images[req_idx][span.image_index]
+                digest = hashlib.sha256(img.data).hexdigest()
+                feat = self._vision_cache[digest]
+                self._vision_cache.move_to_end(digest)
+                if feat.shape[0] != span.token_count:
+                    raise EngineError(
+                        f"vision feature length {feat.shape[0]} != span {span.token_count}"
+                    )
+                row_lo = batch_offset + (lo - start)
+                row_hi = batch_offset + (hi - start)
+                feat_lo = lo - span.token_offset
+                feat_hi = hi - span.token_offset
+                embeds[row_lo:row_hi].copy_(feat[feat_lo:feat_hi].to(embeds.device, embeds.dtype))
+                if use_bidir:
+                    bidir_spans.append((row_lo, row_hi))
+            batch_offset += rows
+        return embeds, mrope_pos, rope_offsets, tuple(bidir_spans)
+
     def _context(
-        self, inputs: ModelInputs, capture: StateCheckpointCapture | None = None
+        self,
+        inputs: ModelInputs,
+        capture: StateCheckpointCapture | None = None,
+        *,
+        input_embeds: torch.Tensor | None = None,
+        mrope_positions: torch.Tensor | None = None,
+        rope_position_offsets: torch.Tensor | None = None,
+        bidirectional_spans: tuple[tuple[int, int], ...] = (),
     ) -> ForwardContext:
         layer_attention = {
             layer_id: meta
@@ -426,6 +528,10 @@ class ModelRunner:
             state_buffers=self._state_buffers,
             linear_attention=inputs.linear_attention,
             checkpoint_capture=capture,
+            input_embeds=input_embeds,
+            mrope_positions=mrope_positions,
+            rope_position_offsets=rope_position_offsets,
+            bidirectional_spans=bidirectional_spans,
         )
 
 

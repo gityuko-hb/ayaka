@@ -263,6 +263,12 @@ def _engine_flags(command: argparse.ArgumentParser) -> None:
         help="host RAM budget in MiB for recurrent state prefix checkpoints (512)",
     )
     where.add_argument(
+        "--vision-load",
+        choices=("eager", "lazy"),
+        default="eager",
+        help="when to load a multimodal vision encoder: eager (startup) or lazy (first image)",
+    )
+    where.add_argument(
         "--no-prefix-cache",
         dest="prefix_cache",
         action="store_false",

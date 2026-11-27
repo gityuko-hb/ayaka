@@ -440,8 +440,18 @@ class TokenizerService:
             )
         else:
             # The template text itself (``chat_template``) is code, not content: never sanitized.
+            rendered_messages: list[dict[str, object]] = []
+            for m in value.messages:
+                sanitized_text = self._sanitize(m.content)
+                if m.images:
+                    parts: list[dict[str, object]] = [{"type": "image"} for _ in m.images]
+                    if sanitized_text:
+                        parts.append({"type": "text", "text": sanitized_text})
+                    rendered_messages.append({"role": m.role, "content": parts})
+                else:
+                    rendered_messages.append({"role": m.role, "content": sanitized_text})
             text = tokenizer.apply_chat_template(
-                [{"role": m.role, "content": self._sanitize(m.content)} for m in value.messages],
+                rendered_messages,
                 add_generation_prompt=value.add_generation_prompt,
                 chat_template=value.chat_template,
                 continue_final_message=value.continue_final_message,

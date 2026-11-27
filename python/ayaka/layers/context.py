@@ -80,6 +80,11 @@ class ForwardContext:
         linear_attention: Step metadata for recurrent linear-attention layers.
         checkpoint_capture: Optional prefill checkpoint boundary hook.
         input_embeds: Optional precomputed token/vision embeddings ``[N, hidden]``.
+        mrope_positions: Optional 3D multimodal RoPE positions ``[3, N]`` int64 for Qwen3.5.
+        rope_position_offsets: Optional ``[N]`` int64 per-row offset added to 1D RoPE
+            positions during decode after multimodal prompts.
+        bidirectional_spans: Half-open ``(start, end)`` token intervals in the step batch
+            where vision sliding attention uses bidirectional masking.
     """
 
     attention: AttentionMetadata
@@ -90,6 +95,9 @@ class ForwardContext:
     linear_attention: LinearAttentionMetadata | None = None
     checkpoint_capture: StateCheckpointCapture | None = None
     input_embeds: Tensor | None = None
+    mrope_positions: Tensor | None = None
+    rope_position_offsets: Tensor | None = None
+    bidirectional_spans: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         # Private read-only copies: the runner may keep reusing the dicts it built this from.

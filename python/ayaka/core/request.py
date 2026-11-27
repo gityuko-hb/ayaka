@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Final
 from ayaka.utils.validation import require_bool, require_int, require_text, require_token_tuple
 
 from .errors import InvalidRequestError
+from .multimodal import ImageInput, ImageSpan
 from .params import SamplingParams
 
 if TYPE_CHECKING:
@@ -73,6 +74,8 @@ class GenerateRequest:
     cache_salt: str | None = None
     prefix_cache: bool = True
     structured: StructuredParams | None = None
+    images: tuple[ImageInput, ...] = ()
+    image_spans: tuple[ImageSpan, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_envelope(
@@ -82,6 +85,16 @@ class GenerateRequest:
             self.cache_salt,
             self.prefix_cache,
         )
+        if type(self.images) is not tuple or any(
+            not isinstance(img, ImageInput)  # pyright: ignore[reportUnnecessaryIsInstance]
+            for img in self.images
+        ):
+            raise TypeError("images must be a tuple of ImageInput values")
+        if type(self.image_spans) is not tuple or any(
+            not isinstance(span, ImageSpan)  # pyright: ignore[reportUnnecessaryIsInstance]
+            for span in self.image_spans
+        ):
+            raise TypeError("image_spans must be a tuple of ImageSpan values")
         if isinstance(self.prompt, str):
             require_text(self.prompt, "prompt")
         else:
@@ -131,6 +144,8 @@ class TokenizedRequest:
     sequence_index: int = 0
     structured: StructuredParams | None = None
     constraint_id: str | None = None
+    images: tuple[ImageInput, ...] = ()
+    image_spans: tuple[ImageSpan, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_envelope(
@@ -142,6 +157,16 @@ class TokenizedRequest:
         )
         _validate_token_ids(self.prompt_token_ids, "prompt_token_id")
         require_int(self.sequence_index, "sequence_index")
+        if type(self.images) is not tuple or any(
+            not isinstance(img, ImageInput)  # pyright: ignore[reportUnnecessaryIsInstance]
+            for img in self.images
+        ):
+            raise TypeError("images must be a tuple of ImageInput values")
+        if type(self.image_spans) is not tuple or any(
+            not isinstance(span, ImageSpan)  # pyright: ignore[reportUnnecessaryIsInstance]
+            for span in self.image_spans
+        ):
+            raise TypeError("image_spans must be a tuple of ImageSpan values")
 
     @property
     def prompt_length(self) -> int:

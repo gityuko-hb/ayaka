@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
+from ayaka.core.multimodal import ImageInput
 from ayaka.utils.validation import require_bool, require_frozen, require_int, require_token_tuple
 
 if TYPE_CHECKING:
@@ -97,22 +98,29 @@ class RenderedInput:
 
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
-    """One plain-text chat turn.
+    """One chat turn, carrying plain text and optional images.
 
     Attributes:
         role: ``system``, ``user`` or ``assistant``. Tool turns go through
             :class:`TemplateInput`.
         content: The message text.
+        images: Optional images attached to this turn.
     """
 
     role: Literal["system", "user", "assistant"]
     content: str
+    images: tuple[ImageInput, ...] = ()
 
     def __post_init__(self) -> None:
         if self.role not in _ROLES:
             raise ValueError(f"role must be one of {_ROLES}; use TemplateInput for tool turns")
         if type(self.content) is not str:
             raise TypeError("chat content must be text")
+        if type(self.images) is not tuple or any(
+            not isinstance(img, ImageInput)  # pyright: ignore[reportUnnecessaryIsInstance]
+            for img in self.images
+        ):
+            raise TypeError("chat images must be a tuple of ImageInput values")
 
 
 @dataclass(frozen=True, slots=True)
