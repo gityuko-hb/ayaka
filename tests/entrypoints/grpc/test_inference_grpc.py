@@ -18,9 +18,7 @@ from ayaka.engine.seam import EngineClient, EngineInfo
 from ayaka.entrypoints.cli_parsers import build_cli_parser
 from ayaka.entrypoints.grpc.client import GrpcEngineClient
 from ayaka.entrypoints.grpc.inference import InferenceGrpcServer
-from ayaka.entrypoints.http import create_app
 from ayaka.entrypoints.parsers.output import OutputFormat
-from ayaka.entrypoints.serving import Serving
 from fake_engine import FakeEngine, script
 from tokenizer_fakes import make_service
 
@@ -136,8 +134,10 @@ def test_http_openai_and_anthropic_serve_over_grpc_engine_client() -> None:
     pytest.importorskip("grpc")
     pytest.importorskip("google.protobuf")
     pytest.importorskip("aiohttp")
-
     from aiohttp.test_utils import TestClient, TestServer
+
+    from ayaka.entrypoints.http import create_app
+    from ayaka.entrypoints.serving import Serving
 
     async def main() -> None:
         info = EngineInfo(max_model_len=1024, max_context_tokens=1024, prefix_caching=True)
