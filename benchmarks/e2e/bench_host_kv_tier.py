@@ -1,13 +1,35 @@
-"""Measure cold prefill vs host-RAM KV tier promotion on a tight device KV pool."""
+"""Returning to an evicted conversation: promoting its KV from host RAM against recomputing it.
+
+Two engines with the same model and the same small device KV pool, one with the host-RAM tier
+(``--host-kv``), one without. In each, a conversation of ``--prompt-tokens`` tokens runs, other
+prompts of the same length push its blocks out of the device pool, and the conversation comes
+back. Without the tier its prefix must be computed again (the cold prefill of the gate); with it
+the evicted blocks are copied back from host RAM. Measured on the return, per arm:
+
+    ttft_ms        the time of a one-token request: prefill (or promotion) plus one step
+    cached_tokens  prompt tokens the engine did not compute
+    promotions     blocks the host tier copied back (0 without the tier)
+
+and, once per arm, whether ``--parity-tokens`` greedy tokens after the return equal those of the
+first visit (the exactness gate). Before anything is timed, each engine serves a warm-up request
+of the same length, so the first-use costs of the kernels are not counted. Rounds alternate the
+two engines; each number is the median over ``--rounds``. The gate reads ``ratio`` =
+``ttft_ms(host tier) / ttft_ms(recompute)``, which must stay below 0.5 for prompts of 4K tokens
+and more.
+
+    uv run python benchmarks/e2e/bench_host_kv_tier.py --model Qwen/Qwen3-8B --device cuda \\
+        --dtype bf16 --prompt-tokens 4096 8192 --out host_kv_tier.json
+"""
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import json
-import tempfile
+import statistics
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from ayaka.configs.cache import CacheConfig
 from ayaka.configs.device import DeviceConfig
@@ -21,114 +43,141 @@ from ayaka.core.types import RequestId
 from ayaka.engine.llm import LLM
 from ayaka.utils.dtypes import COMPUTE_DTYPES
 
+if TYPE_CHECKING:
+    from ayaka.core.outputs import RequestOutput
+
 _DTYPES = {d.label: d for d in COMPUTE_DTYPES}
+_BLOCK = 16
 
 
-def _measure_run(
-    config: EngineConfig,
-    prompts: list[tuple[int, ...]],
-    filler: tuple[int, ...],
-    max_tokens: int,
-) -> dict[str, object]:
-    with LLM.from_config(config) as llm:
-        warm_prompt = prompts[0]
-        # 1. Cold run of the shared prompt.
-        t0 = time.perf_counter()
-        cold_out = llm.generate(
-            GenerateRequest(
-                request_id=RequestId("cold"),
-                prompt=warm_prompt,
-                sampling=SamplingParams(temperature=0.0, max_tokens=max_tokens),
-            )
+def _prompt(seed: int, length: int) -> tuple[int, ...]:
+    # Distinct ids per seed, so two prompts never share a cached block.
+    return tuple(1000 + (seed * 7919 + i * 104729) % 50000 for i in range(length))
+
+
+def _run(llm: LLM, request_id: str, prompt: tuple[int, ...], tokens: int) -> RequestOutput:
+    output = llm.generate(
+        GenerateRequest(
+            request_id=RequestId(request_id),
+            prompt=prompt,
+            sampling=SamplingParams(temperature=0.0, max_tokens=tokens, ignore_eos=True),
         )
-        cold_ms = (time.perf_counter() - t0) * 1000.0
-        if isinstance(cold_out, list):
-            raise TypeError("expected single RequestOutput for cold prompt")
-
-        # 2. Flood cache with filler to evict the warm prompt from device KV.
-        for idx in range(4):
-            llm.generate(
-                GenerateRequest(
-                    request_id=RequestId(f"evict-{idx}"),
-                    prompt=tuple(x + idx for x in filler),
-                    sampling=SamplingParams(temperature=0.0, max_tokens=1),
-                )
-            )
-        if llm.engine.kv.host_store is not None:
-            llm.engine.kv.host_store.flush()
-
-        # 3. Re-run the warm prompt and compare latency + tokens + host promotions.
-        t1 = time.perf_counter()
-        warm_out = llm.generate(
-            GenerateRequest(
-                request_id=RequestId("warm"),
-                prompt=warm_prompt,
-                sampling=SamplingParams(temperature=0.0, max_tokens=max_tokens),
-            )
-        )
-        warm_ms = (time.perf_counter() - t1) * 1000.0
-        if isinstance(warm_out, list):
-            raise TypeError("expected single RequestOutput for warm prompt")
-        hs = llm.engine.kv.host_store.stats() if llm.engine.kv.host_store is not None else None
-        return {
-            "device": config.device.device,
-            "host_kv_enabled": config.host_memory.enabled,
-            "cold_ms": round(cold_ms, 2),
-            "warm_ms": round(warm_ms, 2),
-            "speedup": round(cold_ms / max(warm_ms, 1e-6), 3),
-            "cached_tokens": warm_out.usage.cached_tokens if warm_out.usage else 0,
-            "parity": warm_out.outputs[0].token_ids == cold_out.outputs[0].token_ids,
-            "offloads": hs.offloads if hs else 0,
-            "promotions": hs.promotions if hs else 0,
-        }
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Run the cold vs host-promoted KV benchmark against a local model directory."""
-    parser = argparse.ArgumentParser(description="Benchmark host-RAM KV eviction and promotion")
-    parser.add_argument("--model", required=True, help="Local model directory or repo id")
-    parser.add_argument("--device", default="cpu", help="cpu or cuda")
-    parser.add_argument("--dtype", choices=sorted(_DTYPES), default="fp32")
-    parser.add_argument("--prompt-tokens", type=int, default=64)
-    parser.add_argument("--max-tokens", type=int, default=8)
-    parser.add_argument("--num-blocks", type=int, default=16)
-    parser.add_argument("--json", action="store_true")
-    args = parser.parse_args(argv)
-
-    base = EngineConfig(
-        source=ModelSourceConfig(args.model),
-        device=DeviceConfig(device=args.device, dtype=_DTYPES[args.dtype]),
-        cache=CacheConfig(block_size=16, num_blocks=args.num_blocks, prefix_cache=True),
-        scheduler=SchedulerConfig(max_running=1, max_tokens_per_step=args.prompt_tokens),
     )
-    prompt = tuple((i % 200) + 10 for i in range(args.prompt_tokens))
-    filler = tuple((i % 200) + 300 for i in range(args.prompt_tokens))
+    if isinstance(output, list):
+        raise TypeError("expected one output")
+    return output
 
-    baseline = _measure_run(base, [prompt], filler, args.max_tokens)
-    with_host = _measure_run(
-        dataclasses.replace(
-            base,
+
+def _visit(
+    llm: LLM, tag: str, conversation: tuple[int, ...], others: int, seed: int
+) -> dict[str, Any]:
+    """Run the conversation, evict it with ``others`` prompts of its length, time the return."""
+    length = len(conversation)
+    _run(llm, f"{tag}-first", conversation, 1)
+    for index in range(others):
+        _run(llm, f"{tag}-evict-{index}", _prompt(seed + index, length), 1)
+    store = llm.engine.kv.host_store
+    if store is not None:
+        store.flush()  # the write-behind copies end before the return, as between two turns
+    before = store.stats().promotions if store is not None else 0
+    start = time.perf_counter()
+    back = _run(llm, f"{tag}-return", conversation, 1)
+    ttft = (time.perf_counter() - start) * 1000.0
+    after = store.stats().promotions if store is not None else 0
+    return {
+        "ttft_ms": ttft,
+        "cached_tokens": back.usage.cached_tokens if back.usage else 0,
+        "promotions": after - before,
+    }
+
+
+def _parity(llm: LLM, tag: str, conversation: tuple[int, ...], others: int, tokens: int) -> bool:
+    first = _run(llm, f"{tag}-parity-first", conversation, tokens)
+    for index in range(others):
+        _run(llm, f"{tag}-parity-evict-{index}", _prompt(30_000 + index, len(conversation)), 1)
+    store = llm.engine.kv.host_store
+    if store is not None:
+        store.flush()
+    back = _run(llm, f"{tag}-parity-return", conversation, tokens)
+    return back.outputs[0].token_ids == first.outputs[0].token_ids
+
+
+def _engine(args: argparse.Namespace, length: int, host: bool) -> LLM:
+    # Room for two conversations of this length: the third prompt evicts the first.
+    blocks = 2 * (length // _BLOCK + 2) + 1
+    config = EngineConfig(
+        source=ModelSourceConfig(args.model, offline=True),
+        device=DeviceConfig(
+            device=args.device, dtype=_DTYPES[args.dtype], backends=tuple(args.backends)
+        ),
+        cache=CacheConfig(
+            block_size=_BLOCK, num_blocks=blocks, prefix_cache=True, kv_reserve_tokens=length + 64
+        ),
+        scheduler=SchedulerConfig(max_running=1, max_tokens_per_step=args.chunk),
+    )
+    if host:
+        config = dataclasses.replace(
+            config,
             host_memory=HostMemoryConfig(
                 enabled=True,
                 ram_keep_fraction=0.20,
-                max_host_kv_mb=512,
-                allow_pageable=(args.device == "cpu"),
+                max_host_kv_mb=args.host_kv_mb,
+                allow_pageable=args.device == "cpu",
             ),
-        ),
-        [prompt],
-        filler,
-        args.max_tokens,
-    )
-    report = {
-        "baseline": baseline,
-        "host_kv": with_host,
-        "temp_root": str(Path(tempfile.gettempdir())),
-    }
-    if args.json:
-        print(json.dumps(report, indent=2))
-    else:
-        print("Baseline :", baseline)
-        print("Host KV  :", with_host)
+        )
+    return LLM.from_config(config)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    parser.add_argument("--model", required=True, help="a local model directory or repo id")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--dtype", choices=sorted(_DTYPES), default="bf16")
+    parser.add_argument("--backends", nargs="+", default=["flashinfer", "torch"])
+    parser.add_argument("--prompt-tokens", type=int, nargs="+", default=[4096, 8192])
+    parser.add_argument("--chunk", type=int, default=2048, help="prefill tokens per step")
+    parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--parity-tokens", type=int, default=32)
+    parser.add_argument("--host-kv-mb", type=int, default=8192)
+    parser.add_argument("--out", type=Path)
+    args = parser.parse_args(argv)
+
+    report: dict[str, Any] = {"model": args.model, "rounds": args.rounds, "lengths": {}}
+    for length in args.prompt_tokens:
+        engines = {
+            "recompute": _engine(args, length, False),
+            "host tier": _engine(args, length, True),
+        }
+        try:
+            for name, llm in engines.items():  # warm-up: first-use kernel costs, not measured
+                _visit(llm, f"warm-{name}", _prompt(1, length), 2, 10_000)
+            rows: dict[str, list[dict[str, Any]]] = {name: [] for name in engines}
+            for index in range(args.rounds):
+                for name, llm in engines.items():
+                    seed = 20_000 + 10 * index
+                    rows[name].append(
+                        _visit(llm, f"r{index}-{name}", _prompt(100 + index, length), 2, seed)
+                    )
+            result: dict[str, Any] = {}
+            for name, values in rows.items():
+                result[name] = {
+                    "ttft_ms": round(statistics.median(v["ttft_ms"] for v in values), 2),
+                    "cached_tokens": statistics.median(v["cached_tokens"] for v in values),
+                    "promotions": statistics.median(v["promotions"] for v in values),
+                    "token_parity": _parity(
+                        engines[name], name, _prompt(900, length), 2, args.parity_tokens
+                    ),
+                }
+            result["ratio"] = round(
+                result["host tier"]["ttft_ms"] / result["recompute"]["ttft_ms"], 3
+            )
+        finally:
+            for llm in engines.values():
+                llm.close()
+        report["lengths"][str(length)] = result
+        print(f"{length} tokens: {json.dumps(result)}", flush=True)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2) + "\n")
     return 0
 
 
