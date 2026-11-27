@@ -383,7 +383,7 @@ class TestAttendRejections:
         scenario = _build([Step(1, 3)])
         encoded = scenario.buffers._replace(codec="fp8")
 
-        with pytest.raises(BackendError, match="stores the 'raw' codec, not 'fp8'"):
+        with pytest.raises(BackendError, match=r"stores \['raw', 'fp8_e4m3'\] codecs, not 'fp8'"):
             _ops().attention.attend(
                 scenario.q, encoded, scenario.meta, torch.empty_like(scenario.q), scale=1.0
             )

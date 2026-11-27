@@ -31,25 +31,27 @@ package stays cheap and a command line that only prints help never loads it.
 from __future__ import annotations
 
 import logging
-import os
-import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
-from ayaka.core.errors import (
-    AyakaError,
-    CapabilityError,
-    CapacityError,
-    ConfigError,
-    ModelLoadError,
-)
+from ayaka.core.errors import CapacityError, ConfigError, ModelLoadError
 from ayaka.device.capabilities import device_capabilities
+from ayaka.engine._plan_helpers import (
+    compute_budget,
+    free_device_bytes,
+    library_versions,
+    max_running,
+    release_cached_device_memory,
+    resolve_kv_codec,
+    tokenizer_service,
+    weights_bytes,
+)
 from ayaka.engine.core import EngineCore
 from ayaka.engine.input import InputProcessor
 from ayaka.engine.output import OutputProcessor
 from ayaka.engine.profile import (
     ProfileKey,
-    StartupProfile,
     StartupReport,
     load_profile,
     measure_startup,
@@ -61,29 +63,28 @@ from ayaka.engine.profile import (
 from ayaka.kvcache.manager import KVCacheManager
 from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
 from ayaka.kvcache.prefix.hashing import ChainRoot
-from ayaka.memory.budget import BudgetInputs, KVCost, MemoryBudget, plan_budget
+from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool
+from ayaka.kvcache.storage.spec import KVGroup, KVSpec, LatentKVGroup, RecurrentStateGroup
+from ayaka.memory.budget import MemoryBudget
 from ayaka.metrics.loggers import LoggingStatLogger
 from ayaka.metrics.manager import StatLoggerManager
+from ayaka.ops.kvcache import RAW_CODEC
 from ayaka.scheduler.scheduler import Scheduler
-from ayaka.tokenizers.service import TokenizerService
 from ayaka.utils.math_utils import div_ceil
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Mapping
     from pathlib import Path
 
-    from ayaka.configs.device import DeviceConfig
     from ayaka.configs.engine import EngineConfig
     from ayaka.configs.model import ModelConfig
     from ayaka.device.capabilities import DeviceCapabilities
     from ayaka.device.info import DeviceInfo
     from ayaka.engine.recorder import SessionRecorder
     from ayaka.execution.runner import ModelRunner
-    from ayaka.kvcache.storage.pool import KVPool
-    from ayaka.kvcache.storage.spec import KVGroup
+    from ayaka.kvcache.storage.pool import KVPool, LatentKVPool, RecurrentStatePool
     from ayaka.memory.budget import BudgetPlan
     from ayaka.metrics.loggers import StatLogger
-    from ayaka.models.base import CausalLM
     from ayaka.ops.backend import OpsBackend
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
@@ -93,10 +94,6 @@ logger = logging.getLogger(__name__)
 
 #: Seconds between two lines of the logging stat logger.
 STATS_LOG_INTERVAL: Final = 10.0
-
-#: Requests that run at once on the host CPU when the config does not say. The CPU shares its RAM
-#: with everything else, so the KV cache is sized for this many requests of full context.
-_HOST_MAX_RUNNING: Final = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +135,7 @@ class EnginePlan:
     capabilities: DeviceCapabilities
     providers: Mapping[str, str]
     model_config: ModelConfig
-    group: KVGroup
+    group: KVGroup | LatentKVGroup
     weights_bytes: int
     budget: BudgetPlan
     kv_blocks: int
@@ -150,6 +147,12 @@ class EnginePlan:
     profiled: bool
     quantization: str | None = None
     stored_types: Mapping[str, int] | None = None
+    groups: tuple[KVGroup | LatentKVGroup, ...] = ()
+    state_group: RecurrentStateGroup | None = None
+
+    def __post_init__(self) -> None:
+        if not self.groups:
+            object.__setattr__(self, "groups", (self.group,))
 
     @property
     def block_size(self) -> int:
@@ -158,8 +161,11 @@ class EnginePlan:
 
     @property
     def kv_bytes(self) -> int:
-        """Bytes of the KV pool the engine allocates."""
-        return self.kv_blocks * self.group.spec.bytes_per_block()
+        """Bytes of the KV/latent-KV pools the engine allocates."""
+        return sum(
+            self.kv_blocks * group.spec.bytes_per_block() + group.spec.fixed_bytes()
+            for group in (self.groups or (self.group,))
+        )
 
     @property
     def max_context_tokens(self) -> int:
@@ -187,8 +193,8 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     from ayaka.ops.backend import load_backend
 
     device = config.device
-    baseline_reserved = _release_cached_device_memory(device)
-    info, baseline = _free_bytes(device)
+    baseline_reserved = release_cached_device_memory(device)
+    info, baseline = free_device_bytes(device)
     capabilities = device_capabilities(info)
     capabilities.check(device)
     logger.info("device: %s", capabilities.describe())
@@ -218,18 +224,29 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     directory, model = describe_model(config.source, device, ops=ops)
     model_config = model.config
     quant = model.quant_format
+    kv_codec, kv_scale = resolve_kv_codec(config)
 
-    groups = model.kv_specs(block_size=config.cache.block_size, layout=ops.kvcache.layout())
-    if len(groups) != 1:
+    groups = model.kv_specs(
+        block_size=config.cache.block_size,
+        layout=ops.kvcache.layout(),
+        codec=kv_codec,
+        kv_scale=kv_scale,
+    )
+    if not groups:
         raise ModelLoadError(
-            f"{model_config.architecture} needs {len(groups)} KV cache groups; "
-            "this engine runs models with one",
-            context={"groups": len(groups)},
+            f"{model_config.architecture} declared zero KV cache groups",
+            context={"groups": 0},
         )
-    [group] = groups
+    group = groups[0]
+    state_group = model.state_spec()
     block_size = group.spec.block_size
     context = model_config.context_length
-    if context < model_config.max_position_embeddings:
+    if (
+        len(groups) == 1
+        and isinstance(group.spec, KVSpec)
+        and group.spec.window is None
+        and context < model_config.max_position_embeddings
+    ):
         logger.warning(
             "%s was trained on %d tokens but uses a %d-token sliding window, which this "
             "engine does not implement: serving at most %d tokens per request",
@@ -245,15 +262,17 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             "RESERVE_EXCEEDS_CONTEXT",
             f"kv_reserve_tokens={reserve_tokens} exceeds the model context of {context} tokens",
         )
+    base_fp = (
+        model_config.fingerprint if quant is None else f"{model_config.fingerprint}+{quant.name}"
+    )
+    model_fp = base_fp if kv_codec == RAW_CODEC else f"{base_fp}+kv:{kv_codec}"
     key = ProfileKey.build(
         device=f"{info.name} {capabilities.arch}",
-        model=model_config.fingerprint
-        if quant is None
-        else f"{model_config.fingerprint}+{quant.name}",
+        model=model_fp,
         dtype=device.dtype.label,
         providers=ops.providers.items(),
         block_size=block_size,
-        libraries=_library_versions(ops.providers.values()),
+        libraries=library_versions(ops.providers.values()),
     )
     previous = load_profile(key) if device.device_type == "cuda" else None
     if previous is not None:
@@ -273,11 +292,12 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             previous.graph_bytes,
         )
     stored = stored_weights(config.source)
-    weights = _weights_bytes(model) if stored is None else stored[0]
+    weights = weights_bytes(model) if stored is None else stored[0]
     try:
-        budget = _budget(
+        budget = compute_budget(
             config,
-            group,
+            groups,
+            state_group,
             weights,
             baseline,
             reserve_tokens,
@@ -286,11 +306,12 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         )
     except CapacityError as exc:
         # The facts a reader needs to choose a fix: what one token of KV and the weights cost.
+        bytes_per_token = sum(g.spec.bytes_per_token() for g in groups)
         raise CapacityError(
             exc.message,
             context={
                 **exc.context,
-                "bytes_per_token": group.spec.bytes_per_token(),
+                "bytes_per_token": bytes_per_token,
                 "weights_bytes": weights,
                 "kv_reserve_tokens": reserve_tokens,
                 "model_context": context,
@@ -298,7 +319,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         ) from exc
 
     max_blocks = div_ceil(context, block_size)
-    running = _max_running(config, budget.max_running)
+    running = max_running(config, budget.max_running)
     blocks = budget.kv_blocks[0]
     if config.cache.num_blocks is None:
         floor = 1 + div_ceil(reserve_tokens, block_size)
@@ -311,6 +332,8 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         providers={str(family): name for family, name in ops.providers.items()},
         model_config=model_config,
         group=group,
+        groups=groups,
+        state_group=state_group,
         weights_bytes=weights,
         budget=budget,
         kv_blocks=blocks,
@@ -324,49 +347,6 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         stored_types=None if stored is None else stored[1],
     )
     return plan, ops, baseline_reserved
-
-
-def _budget(
-    config: EngineConfig,
-    group: KVGroup,
-    weights: int,
-    baseline: int,
-    reserve_tokens: int,
-    previous: StartupProfile | None,
-    *,
-    initial_runtime_bytes: int = 0,
-) -> BudgetPlan:
-    """The memory plan of the engine, from the free memory, the weights and the KV geometry."""
-    spec = group.spec
-    late_alloc_bytes = (
-        max(previous.runtime_bytes, initial_runtime_bytes)
-        if previous is not None
-        else initial_runtime_bytes
-    )
-    return plan_budget(
-        BudgetInputs(
-            baseline_bytes=baseline,
-            memory_ratio=config.cache.memory_ratio,
-            weights_bytes=weights,
-            kv=(
-                KVCost(
-                    bytes_per_block=spec.bytes_per_block(),
-                    fixed_bytes=spec.fixed_bytes(),
-                    block_size=spec.block_size,
-                ),
-            ),
-            kv_reserve_tokens=reserve_tokens,
-            kv_blocks_override=config.cache.num_blocks,
-            late_alloc_bytes=late_alloc_bytes,
-            activation_bytes_per_token=previous.activation_bytes_per_token if previous else 0,
-            activation_fixed_bytes=(
-                max(previous.workspace_bytes - previous.activation_peak_bytes, 0) if previous else 0
-            ),
-            graph_bytes_estimate=(
-                previous.graph_bytes if previous and config.device.cuda_graph else 0
-            ),
-        )
-    )
 
 
 def build_engine(
@@ -406,7 +386,7 @@ def build_engine(
             raised by the plan, before a weight is read.
     """
     from ayaka.execution.runner import ModelRunner
-    from ayaka.kvcache.storage.pool import KVPool
+    from ayaka.kvcache.storage.pool import KVPool, LatentKVPool, RecurrentStatePool
     from ayaka.model_loader.loader import load_model
 
     device = config.device
@@ -414,6 +394,8 @@ def build_engine(
     model = load_model(config.source, device, ops=ops)
     model_config = engine_plan.model_config
     group = engine_plan.group
+    groups = engine_plan.groups
+    state_group = engine_plan.state_group
     block_size = engine_plan.block_size
     context = model_config.context_length
     plan = engine_plan.budget
@@ -423,9 +405,10 @@ def build_engine(
     running = engine_plan.max_running
     blocks = engine_plan.kv_blocks
     logger.info(
-        "memory plan: %d KV blocks fit, %d allocated for up to %d running requests "
-        "(%d tokens each at most)",
+        "memory plan: %d KV blocks fit across %d group(s), %d allocated for up to %d running "
+        "requests (%d tokens each at most)",
         plan.kv_blocks[0],
+        len(groups),
         blocks,
         running,
         engine_plan.max_context_tokens,
@@ -441,12 +424,36 @@ def build_engine(
                 block_size=block_size,
             )
         )
-    kv = KVCacheManager(
-        [group], [blocks], max_requests=running, max_blocks_per_request=max_blocks, prefix=prefix
-    )
-    pool = KVPool(group, blocks, device=device.device)
+    state_slots: StateSlotPool | None = None
+    state_checkpoints: StateCheckpointStore | None = None
+    state_pool: RecurrentStatePool | None = None
+    if state_group is not None:
+        state_slots = StateSlotPool(running + 1)
+        state_pool = RecurrentStatePool(state_group, running + 1, device=device.device)
+        if prefix is not None:
+            state_checkpoints = StateCheckpointStore(
+                config.cache.state_checkpoint_max_bytes,
+                stride_blocks=config.cache.state_checkpoint_stride,
+            )
 
-    service = _tokenizer_service(config, model_config.vocab_size, context, tokenizer)
+    block_counts = [blocks] * len(groups)
+    kv = KVCacheManager(
+        groups,
+        block_counts,
+        max_requests=running,
+        max_blocks_per_request=max_blocks,
+        prefix=prefix,
+        state_slots=state_slots,
+        state_checkpoints=state_checkpoints,
+    )
+    pools: list[KVPool | LatentKVPool] = [
+        LatentKVPool(grp, blocks, device=device.device)
+        if isinstance(grp, LatentKVGroup)
+        else KVPool(grp, blocks, device=device.device)
+        for grp in groups
+    ]
+
+    service = tokenizer_service(config, model_config.vocab_size, context, tokenizer)
     scheduler = Scheduler(
         config.scheduler,
         kv,
@@ -456,7 +463,7 @@ def build_engine(
     )
     runner = ModelRunner(
         model,
-        [pool],
+        pools,
         kv.table,
         # No draft proposer exists yet, so lookahead is 0. A proposer must pass its k here;
         # required_rows then reserves one row per request plus k draft rows.
@@ -467,13 +474,16 @@ def build_engine(
         ),
         device=device.device,
         eos_token_ids=service.eos_token_ids,
+        state_pool=state_pool,
+        state_checkpoints=state_checkpoints,
     )
     startup = None
     if device.device_type == "cuda":
         startup = _startup_run(
             config,
             runner,
-            pool,
+            pools,
+            state_pool=state_pool,
             key=key,
             plan=plan,
             baseline=baseline,
@@ -503,8 +513,9 @@ def build_engine(
 def _startup_run(
     config: EngineConfig,
     runner: ModelRunner,
-    pool: KVPool,
+    pools: KVPool | LatentKVPool | Sequence[KVPool | LatentKVPool],
     *,
+    state_pool: RecurrentStatePool | None = None,
     key: ProfileKey,
     plan: BudgetPlan,
     baseline: int,
@@ -517,6 +528,9 @@ def _startup_run(
 
     target = Device(config.device.device)
     buckets = tuple(bucket for bucket in config.device.graph_buckets if bucket <= running) or (1,)
+    pool_seq = pools if isinstance(pools, Sequence) else (pools,)
+    kv_total_bytes = sum(pool.nbytes for pool in pool_seq)
+    state_bytes = state_pool.nbytes if state_pool is not None else 0
     profile = measure_startup(
         runner.model,
         runner.kv_buffers,
@@ -524,15 +538,21 @@ def _startup_run(
         device=target,
         baseline_bytes=baseline,
         baseline_reserved_bytes=baseline_reserved,
-        kv_bytes=pool.nbytes,
+        kv_bytes=kv_total_bytes,
         chunk_tokens=chunk_tokens,
         buckets=buckets,
-        block_size=pool.group.spec.block_size,
-        usable_blocks=pool.usable_blocks,
+        block_size=pool_seq[0].group.spec.block_size,
+        usable_blocks=pool_seq[0].usable_blocks,
+        latent_kv_buffers=getattr(runner, "latent_kv_buffers", {}),
+        state_buffers=getattr(runner, "state_buffers", {}),
+        group_layers=getattr(runner, "group_layers", ()),
+        state_bytes=state_bytes,
     )
     budget = MemoryBudget(baseline)
     budget.reserve("weights", profile.weights_bytes)
     budget.reserve("kv", profile.kv_bytes)
+    if state_bytes:
+        budget.reserve("state", min(state_bytes, budget.free_bytes))
     budget.reserve("runtime", min(profile.runtime_bytes, budget.free_bytes))
     budget.reserve("workspace", min(profile.workspace_bytes, budget.free_bytes))
     captured = ()
@@ -572,127 +592,3 @@ def _startup_run(
     return StartupReport(
         profile=profile, budget=budget, reconciliation=reconciliation, graphs=captured
     )
-
-
-def _release_cached_device_memory(device: DeviceConfig) -> int:
-    """Give memory torch caches but no tensor uses back to the driver, before the baseline is read.
-
-    Only matters when this process already used the GPU (an earlier engine, a test): the baseline
-    must be what is free to this engine, not what an earlier one left in torch's cache. In a fresh
-    process torch is not imported yet and nothing happens.
-
-    Returns:
-        What torch's allocator still holds afterwards (tensors that are still alive), so the
-        start-up run counts only what this engine reserves on top; 0 in a fresh process.
-    """
-    torch = sys.modules.get("torch")
-    if device.device_type != "cuda" or torch is None or not torch.cuda.is_initialized():
-        return 0
-    import gc
-
-    gc.collect()
-    torch.cuda.empty_cache()
-    return int(torch.cuda.memory_reserved(device.device_index or 0))
-
-
-def _library_versions(backends: Iterable[str]) -> dict[str, str]:
-    """Versions of torch and of every kernel library the ops come from, for the profile key."""
-    from importlib.metadata import PackageNotFoundError, version
-
-    names = {"torch", *(f"{name}-python" for name in backends if name == "flashinfer")}
-    found: dict[str, str] = {}
-    for name in sorted(names):
-        try:
-            found[name] = version(name)
-        except PackageNotFoundError:
-            continue
-    return found
-
-
-def _free_bytes(device: DeviceConfig) -> tuple[DeviceInfo, int]:
-    """The configured device and its free memory before this engine takes any (the baseline)."""
-    from ayaka.device.info import probe_devices
-
-    wanted = device.device_index or 0
-    for found in probe_devices():
-        if found.kind == device.device_type and (found.kind == "cpu" or found.index == wanted):
-            free = found.free_bytes
-            if free <= 0 and found.kind == "cpu":
-                free = _host_free_bytes_without_proc()
-            if free <= 0:
-                raise CapacityError(
-                    f"cannot read the free memory of {device.device}; "
-                    "without it the memory plan has nothing to divide",
-                    context={"device": device.device},
-                )
-            return found, free
-    raise CapabilityError(
-        f"device.{device.device}",
-        detail=f"no {device.device} device was found",
-        remedy="check the NVIDIA driver, or run on the CPU with device 'cpu'",
-    )
-
-
-def _host_free_bytes_without_proc() -> int:
-    """Available RAM on a host with no ``/proc/meminfo`` (Windows, macOS); 0 if unknown.
-
-    The device probe reads ``/proc`` and so reports nothing there. This is the engine's own
-    fallback, not a second probe: it runs only when the probe found no free memory.
-    """
-    if sys.platform == "win32":
-        import ctypes
-
-        class _MemoryStatus(ctypes.Structure):
-            _fields_ = (  # the layout of MEMORYSTATUSEX
-                ("length", ctypes.c_ulong),
-                ("memory_load", ctypes.c_ulong),
-                ("total_phys", ctypes.c_ulonglong),
-                ("avail_phys", ctypes.c_ulonglong),
-                ("total_page_file", ctypes.c_ulonglong),
-                ("avail_page_file", ctypes.c_ulonglong),
-                ("total_virtual", ctypes.c_ulonglong),
-                ("avail_virtual", ctypes.c_ulonglong),
-                ("avail_extended_virtual", ctypes.c_ulonglong),
-            )
-
-        status = _MemoryStatus()
-        status.length = ctypes.sizeof(_MemoryStatus)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return int(status.avail_phys)
-        return 0
-    try:
-        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-    except (AttributeError, ValueError, OSError):
-        return 0
-
-
-def _weights_bytes(model: CausalLM) -> int:
-    """Bytes of the model's parameters, a shared (tied) one counted once."""
-    return sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())
-
-
-def _max_running(config: EngineConfig, planned: int) -> int:
-    """Requests the cache is built for: the config's limit, else what the plan allows."""
-    if config.scheduler.max_running is not None:
-        return config.scheduler.max_running
-    limit = max(1, planned)
-    return min(limit, _HOST_MAX_RUNNING) if config.device.device_type == "cpu" else limit
-
-
-def _tokenizer_service(
-    config: EngineConfig, vocab_size: int, context: int, loaded: LoadedTokenizer | None
-) -> TokenizerService:
-    tokenizer_config = config.tokenizer_config
-    try:
-        return TokenizerService(
-            tokenizer_config, max_model_len=context, model_vocab_size=vocab_size, loaded=loaded
-        )
-    except AyakaError:
-        raise  # typed errors (a bad config, a missing package) already say what to do
-    except (OSError, ValueError) as exc:
-        # The adapters raise these for missing files, a bad tokenizer or a vocabulary the model
-        # cannot embed.
-        raise ModelLoadError(
-            f"cannot use the tokenizer {str(tokenizer_config.tokenizer)!r}: {exc}",
-            context={"tokenizer": str(tokenizer_config.tokenizer)},
-        ) from exc

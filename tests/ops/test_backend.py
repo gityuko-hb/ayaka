@@ -37,6 +37,8 @@ ALL: tuple[FamilyName, ...] = (
     "attention",
     "sampling",
     "moe",
+    "linear_attention",
+    "mla",
 )
 LINUX = frozenset({sys.platform})
 
@@ -117,6 +119,8 @@ class TestComposition:
             "attention": "full",
             "sampling": "full",
             "moe": "full",
+            "linear_attention": "full",
+            "mla": "full",
         }
         assert _owner(ops.norm) == "partial"
         assert _owner(ops.activation) == "full"
@@ -204,8 +208,8 @@ class TestMissingCapabilities:
         assert error.code == "BACKEND_CAPABILITY_MISSING"
         assert error.path == "ops.backends"
         assert (
-            "provides norm, activation, embedding, linear, rope, kvcache, attention, sampling, moe "
-            "for device 'cpu' "
+            "provides norm, activation, embedding, linear, rope, kvcache, attention, sampling, "
+            "moe, linear_attention, mla for device 'cpu' "
             "and dtype fp32" in str(error)
         )
         assert "norm: cuda-only has no cpu support; tiny has no fp32 support" in str(error)
@@ -415,7 +419,7 @@ class TestTorchBackend:
     def test_flashinfer_is_registered_for_attention_on_linux_gpus_only(self) -> None:
         caps = next(caps for caps in available_backends() if caps.name == "flashinfer")
 
-        assert caps.families == {"attention"}
+        assert caps.families == {"attention", "linear_attention", "mla"}
         assert caps.platforms == {"linux"}
         assert caps.devices == {"cuda"}
         assert caps.dtypes == {DType.FP16, DType.BF16}

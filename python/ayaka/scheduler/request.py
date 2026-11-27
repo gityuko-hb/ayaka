@@ -144,6 +144,7 @@ class Request:
     prefix_cache: bool = True
     cached_tokens: int = 0
     cache_written_tokens: int = 0
+    pending_state_restore: bytes | None = None
     sequence_index: int = 0
     blocked_on: RequestId | None = None
     _status: RequestStatus = field(default=RequestStatus.WAITING, init=False)

@@ -31,6 +31,10 @@ class TestCacheConfig:
             "memory_ratio": 0.9,
             "kv_reserve_tokens": None,
             "prefix_cache": True,
+            "kv_dtype": "auto",
+            "kv_fp8_scale": 1.0,
+            "state_checkpoint_stride": 1,
+            "state_checkpoint_max_bytes": 512 * 1024 * 1024,
         }
         assert config.fingerprint != CacheConfig(block_size=4, num_blocks=10).fingerprint
 

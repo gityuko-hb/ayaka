@@ -25,7 +25,8 @@ compiles for head widths of 64, 128 and 256; anything else is a
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 import torch
@@ -34,11 +35,14 @@ from ayaka.core.errors import BackendError
 from ayaka.core.types import ForwardMode, KVLayoutKind
 from ayaka.ops.backends.flashinfer import HEAD_DIMS
 from ayaka.ops.backends.torch import attention as reference
-from ayaka.ops.backends.torch._checks import capturing, require_like
+from ayaka.ops.backends.torch._checks import capturing, require_compute_dtype, require_like
 from ayaka.ops.backends.torch.kvcache import require_buffers
+from ayaka.ops.kvcache import FP8_E4M3_CODEC, RAW_CODEC
 from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ayaka.ops.attention import AttentionMetadata
     from ayaka.ops.kvcache import KVBuffers
 
@@ -49,26 +53,43 @@ __all__ = [
     "graph_metadata",
     "plan",
     "update_graph_metadata",
+    "workspace",
 ]
 
 #: The float scratch buffer every wrapper on one device shares; flashinfer's recommended size.
 WORKSPACE_BYTES: Final = 128 * 2**20
 _DTYPES: Final = (torch.float16, torch.bfloat16)
 _LAYOUT_NAMES: Final = {KVLayoutKind.NHD: "NHD", KVLayoutKind.HND: "HND"}
+_LN2: Final = math.log(2.0)
 
 _workspaces: dict[torch.device, torch.Tensor] = {}
-_eager_wrappers: dict[tuple[torch.device, str, bool], Any] = {}
+_eager_wrappers: dict[tuple[torch.device, str, bool, torch.dtype, int], Any] = {}
 
-type _PlanKey = tuple[int, int, int, torch.dtype, KVLayoutKind, float]
+#: (num_heads, num_kv_heads, head_dim, q_dtype, kv_dtype, layout, scale, window_left)
+type _PlanKey = tuple[int, int, int, torch.dtype, torch.dtype, KVLayoutKind, float, int]
+
+
+def _empty_planned() -> dict[_PlanKey, Any]:
+    return {}
+
+
+def _empty_mla_planned() -> dict[tuple[int, int, int, int, torch.dtype, float], Any]:
+    return {}
+
+
+def _empty_mla_replanners() -> list[Callable[[], None]]:
+    return []
 
 
 @dataclass(eq=False, slots=True)
 class FlashInferPlan:
-    """A step's block table in CSR form, and the wrapper planned for it.
+    """A step's block table in CSR form, and the wrappers planned for it.
 
-    The host tensors are int32 CPU tensors. ``planned_for`` is the
-    ``(heads, kv_heads, head_dim, dtype, layout, scale)`` the wrapper was last
-    planned with; ``None`` until the first :func:`attend`.
+    The host tensors are int32 CPU tensors. ``planned`` maps each observed
+    ``(heads, kv_heads, head_dim, q_dtype, kv_dtype, layout, scale, window_left)``
+    to its planned flashinfer wrapper so heterogeneous layers (for example
+    alternating sliding-window and full attention, or mixed head widths) share one
+    step plan cleanly.
 
     Attributes:
         decode: One row per request: the decode wrapper runs the step.
@@ -87,10 +108,16 @@ class FlashInferPlan:
     kv_indptr: torch.Tensor
     kv_indices: torch.Tensor
     last_page_len: torch.Tensor
+    mla_kv_len: torch.Tensor
     real_rows: torch.Tensor
+    host_rows: tuple[int, ...] = ()
+    host_kv_lengths: tuple[int, ...] = ()
     graph: _GraphBuffers | None = None
-    wrapper: Any = None
-    planned_for: _PlanKey | None = None
+    planned: dict[_PlanKey, Any] = field(default_factory=_empty_planned)
+    mla_planned: dict[tuple[int, int, int, int, torch.dtype, float], Any] = field(
+        default_factory=_empty_mla_planned
+    )
+    mla_replanners: list[Callable[[], None]] = field(default_factory=_empty_mla_replanners)
 
 
 @dataclass(eq=False, slots=True)
@@ -107,12 +134,15 @@ class _GraphBuffers:
     indptr: torch.Tensor
     indices: torch.Tensor
     last_page_len: torch.Tensor
+    mla_qo_indptr: torch.Tensor
+    mla_kv_len: torch.Tensor
     indptr_host: torch.Tensor
     indices_host: torch.Tensor
     indices_device: torch.Tensor
     last_host: torch.Tensor
     real_host: torch.Tensor
-    wrappers: dict[KVLayoutKind, Any]
+    wrappers: dict[tuple[KVLayoutKind, torch.dtype, int], Any]
+    mla_wrappers: dict[tuple[int, int, int], Any]
 
 
 def _flashinfer() -> Any:
@@ -124,7 +154,8 @@ def _flashinfer() -> Any:
     )
 
 
-def _workspace(device: torch.device) -> torch.Tensor:
+def workspace(device: torch.device) -> torch.Tensor:
+    """Return the shared FlashInfer workspace buffer on ``device``."""
     found = _workspaces.get(device)
     if found is None:
         # Never an inference tensor: the buffer outlives the step that made it, and flashinfer
@@ -135,18 +166,24 @@ def _workspace(device: torch.device) -> torch.Tensor:
     return found
 
 
-def _eager_wrapper(device: torch.device, layout: KVLayoutKind, decode: bool) -> Any:
-    key = (device, _LAYOUT_NAMES[layout], decode)
+def _eager_wrapper(
+    device: torch.device,
+    layout: KVLayoutKind,
+    decode: bool,
+    kv_dtype: torch.dtype,
+    window_left: int,
+) -> Any:
+    key = (device, _LAYOUT_NAMES[layout], decode, kv_dtype, window_left)
     wrapper = _eager_wrappers.get(key)
     if wrapper is None:
         with torch.inference_mode(False):
             if decode:
                 wrapper = _flashinfer().BatchDecodeWithPagedKVCacheWrapper(
-                    _workspace(device), kv_layout=key[1], use_tensor_cores=True
+                    workspace(device), kv_layout=key[1], use_tensor_cores=True
                 )
             else:
                 wrapper = _flashinfer().BatchPrefillWithPagedKVCacheWrapper(
-                    _workspace(device), kv_layout=key[1]
+                    workspace(device), kv_layout=key[1]
                 )
         _eager_wrappers[key] = wrapper
     return wrapper
@@ -193,8 +230,14 @@ def plan(
     if not isinstance(host, reference.TorchAttentionPlan):  # what the reference plans
         raise BackendError("attention.plan: the reference plan changed shape")
     table = block_rows.to("cpu", torch.int32)
-    qo_indptr, kv_indptr, indices, last = _csr(
-        list(host.rows), list(host.kv_lengths), table, block_size
+    rows_list = list(host.rows)
+    lengths_list = list(host.kv_lengths)
+    qo_indptr, kv_indptr, indices, last = _csr(rows_list, lengths_list, table, block_size)
+    mla_kv_len = _ints(
+        [
+            length if length else max(count, 1)
+            for count, length in zip(rows_list, lengths_list, strict=True)
+        ]
     )
     real_rows = base.kv_lengths.long().index_select(0, base.request_of_row.long()) > 0
     holder = FlashInferPlan(
@@ -204,25 +247,29 @@ def plan(
         kv_indptr=_ints(kv_indptr),
         kv_indices=_ints(indices),
         last_page_len=_ints(last),
+        mla_kv_len=mla_kv_len,
         real_rows=real_rows,
+        host_rows=tuple(rows_list),
+        host_kv_lengths=tuple(lengths_list),
     )
     return replace(base, plan=holder)
 
 
-def _plan_wrapper(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> None:
+def _plan_wrapper(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> Any:
     # What plan() allocates is kept for later run() calls, in or out of inference mode, so it must
     # not be an inference tensor (see _workspace).
     with torch.inference_mode(False):
-        _plan(holder, key, device)
+        return _plan(holder, key, device)
 
 
-def _plan(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> None:
-    heads, kv_heads, head_dim, dtype, layout, scale = key
+def _plan(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> Any:
+    heads, kv_heads, head_dim, q_dtype, kv_dtype, layout, scale, window_left = key
     if holder.graph is not None:
-        wrapper = holder.graph.wrappers.get(layout)
+        wkey = (layout, kv_dtype, window_left)
+        wrapper = holder.graph.wrappers.get(wkey)
         if wrapper is None:
             wrapper = _flashinfer().BatchDecodeWithPagedKVCacheWrapper(
-                _workspace(device),
+                workspace(device),
                 kv_layout=_LAYOUT_NAMES[layout],
                 use_cuda_graph=True,
                 use_tensor_cores=True,
@@ -230,9 +277,9 @@ def _plan(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> None:
                 paged_kv_indices_buffer=holder.graph.indices,
                 paged_kv_last_page_len_buffer=holder.graph.last_page_len,
             )
-            holder.graph.wrappers[layout] = wrapper
+            holder.graph.wrappers[wkey] = wrapper
     else:
-        wrapper = _eager_wrapper(device, layout, holder.decode)
+        wrapper = _eager_wrapper(device, layout, holder.decode, kv_dtype, window_left)
     block_size = holder.block_size
     if holder.decode:
         wrapper.plan(
@@ -243,9 +290,10 @@ def _plan(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> None:
             kv_heads,
             head_dim,
             block_size,
-            q_data_type=dtype,
-            kv_data_type=dtype,
+            q_data_type=q_dtype,
+            kv_data_type=kv_dtype,
             sm_scale=scale,
+            window_left=window_left,
         )
     else:
         wrapper.plan(
@@ -259,11 +307,12 @@ def _plan(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> None:
             block_size,
             causal=True,
             sm_scale=scale,
-            q_data_type=dtype,
-            kv_data_type=dtype,
+            q_data_type=q_dtype,
+            kv_data_type=kv_dtype,
+            window_left=window_left,
         )
-    holder.wrapper = wrapper
-    holder.planned_for = key
+    holder.planned[key] = wrapper
+    return wrapper
 
 
 def attend(
@@ -273,6 +322,8 @@ def attend(
     out: torch.Tensor,
     *,
     scale: float,
+    window: int | None = None,
+    sinks: torch.Tensor | None = None,
 ) -> None:
     op = "attention.attend"
     holder = meta.plan
@@ -289,9 +340,13 @@ def attend(
             context={"op": op, "argument": "meta"},
         )
     heads = q.shape[1] if q.ndim == 3 else 0
-    require_like(
-        op, "q", q, (meta.request_of_row.shape[0], heads, buffers.head_dim), buffers.k.dtype
-    )
+    if buffers.codec == RAW_CODEC:
+        require_like(
+            op, "q", q, (meta.request_of_row.shape[0], heads, buffers.head_dim), buffers.k.dtype
+        )
+    else:
+        require_compute_dtype(op, "q", q)
+        require_like(op, "q", q, (meta.request_of_row.shape[0], heads, buffers.head_dim), q.dtype)
     require_like(op, "out", out, q.shape, q.dtype)
     if q.dtype not in _DTYPES:
         raise BackendError(
@@ -310,18 +365,61 @@ def attend(
             f"{buffers.num_kv_heads} key/value heads",
             context={"op": op, "argument": "q"},
         )
+    if window is not None and window < 1:
+        raise BackendError(
+            f"{op}: window must be positive when set, got {window}",
+            context={"op": op, "argument": "window"},
+        )
+    if sinks is not None:
+        require_like(op, "sinks", sinks, (heads,), sinks.dtype)
     if q.shape[0] == 0:
         return
-    key: _PlanKey = (heads, buffers.num_kv_heads, buffers.head_dim, q.dtype, buffers.layout, scale)
-    if holder.planned_for != key:
+    window_left = -1 if window is None else window - 1
+    kv_dtype = buffers.k.dtype
+    key: _PlanKey = (
+        heads,
+        buffers.num_kv_heads,
+        buffers.head_dim,
+        q.dtype,
+        kv_dtype,
+        buffers.layout,
+        scale,
+        window_left,
+    )
+    wrapper = holder.planned.get(key)
+    if wrapper is None:
         if capturing(q):
             raise BackendError(
                 f"{op}: the step must be planned for these heads before a CUDA graph capture; "
                 "run it once eagerly first",
                 context={"op": op},
             )
-        _plan_wrapper(holder, key, q.device)
-    holder.wrapper.run(q, (buffers.k, buffers.v), out=out)
+        wrapper = _plan_wrapper(holder, key, q.device)
+    scale_kwargs: dict[str, float] = (
+        {"k_scale": buffers.k_scale, "v_scale": buffers.v_scale}
+        if buffers.codec == FP8_E4M3_CODEC
+        else {}
+    )
+    if sinks is None:
+        wrapper.run(q, (buffers.k, buffers.v), out=out, **scale_kwargs)
+    else:
+        if holder.decode:
+            _, lse = wrapper.run(
+                q, (buffers.k, buffers.v), out=out, return_lse=True, **scale_kwargs
+            )
+            lse_e = lse.float() * _LN2
+        else:
+            _, lse = wrapper.run(
+                q,
+                (buffers.k, buffers.v),
+                out=out,
+                return_lse=True,
+                lse_base="ln",
+                **scale_kwargs,
+            )
+            lse_e = lse.float()
+        sink_gate = torch.sigmoid(lse_e - sinks.float()[None, :]).unsqueeze(-1)
+        out.copy_((out.float() * sink_gate).to(out.dtype))
     out.masked_fill_(~holder.real_rows[:, None, None], 0.0)
 
 
@@ -344,12 +442,15 @@ def graph_metadata(
         indptr=torch.zeros(num_requests + 1, dtype=torch.int32, device=target),
         indices=torch.zeros(capacity, dtype=torch.int32, device=target),
         last_page_len=torch.zeros(num_requests, dtype=torch.int32, device=target),
+        mla_qo_indptr=torch.arange(num_requests + 1, dtype=torch.int32, device=target),
+        mla_kv_len=torch.ones(num_requests, dtype=torch.int32, device=target),
         indptr_host=host(num_requests + 1),
         indices_host=host(capacity),
         indices_device=torch.zeros(capacity, dtype=torch.int32, device=target),
         last_host=host(num_requests),
         real_host=host(num_requests, torch.bool),
         wrappers={},
+        mla_wrappers={},
     )
     lengths = [0] * num_requests
     _, kv_indptr, indices, last = _csr(
@@ -362,6 +463,7 @@ def graph_metadata(
         kv_indptr=_ints(kv_indptr),
         kv_indices=_ints(indices),
         last_page_len=_ints(last),
+        mla_kv_len=_ints([1] * num_requests),
         real_rows=torch.zeros(num_requests, dtype=torch.bool, device=target),
         graph=buffers,
     )
@@ -390,10 +492,15 @@ def update_graph_metadata(
     holder.kv_indptr = graph.indptr_host
     holder.kv_indices = graph.indices_device[:used]
     holder.last_page_len = graph.last_host
+    holder.mla_kv_len = _ints([length if length else 1 for length in lengths])
     graph.real_host.copy_(kv_lengths > 0)
     holder.real_rows.copy_(graph.real_host, non_blocking=True)
-    if holder.planned_for is not None:
-        _plan_wrapper(holder, holder.planned_for, holder.real_rows.device)
+    if holder.planned:
+        device = holder.real_rows.device
+        for key in list(holder.planned):
+            _plan_wrapper(holder, key, device)
+    for replan in holder.mla_replanners:
+        replan()
 
 
 def _host_ints(tensor: torch.Tensor) -> list[int]:

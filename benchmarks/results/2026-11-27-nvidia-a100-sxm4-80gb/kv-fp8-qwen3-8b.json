@@ -1,0 +1,200 @@
+{
+  "benchmark": "kv_fp8_gate",
+  "machine": {
+    "date": "2026-11-27T12:01:03+00:00",
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "capability": [
+      8,
+      0
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "f49cc0466d99a2e707e44343e6ef9ab3ef6d2784-dirty"
+  },
+  "model": "Qwen/Qwen3-8B",
+  "dtype": "bf16",
+  "backends": [
+    "flashinfer",
+    "torch"
+  ],
+  "kv_fp8_scale": 1.0,
+  "capacity": {
+    "auto_bytes_per_token": 147456,
+    "fp8_bytes_per_token": 73728,
+    "auto_kv_blocks": 25327,
+    "fp8_kv_blocks": 50693,
+    "auto_max_running_at_4k": 98,
+    "fp8_max_running_at_4k": 198,
+    "capacity_ratio": 2.0015398586488726
+  },
+  "quality_kl": {
+    "threshold_nats": 0.05,
+    "mean_kl_nats": 0.007683346426114094,
+    "max_kl_nats": 0.12950284779071808,
+    "top1_agreement": 1.0,
+    "mean_reference_entropy_nats": 0.16413537567741074,
+    "passes": true
+  },
+  "needle": {
+    "target_tokens": 4096,
+    "auto": [
+      {
+        "depth": 0.25,
+        "passkey": "749201",
+        "hit": true,
+        "text": "749201"
+      },
+      {
+        "depth": 0.5,
+        "passkey": "381649",
+        "hit": true,
+        "text": "381649"
+      },
+      {
+        "depth": 0.75,
+        "passkey": "905312",
+        "hit": true,
+        "text": "905312"
+      }
+    ],
+    "fp8": [
+      {
+        "depth": 0.25,
+        "passkey": "749201",
+        "hit": true,
+        "text": "749201"
+      },
+      {
+        "depth": 0.5,
+        "passkey": "381649",
+        "hit": true,
+        "text": "381649"
+      },
+      {
+        "depth": 0.75,
+        "passkey": "905312",
+        "hit": true,
+        "text": "905312"
+      }
+    ],
+    "auto_all_pass": true,
+    "fp8_all_pass": true
+  },
+  "latency_abba": {
+    "decode_tokens": 65,
+    "raw_runs": [
+      {
+        "kv_dtype": "auto",
+        "needle": [
+          {
+            "depth": 0.25,
+            "passkey": "749201",
+            "hit": true,
+            "text": "749201"
+          },
+          {
+            "depth": 0.5,
+            "passkey": "381649",
+            "hit": true,
+            "text": "381649"
+          },
+          {
+            "depth": 0.75,
+            "passkey": "905312",
+            "hit": true,
+            "text": "905312"
+          }
+        ],
+        "batch1_ms_per_step": 16.88439906251915,
+        "batch8_ms_per_step": 19.357027671901506
+      },
+      {
+        "kv_dtype": "fp8",
+        "needle": [
+          {
+            "depth": 0.25,
+            "passkey": "749201",
+            "hit": true,
+            "text": "749201"
+          },
+          {
+            "depth": 0.5,
+            "passkey": "381649",
+            "hit": true,
+            "text": "381649"
+          },
+          {
+            "depth": 0.75,
+            "passkey": "905312",
+            "hit": true,
+            "text": "905312"
+          }
+        ],
+        "batch1_ms_per_step": 17.61702664060749,
+        "batch8_ms_per_step": 20.040332703160857
+      },
+      {
+        "kv_dtype": "fp8",
+        "needle": [
+          {
+            "depth": 0.25,
+            "passkey": "749201",
+            "hit": true,
+            "text": "749201"
+          },
+          {
+            "depth": 0.5,
+            "passkey": "381649",
+            "hit": true,
+            "text": "381649"
+          },
+          {
+            "depth": 0.75,
+            "passkey": "905312",
+            "hit": true,
+            "text": "905312"
+          }
+        ],
+        "batch1_ms_per_step": 17.789198781201776,
+        "batch8_ms_per_step": 19.97806798436841
+      },
+      {
+        "kv_dtype": "auto",
+        "needle": [
+          {
+            "depth": 0.25,
+            "passkey": "749201",
+            "hit": true,
+            "text": "749201"
+          },
+          {
+            "depth": 0.5,
+            "passkey": "381649",
+            "hit": true,
+            "text": "381649"
+          },
+          {
+            "depth": 0.75,
+            "passkey": "905312",
+            "hit": true,
+            "text": "905312"
+          }
+        ],
+        "batch1_ms_per_step": 16.962291640652438,
+        "batch8_ms_per_step": 19.355979484430463
+      }
+    ],
+    "auto_batch1_ms": 16.923345351585795,
+    "fp8_batch1_ms": 17.703112710904634,
+    "auto_batch8_ms": 19.356503578165984,
+    "fp8_batch8_ms": 20.009200343764633,
+    "batch1_speedup": 0.9559530929925942,
+    "batch8_speedup": 0.9673801674037391
+  }
+}
