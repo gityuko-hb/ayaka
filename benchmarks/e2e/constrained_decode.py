@@ -187,6 +187,7 @@ def _engine(args: argparse.Namespace, *, graphs: bool) -> LLM:
             **({} if args.memory_ratio is None else {"memory_ratio": args.memory_ratio}),
         ),
         scheduler=SchedulerConfig(max_running=top, max_tokens_per_step=512),
+        structured_backend=args.structured_backend,
     )
     return LLM.from_config(config)
 
@@ -469,6 +470,12 @@ def main() -> None:
         action="store_true",
         help="also time a free decode on a second engine without graphs (reference only; the "
         "second engine does not fit next to the first with flashinfer on a 4 GB GPU)",
+    )
+    parser.add_argument(
+        "--structured-backend",
+        choices=("llguidance", "xgrammar"),
+        default="llguidance",
+        help="the grammar backend the engine compiles the constraint with",
     )
     parser.add_argument("--out")
     args = parser.parse_args()
