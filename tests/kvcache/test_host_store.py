@@ -207,3 +207,101 @@ def test_host_kv_store_concurrent_offload_and_promote_race_free() -> None:
         assert not errors
     finally:
         host.close()
+
+
+@pytest.mark.gpu
+def test_a_block_reused_right_after_its_offload_still_comes_back_exact_on_cuda() -> None:
+    # The offload copy runs on a side stream; the block's next owner writes it on the main stream
+    # at once (a prefill, a promotion). Without ordering, the copy reads the new contents.
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    spec = KVSpec(
+        num_layers=36,
+        num_kv_heads=8,
+        head_dim=128,
+        block_size=16,
+        dtype=DType.BF16,
+        layout=KVLayoutKind.NHD,
+    )
+    group = KVGroup(layer_ids=tuple(range(36)), spec=spec)
+    pool = KVPool(group, 64, device="cuda")
+    host = HostKVStore([group], capacity_blocks=64, pinned=True, allow_pageable=False)
+    try:
+        expected: dict[int, tuple[Any, Any]] = {}
+        for block in range(1, 33):
+            k, v = pool.block_tensors(block)
+            k.copy_(torch.randn_like(k))
+            v.copy_(torch.randn_like(v))
+            expected[block] = (k.clone(), v.clone())
+        for block in range(1, 33):
+            # Work still queued on the main stream: the offload copy must wait for it, and the
+            # overwrite below is queued behind the same work, so both become ready together.
+            torch.cuda._sleep(20_000_000)
+            assert host.offload(0, block, bytes([block]) * 16, pool)
+            k, v = pool.block_tensors(block)
+            k.zero_()  # the next owner overwrites the block immediately
+            v.zero_()
+        host.flush()
+        for block in range(1, 33):
+            target = block + 31  # a different device block
+            assert host.promote(bytes([block]) * 16, [target], [pool])
+            k, v = pool.block_tensors(target)
+            torch.cuda.synchronize()
+            assert torch.equal(k, expected[block][0]), f"keys of block {block} changed"
+            assert torch.equal(v, expected[block][1]), f"values of block {block} changed"
+    finally:
+        host.close()
+
+
+def test_promoting_the_tail_never_reuses_a_head_block_matched_in_vram() -> None:
+    # A conversation's first blocks are still cached in VRAM, its last ones only in host RAM.
+    # Promoting the last ones allocates device blocks; the head blocks hold no reference yet, so
+    # they must not be the blocks handed out.
+    group = _group(block_size=4)
+    pools = [KVPool(group, 6, device="cpu")]  # 5 usable blocks
+    host = HostKVStore([group], capacity_blocks=16, pinned=False, allow_pageable=True)
+    kv = KVCacheManager(
+        [group],
+        [6],
+        max_requests=4,
+        max_blocks_per_request=6,
+        prefix=HashPrefixCache(_root(4)),
+        host_store=host,
+        pools=pools,
+    )
+    try:
+        tokens = [*range(10, 26), 99]  # 4 full blocks and a tail token
+        first = kv.match_and_promote_prefix(tokens, None)
+        assert kv.allocate(RequestId("a"), len(tokens), first)
+        ids = kv.blocks(RequestId("a"))[0]
+        for index, block in enumerate(ids[:4]):
+            pools[0]._k[:, block].fill_(float(index + 1))
+            pools[0]._v[:, block].fill_(float(-(index + 1)))
+        kv.commit(RequestId("a"), len(tokens))
+        kv.cache_blocks(RequestId("a"), tokens[:16])
+        kv.free(RequestId("a"))
+
+        other = [*range(50, 58), 98]  # takes free blocks and evicts the least recent of "a"
+        m = kv.match_and_promote_prefix(other, None)
+        assert kv.allocate(RequestId("b"), len(other), m)
+        kv.commit(RequestId("b"), len(other))
+        kv.cache_blocks(RequestId("b"), other[:8])  # every free block now holds a digest
+        kv.free(RequestId("b"))
+        host.flush()
+        resident = kv.match_prefix(tokens, None)
+        assert resident is not None
+        assert 0 < resident.num_blocks < 4  # a head in VRAM, a tail on the host
+
+        promoted = kv.match_and_promote_prefix(tokens, None)
+        assert promoted is not None
+        assert promoted.num_blocks == 4
+        blocks = promoted.blocks[0]
+        assert len(set(blocks)) == 4
+        for index, block in enumerate(blocks):
+            assert torch.equal(pools[0]._k[:, block], torch.full_like(pools[0]._k[:, 0], index + 1))
+            assert torch.equal(
+                pools[0]._v[:, block], torch.full_like(pools[0]._v[:, 0], -(index + 1))
+            )
+        kv.check_integrity()
+    finally:
+        host.close()

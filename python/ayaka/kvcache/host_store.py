@@ -83,18 +83,23 @@ class HostKVStore:
         all_pinned = True
         for group in self._groups:
             spec = group.spec
+            # Slot-major: one block's keys (or values) across every layer are one contiguous
+            # region, so offloading or promoting it is one DMA. Layer-major slices
+            # (``[:, slot]``) are strided, and a strided pinned copy goes through a pageable
+            # temporary gathered on the CPU (Qwen3-8B: a 4K-token promotion took as long as
+            # computing the prefill again).
             if spec.layout is KVLayoutKind.NHD:
                 shape = (
-                    spec.num_layers,
                     cap,
+                    spec.num_layers,
                     spec.block_size,
                     spec.num_kv_heads,
                     spec.head_dim,
                 )
             else:
                 shape = (
-                    spec.num_layers,
                     cap,
+                    spec.num_layers,
                     spec.num_kv_heads,
                     spec.block_size,
                     spec.head_dim,
@@ -214,9 +219,14 @@ class HostKVStore:
                 stream = self._cuda_stream(pool.device)
                 stream.wait_stream(self._torch.cuda.current_stream(pool.device))
                 with self._torch.cuda.stream(stream):
-                    self._k_hosts[group_idx][:, slot].copy_(k_src, non_blocking=True)
-                    self._v_hosts[group_idx][:, slot].copy_(v_src, non_blocking=True)
+                    self._k_hosts[group_idx][slot].copy_(k_src, non_blocking=True)
+                    self._v_hosts[group_idx][slot].copy_(v_src, non_blocking=True)
                 event = stream.record_event()
+                # The block goes back to the free list now and its next owner writes it on the
+                # main stream (a prefill, or a promotion into it right away): that write must
+                # wait for this copy to have read the block. A wait on the device; the host
+                # does not block.
+                self._torch.cuda.current_stream(pool.device).wait_event(event)
                 self._inflight[group_idx][digest] = _InFlightOffload(slot=slot, event=event)
             else:
                 k_snap = k_src.detach().clone()
@@ -228,8 +238,8 @@ class HostKVStore:
                     k_copy: Tensor = k_snap,
                     v_copy: Tensor = v_snap,
                 ) -> None:
-                    self._k_hosts[g][:, target_slot].copy_(k_copy)
-                    self._v_hosts[g][:, target_slot].copy_(v_copy)
+                    self._k_hosts[g][target_slot].copy_(k_copy)
+                    self._v_hosts[g][target_slot].copy_(v_copy)
 
                 future = self._executor.submit(_write)
                 self._inflight[group_idx][digest] = _InFlightOffload(slot=slot, future=future)
@@ -276,8 +286,8 @@ class HostKVStore:
             slot = resolved_slots[g]
             pool.copy_block_from(
                 dst_block_id,
-                self._k_hosts[g][:, slot],
-                self._v_hosts[g][:, slot],
+                self._k_hosts[g][slot],
+                self._v_hosts[g][slot],
                 non_blocking=(pool.device.type == "cuda"),
             )
         with self._lock:
