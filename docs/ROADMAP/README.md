@@ -3,7 +3,7 @@
 Internal source of truth for the Ayaka capability roadmap and sequential **Execution Nodes**.
 Public tracking index: [gityuko-hb/ayaka#62](https://github.com/gityuko-hb/ayaka/issues/62).
 
-**Last updated:** `2026-11-27` (synced against `main` @ `e4d0524`, the milestone order decided on `2026-11-27`,
+**Last updated:** `2026-11-27` (synced against `main` @ `fe0e4f7`, the milestone order decided on `2026-11-27`,
 and the open pull requests and issues of each milestone listed below).
 
 ## How This Roadmap Works
@@ -68,7 +68,7 @@ for (memory), and its cost-aware controller and benchmarks depend on the per-tok
 | 2 | **Memory** | `0.2.0-a2` | 10 | **planned** (not filed; open PRs #141, #142, issue #140) | [M06-memory.md](M06-memory.md) |
 | 3 | **Fast Quantized Kernels (FP8 & W4A16)** | `0.2.0-a3` | 5 | **planned** (not filed) | [M07-fast-quant.md](M07-fast-quant.md) |
 | 4 | **Speculative decoding** | `0.2.0-a4` | 5 | **in progress** (#127–#129, PRs #131–#133, #135; PR #134 moved to step 13 of Serving Core v2) | [M04-speculative.md](M04-speculative.md) |
-| 5 | **Hybrid dense, state and vision** | `0.2.0-a5` | 8 | **planned** (not filed) | [M08-hybrid-vision.md](M08-hybrid-vision.md) |
+| 5 | **Hybrid dense, state and vision** | `0.2.0-a5` | 8 | **done on A100** (#147; PRs #148, #149, #150; NVIDIA L4 and full DeepSeek checkpoint untested) | [M08-hybrid-vision.md](M08-hybrid-vision.md) |
 | 6 | **MoE on small machines** | `0.2.0-a6` | 7 | **planned** (not filed) | [M09-moe-small-machines.md](M09-moe-small-machines.md) |
 | 7 | **Agent platform** | `0.2.0-a7` | 7 | **planned** (not filed) | [M10-agent-platform.md](M10-agent-platform.md) |
 | 8 | **Frontier MoE & `0.2.0` Public PyPI GA** | **`0.2.0`** | 8 | **planned** (not filed) | [M11-frontier-moe.md](M11-frontier-moe.md) |
