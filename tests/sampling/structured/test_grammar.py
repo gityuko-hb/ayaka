@@ -24,12 +24,15 @@ def _embedded(text: str, rule: str) -> dict[str, object]:
     return json.loads(line.removeprefix(f"{rule}: %json "))
 
 
-def test_a_json_schema_is_embedded_compact() -> None:
+_LAYOUT = {"whitespace_flexible": False, "item_separator": ", ", "key_separator": ": "}
+
+
+def test_a_json_schema_is_embedded_with_the_single_line_layout() -> None:
     params = StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema={"type": "integer"})
 
     schema = _embedded(grammar_text(params), "start")
 
-    assert schema == {"type": "integer", "x-guidance": {"whitespace_flexible": False}}
+    assert schema == {"type": "integer", "x-guidance": _LAYOUT}
 
 
 def test_a_schema_with_its_own_options_keeps_them() -> None:
@@ -122,11 +125,7 @@ def test_an_optional_call_without_markers_follows_the_tool_schemas(strict: bool)
     assert blank == r"BLANK: /[ \t\r\n]+/"
     schema = json.loads(call.removeprefix("call: %json "))
     assert schema["properties"]["parameters"]["properties"] == {"city": {"type": "string"}}
-    assert schema["x-guidance"] == (
-        {"whitespace_flexible": False}
-        if strict
-        else {"whitespace_flexible": False, "lenient": True}
-    )
+    assert schema["x-guidance"] == (_LAYOUT if strict else {**_LAYOUT, "lenient": True})
 
 
 def test_an_optional_call_with_markers_keeps_loose_arguments_unless_strict() -> None:
