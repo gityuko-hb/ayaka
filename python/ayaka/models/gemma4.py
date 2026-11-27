@@ -10,21 +10,30 @@ from torch.nn import functional
 
 from ayaka.configs.model import RopeScaling
 from ayaka.core.errors import ModelLoadError
+from ayaka.core.types import ForwardMode, KVLayoutKind
 from ayaka.kvcache.storage.spec import KVGroup, KVSpec
 from ayaka.layers.embedding.token import LMHead, TokenEmbedding
 from ayaka.layers.ffn.dense import GatedMLP
 from ayaka.layers.linear import Linear
 from ayaka.layers.norm import RMSNorm, ScalelessRMSNorm
 from ayaka.layers.rope import RotaryEmbedding
+from ayaka.models._vision_common import VisionLifecycle
+from ayaka.models._vision_gemma4 import Gemma4VisionTower
 from ayaka.models.base import CausalLM
-from ayaka.ops.kvcache import RAW_CODEC
+from ayaka.ops.kvcache import FP8_E4M3_CODEC, RAW_CODEC
+from ayaka.utils.math_utils import div_ceil
 from ayaka.weights.mapping import WeightMapping
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
     from ayaka.configs.model import ModelConfig
-    from ayaka.core.types import KVLayoutKind
+    from ayaka.core.multimodal import ImageInput
     from ayaka.layers.context import ForwardContext
+    from ayaka.ops.attention import AttentionMetadata
     from ayaka.ops.backend import OpsBackend
+    from ayaka.ops.kvcache import KVBuffers
     from ayaka.utils.dtypes import DType
     from ayaka.weights.quant import QuantFormat
 
@@ -88,6 +97,7 @@ class _Gemma4Attention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.kv_source_layer = kv_source_layer
         self.is_shared = kv_source_layer is not None
+        self.use_bidirectional_vision = config.use_bidirectional_vision
         self.rotary = rotary
 
         self.q_proj = Linear(
@@ -169,9 +179,73 @@ class _Gemma4Attention(nn.Module):
             self.rotary(meta.positions, q, k)
             self._kvcache.store(k, v, buffers, meta)
 
-        attended = torch.empty_like(q)
-        self._attention.attend(q, buffers, meta, attended, scale=1.0, window=self.window)
+        if (
+            self.use_bidirectional_vision
+            and self.is_sliding
+            and context.mode is ForwardMode.PREFILL
+            and context.bidirectional_spans
+            and isinstance(meta.block_table, torch.Tensor)
+        ):
+            attended = self._attend_sliding_bidirectional(
+                q, buffers, meta, meta.block_table, context.bidirectional_spans
+            )
+        else:
+            attended = torch.empty_like(q)
+            self._attention.attend(q, buffers, meta, attended, scale=1.0, window=self.window)
         return self.o_proj(attended.reshape(rows, self.num_heads * self.head_dim))
+
+    def _attend_sliding_bidirectional(
+        self,
+        q: torch.Tensor,
+        buffers: KVBuffers,
+        meta: AttentionMetadata,
+        block_table: torch.Tensor,
+        spans: tuple[tuple[int, int], ...],
+    ) -> torch.Tensor:
+        out = torch.empty_like(q)
+        rows_list = [
+            int(meta.rows_per_request[i].item()) for i in range(meta.rows_per_request.shape[0])
+        ]
+        lens_list = [int(meta.kv_lengths[i].item()) for i in range(meta.kv_lengths.shape[0])]
+        k_pool = buffers.k if buffers.layout is KVLayoutKind.NHD else buffers.k.transpose(1, 2)
+        v_pool = buffers.v if buffers.layout is KVLayoutKind.NHD else buffers.v.transpose(1, 2)
+        offset = 0
+        for req_idx, (n_q, n_k) in enumerate(zip(rows_list, lens_list, strict=True)):
+            if n_q <= 0:
+                continue
+            num_blocks = div_ceil(n_k, buffers.block_size)
+            block_ids = block_table[req_idx, :num_blocks].to(torch.long)
+            k_seq = k_pool[block_ids].reshape(-1, self.num_kv_heads, self.head_dim)[:n_k]
+            v_seq = v_pool[block_ids].reshape(-1, self.num_kv_heads, self.head_dim)[:n_k]
+            if buffers.codec == FP8_E4M3_CODEC:
+                k_seq = k_seq.to(q.dtype) * buffers.k_scale
+                v_seq = v_seq.to(q.dtype) * buffers.v_scale
+            q_req = q[offset : offset + n_q].transpose(0, 1).unsqueeze(0)
+            k_req = k_seq.transpose(0, 1).unsqueeze(0)
+            v_req = v_seq.transpose(0, 1).unsqueeze(0)
+            if self.num_kv_heads != self.num_heads:
+                rep = self.num_heads // self.num_kv_heads
+                k_req = k_req.repeat_interleave(rep, dim=1)
+                v_req = v_req.repeat_interleave(rep, dim=1)
+            q_pos = torch.arange(n_k - n_q, n_k, device=q.device)[:, None]
+            k_pos = torch.arange(n_k, device=q.device)[None, :]
+            mask = k_pos <= q_pos
+            if self.window is not None:
+                mask = mask & ((q_pos - k_pos) < self.window)
+            start_pos = n_k - n_q
+            for s, e in spans:
+                ls, le = max(s - offset, 0), min(e - offset, n_q)
+                if le > ls:
+                    ks, ke = start_pos + ls, start_pos + le
+                    mask[ls:le, ks:ke] = True
+            if self.window is not None:
+                mask = mask & ((q_pos - k_pos).abs() < self.window)
+            att = functional.scaled_dot_product_attention(
+                q_req, k_req, v_req, attn_mask=mask.unsqueeze(0).unsqueeze(0), scale=1.0
+            )
+            out[offset : offset + n_q] = att.squeeze(0).transpose(0, 1)
+            offset += n_q
+        return out
 
 
 class _Gemma4Block(nn.Module):
@@ -358,6 +432,17 @@ class Gemma4ForConditionalGeneration(CausalLM):
         self.embed_tokens = TokenEmbedding(
             config.vocab_size, config.hidden_size, ops=ops, dtype=torch_dtype, device=device
         )
+        vision_tower = (
+            Gemma4VisionTower(config, dtype=torch_dtype, device="meta")
+            if config.has_vision
+            else None
+        )
+        self._vision = VisionLifecycle(
+            vision_tower,
+            config.vision_spec,
+            dtype=torch_dtype,
+            device_fn=lambda: self.embed_tokens.weight.device,
+        )
         if self._ple_dim > 0:
             self.embed_tokens_per_layer: TokenEmbedding | None = TokenEmbedding(
                 config.vocab_size,
@@ -516,10 +601,48 @@ class Gemma4ForConditionalGeneration(CausalLM):
             rows, num_layers, self._ple_dim
         )
         proj = self.per_layer_projection_norm(proj)
-        tok_ple = (self.embed_tokens_per_layer(token_ids) * self._tok_ple_scale).reshape(
+        safe_ids = self._safe_token_ids(token_ids)
+        tok_ple = (self.embed_tokens_per_layer(safe_ids) * self._tok_ple_scale).reshape(
             rows, num_layers, self._ple_dim
         )
         return (proj + tok_ple) * self._inp_ple_scale
+
+    def _safe_token_ids(self, token_ids: torch.Tensor) -> torch.Tensor:
+        if self.config.image_token_id is None:
+            return token_ids
+        return torch.where(
+            token_ids == self.config.image_token_id, self.config.pad_token_id, token_ids
+        )
+
+    def embed_input_ids(self, token_ids: torch.Tensor) -> torch.Tensor:
+        return self.embed_tokens(self._safe_token_ids(token_ids)) * self._embed_scale
+
+    def has_vision_tower(self) -> bool:
+        return self._vision.has_tower
+
+    def vision_loaded(self) -> bool:
+        return self._vision.is_loaded
+
+    def vision_weight_bytes(self) -> int:
+        return self._vision.weight_bytes()
+
+    def vision_activation_bytes(self) -> int:
+        return self._vision.activation_bytes()
+
+    def attach_vision_source(self, directory: Path, *, lazy: bool) -> None:
+        self._vision.attach(directory, lazy=lazy)
+
+    def ensure_vision_loaded(self) -> None:
+        self._vision.ensure_loaded()
+
+    def release_vision(self) -> None:
+        self._vision.release()
+
+    def uses_bidirectional_vision(self) -> bool:
+        return self.config.use_bidirectional_vision
+
+    def encode_images(self, images: Sequence[ImageInput]) -> tuple[torch.Tensor, ...]:
+        return self._vision.encode(images)
 
     def forward(self, token_ids: torch.Tensor, context: ForwardContext) -> torch.Tensor:
         if context.input_embeds is not None:

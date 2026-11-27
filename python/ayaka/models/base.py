@@ -54,14 +54,18 @@ from typing import TYPE_CHECKING, ClassVar
 import torch
 from torch import nn
 
-from ayaka.core.errors import ModelLoadError
+from ayaka.core.errors import ModelLoadError, UnsupportedFeatureError
 from ayaka.kvcache.storage.spec import KVGroup, KVSpec, LatentKVGroup, RecurrentStateGroup
 from ayaka.ops.kvcache import RAW_CODEC
 from ayaka.utils.dtypes import DType
 from ayaka.weights.spec import TensorSpec
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
     from ayaka.configs.model import ModelConfig
+    from ayaka.core.multimodal import ImageInput, ImageSpan
     from ayaka.core.types import KVLayoutKind
     from ayaka.layers.context import ForwardContext
     from ayaka.layers.quantization.method import QuantMethod
@@ -247,6 +251,64 @@ class CausalLM(nn.Module, ABC):
     def vision_weight_bytes(self) -> int:
         """Bytes held by vision tower and projector parameters, or 0 for text models."""
         return 0
+
+    def vision_activation_bytes(self) -> int:
+        """Estimated vision workspace activation bytes for one standard image, or 0."""
+        return 0
+
+    def has_vision_tower(self) -> bool:
+        """Whether this model instance owns a multimodal vision tower."""
+        return False
+
+    def vision_loaded(self) -> bool:
+        """Whether the vision tower parameters are materialized on the compute device."""
+        return False
+
+    def attach_vision_source(self, directory: Path, *, lazy: bool) -> None:
+        """Bind ``directory`` for eager or lazy vision tower weight loading."""
+        del directory, lazy
+
+    def ensure_vision_loaded(self) -> None:
+        """Materialize and load vision tower weights when lazily attached."""
+        return None
+
+    def release_vision(self) -> None:
+        """Drop materialized vision tower tensors to free device memory."""
+        return None
+
+    def uses_bidirectional_vision(self) -> bool:
+        """Whether sliding attention uses bidirectional intra-image masks during prefill."""
+        return False
+
+    def uses_multimodal_decode_offsets(self) -> bool:
+        """Whether decode steps after image prompts need position delta offsets outside graphs."""
+        return False
+
+    def encode_images(self, images: Sequence[ImageInput]) -> tuple[torch.Tensor, ...]:
+        """Encode validated images into language-model-space feature tensors."""
+        del images
+        raise UnsupportedFeatureError(f"{type(self).__name__} does not support image inputs")
+
+    def embed_input_ids(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Compute initial token embeddings for multimodal prefill scatter."""
+        del token_ids
+        raise UnsupportedFeatureError(
+            f"{type(self).__name__} does not expose input token embeddings"
+        )
+
+    def multimodal_position_ids(
+        self,
+        prompt_lengths: Sequence[int],
+        spans: Sequence[Sequence[ImageSpan]],
+        starts: Sequence[int],
+        rows: Sequence[int],
+        *,
+        is_prefill: bool,
+        device: torch.device,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Compute optional 3D multimodal RoPE positions and 1D decode position offsets."""
+        del prompt_lengths, spans, starts, rows, is_prefill, device
+        return None, None
 
     def checkpoint_specs(self) -> list[TensorSpec]:
         """List every parameter as the checkpoint stores it.

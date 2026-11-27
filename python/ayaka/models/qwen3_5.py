@@ -21,13 +21,19 @@ from ayaka.layers.ffn.dense import GatedMLP
 from ayaka.layers.linear import Linear
 from ayaka.layers.norm import RMSNorm
 from ayaka.layers.rope import RotaryEmbedding
+from ayaka.models._vision_common import VisionLifecycle
+from ayaka.models._vision_qwen3_5 import Qwen3_5VisionTower
 from ayaka.models.base import CausalLM
 from ayaka.ops.kvcache import RAW_CODEC
 from ayaka.utils.dtypes import DType
 from ayaka.weights.mapping import WeightMapping
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
     from ayaka.configs.model import ModelConfig
+    from ayaka.core.multimodal import ImageInput, ImageSpan
     from ayaka.core.types import KVLayoutKind
     from ayaka.layers.context import ForwardContext
     from ayaka.ops.backend import OpsBackend
@@ -88,6 +94,7 @@ class _Qwen35FullAttention(nn.Module):
         self.output_gate = config.attn_output_gate
         self.scale = config.head_dim**-0.5
         self.rotary = rotary
+        self.mrope_section = config.mrope_section or (11, 11, 10)
 
         q_mult = 2 if config.attn_output_gate else 1
         self.q_proj = Linear(
@@ -160,7 +167,12 @@ class _Qwen35FullAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
         meta = context.attention_for(self.layer_id)
-        self.rotary(meta.positions, q, k)
+        if context.mrope_positions is not None:
+            self.rotary.apply_mrope(context.mrope_positions, q, k, self.mrope_section)
+        elif context.rope_position_offsets is not None:
+            self.rotary(meta.positions + context.rope_position_offsets, q, k)
+        else:
+            self.rotary(meta.positions, q, k)
         buffers = context.buffers(self.layer_id)
         self._kvcache.store(k, v, buffers, meta)
         attended = torch.empty_like(q)
@@ -304,6 +316,19 @@ class Qwen3_5ForConditionalGeneration(CausalLM):  # noqa: N801 -- matches Huggin
         self.embed_tokens = TokenEmbedding(
             config.vocab_size, config.hidden_size, ops=ops, dtype=torch_dtype, device=device
         )
+        spec = config.vision_spec
+        self._spatial_merge = spec.spatial_merge_size if spec is not None else 2
+        vision_tower = (
+            Qwen3_5VisionTower(config, dtype=torch_dtype, device="meta")
+            if config.has_vision
+            else None
+        )
+        self._vision = VisionLifecycle(
+            vision_tower,
+            spec,
+            dtype=torch_dtype,
+            device_fn=lambda: self.embed_tokens.weight.device,
+        )
         self.layers = nn.ModuleList(
             _Qwen35Block(config, layer_id, self.rotary, ops=ops, dtype=torch_dtype, device=device)
             for layer_id in range(config.num_layers)
@@ -398,5 +423,110 @@ class Qwen3_5ForConditionalGeneration(CausalLM):  # noqa: N801 -- matches Huggin
     def compute_logits(self, hidden_rows: torch.Tensor) -> torch.Tensor:
         return self.lm_head(hidden_rows)
 
+    def has_vision_tower(self) -> bool:
+        return self._vision.has_tower
+
+    def uses_multimodal_decode_offsets(self) -> bool:
+        return self._vision.has_tower
+
+    def vision_loaded(self) -> bool:
+        return self._vision.is_loaded
+
+    def vision_weight_bytes(self) -> int:
+        return self._vision.weight_bytes()
+
+    def vision_activation_bytes(self) -> int:
+        return self._vision.activation_bytes()
+
+    def attach_vision_source(self, directory: Path, *, lazy: bool) -> None:
+        self._vision.attach(directory, lazy=lazy)
+
+    def ensure_vision_loaded(self) -> None:
+        self._vision.ensure_loaded()
+
+    def release_vision(self) -> None:
+        self._vision.release()
+
+    def encode_images(self, images: Sequence[ImageInput]) -> tuple[torch.Tensor, ...]:
+        return self._vision.encode(images)
+
+    def embed_input_ids(self, token_ids: torch.Tensor) -> torch.Tensor:
+        return self.embed_tokens(token_ids)
+
+    def multimodal_position_ids(
+        self,
+        prompt_lengths: Sequence[int],
+        spans: Sequence[Sequence[ImageSpan]],
+        starts: Sequence[int],
+        rows: Sequence[int],
+        *,
+        is_prefill: bool,
+        device: torch.device,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if is_prefill:
+            chunks = [
+                _qwen3_5_positions(prompt_len, req_spans, self._spatial_merge, device)[
+                    :, start : start + count
+                ]
+                for prompt_len, req_spans, start, count in zip(
+                    prompt_lengths, spans, starts, rows, strict=True
+                )
+            ]
+            return torch.cat(chunks, dim=1), None
+        offsets: list[int] = []
+        for prompt_len, req_spans, count in zip(prompt_lengths, spans, rows, strict=True):
+            delta = _qwen3_5_delta(prompt_len, req_spans, self._spatial_merge)
+            offsets.extend([delta] * count)
+        if not any(offsets):
+            return None, None
+        return None, torch.tensor(offsets, dtype=torch.int64, device=device)
+
     def _check_part_pattern(self, name: str) -> bool:
         return bool(re.fullmatch(r"layers\.\d+\.mlp\.gate_up_proj\.(weight|bias)", name))
+
+
+def _qwen3_5_delta(prompt_len: int, spans: Sequence[ImageSpan], merge: int) -> int:
+    pos = 0
+    cursor = 0
+    for span in spans:
+        pos += span.token_offset - cursor
+        _, gh, gw = span.grid_thw
+        pos += max(gh // merge, gw // merge)
+        cursor = span.token_offset + span.token_count
+    pos += prompt_len - cursor
+    return pos - prompt_len
+
+
+def _qwen3_5_positions(
+    prompt_len: int, spans: Sequence[ImageSpan], merge: int, device: torch.device
+) -> torch.Tensor:
+    parts: list[torch.Tensor] = []
+    pos = 0
+    cursor = 0
+    for span in spans:
+        if span.token_offset > cursor:
+            text_len = span.token_offset - cursor
+            parts.append(
+                torch.arange(text_len, dtype=torch.int64, device=device).view(1, -1).expand(3, -1)
+                + pos
+            )
+            pos += text_len
+        gt, gh, gw = span.grid_thw
+        lt, lh, lw = max(gt, 1), gh // merge, gw // merge
+        tg, hg, wg = torch.meshgrid(
+            torch.arange(lt, dtype=torch.int64, device=device) + pos,
+            torch.arange(lh, dtype=torch.int64, device=device) + pos,
+            torch.arange(lw, dtype=torch.int64, device=device) + pos,
+            indexing="ij",
+        )
+        parts.append(torch.stack((tg, hg, wg), dim=0).reshape(3, -1))
+        pos += max(lh, lw)
+        cursor = span.token_offset + span.token_count
+    if prompt_len > cursor:
+        text_len = prompt_len - cursor
+        parts.append(
+            torch.arange(text_len, dtype=torch.int64, device=device).view(1, -1).expand(3, -1) + pos
+        )
+    return (
+        torch.cat(parts, dim=1) if parts else torch.empty((3, 0), dtype=torch.int64, device=device)
+    )
