@@ -182,6 +182,7 @@ class TestRequireFrozen:
             math.inf,
             True,
             False,
+            b"png",
             Color.RED,
             (),
             (1,),

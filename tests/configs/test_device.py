@@ -21,6 +21,13 @@ class TestDeviceConfig:
         assert config.backends == ("torch",)
         assert not config.cuda_graph
         assert config.graph_buckets == (1, 2, 4, 8)
+        assert config.vision_load == "eager"
+
+    def test_vision_load_modes(self) -> None:
+        assert DeviceConfig(vision_load="lazy").vision_load == "lazy"
+        with pytest.raises(ConfigError) as caught:
+            DeviceConfig(vision_load="never")  # type: ignore[arg-type]  # deliberately invalid
+        assert caught.value.code == "INVALID_CHOICE"
 
     def test_is_frozen(self) -> None:
         with pytest.raises(FrozenInstanceError):

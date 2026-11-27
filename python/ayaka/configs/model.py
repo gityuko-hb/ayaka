@@ -29,6 +29,7 @@ from ayaka.configs._hf_model import (
 )
 from ayaka.configs.base import ConfigMixin
 from ayaka.core.errors import ConfigError
+from ayaka.core.multimodal import VisionSpec
 from ayaka.utils.validation import require_bool, require_int, require_number, require_text
 
 if TYPE_CHECKING:
@@ -293,9 +294,13 @@ class ModelConfig(ConfigMixin):
     v_head_dim: int = 0
     vision_config: Mapping[str, Any] | None = None
     image_token_id: int | None = None
+    boi_token_id: int | None = None
+    eoi_token_id: int | None = None
     vision_start_token_id: int | None = None
     vision_end_token_id: int | None = None
     vision_soft_tokens_per_image: int | None = None
+    pad_token_id: int = 0
+    use_bidirectional_vision: bool = False
 
     def __post_init__(self) -> None:
         require_text(self.architecture, "model.architecture")
@@ -406,6 +411,41 @@ class ModelConfig(ConfigMixin):
     def kv_group_size(self) -> int:
         """Query heads that share one key/value head (``1`` for multi-head attention)."""
         return self.num_attention_heads // self.num_kv_heads
+
+    @property
+    def has_vision(self) -> bool:
+        """Whether this architecture includes a multimodal vision tower."""
+        return self.vision_config is not None and self.image_token_id is not None
+
+    @property
+    def vision_spec(self) -> VisionSpec | None:
+        """Return multimodal tokenization/image geometry, or ``None`` for text-only models."""
+        if not self.has_vision or self.image_token_id is None:
+            return None
+        vc = self.vision_config or {}
+        if self.architecture == "Qwen3_5ForConditionalGeneration":
+            return VisionSpec(
+                family="qwen3_5",
+                image_token_id=self.image_token_id,
+                patch_size=int(vc.get("patch_size", 16)),
+                temporal_patch_size=int(vc.get("temporal_patch_size", 2)),
+                spatial_merge_size=int(vc.get("spatial_merge_size", 2)),
+                mrope_section=self.mrope_section,
+            )
+        if self.architecture == "Gemma4ForConditionalGeneration":
+            return VisionSpec(
+                family="gemma4",
+                image_token_id=self.image_token_id,
+                boi_token_id=self.boi_token_id,
+                eoi_token_id=self.eoi_token_id,
+                patch_size=int(vc.get("patch_size", 16)),
+                temporal_patch_size=1,
+                spatial_merge_size=int(vc.get("pooling_kernel_size", 3)),
+                max_soft_tokens=int(
+                    self.vision_soft_tokens_per_image or vc.get("default_output_length", 280)
+                ),
+            )
+        return None
 
     @classmethod
     def from_hf_config(cls, config: Mapping[str, object]) -> ModelConfig:
