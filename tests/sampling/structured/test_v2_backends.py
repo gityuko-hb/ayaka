@@ -19,9 +19,7 @@ from ayaka.core.constraints import (
 )
 from ayaka.core.params import SamplingParams
 from ayaka.core.types import RequestId
-from ayaka.sampling.logits import LogitRow, build_controls
 from ayaka.sampling.structured.compiler import GrammarCompiler
-from ayaka.sampling.structured.runtime import ConstraintRuntime
 from tokenizer_fakes import EOS, SPECIALS, FakeTokenizer
 
 if TYPE_CHECKING:
@@ -113,8 +111,8 @@ def _all_kinds_cases() -> list[tuple[StructuredParams, list[str]]]:
         "additionalProperties": False,
     }
     return [
-        (StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema), ['{"ok":true}']),
-        (StructuredParams(kind=ConstraintKind.JSON_OBJECT), ['{"a":"b"}']),
+        (StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema), ['{"ok": true}']),
+        (StructuredParams(kind=ConstraintKind.JSON_OBJECT), ['{"a": "b"}']),
         (StructuredParams(kind=ConstraintKind.REGEX, pattern="[ab]+[12]+"), ["aba12"]),
         (StructuredParams(kind=ConstraintKind.CHOICE, choices=("aba", "c12")), ["aba"]),
         (
@@ -148,7 +146,7 @@ def _all_kinds_cases() -> list[tuple[StructuredParams, list[str]]]:
                 tool_choice="required",
                 strict=True,
             ),
-            ['<tool_call>{"name":"ok","arguments":{"ok":true}}</tool_call>'],
+            ['<tool_call>{"name": "ok", "arguments": {"ok": true}}</tool_call>'],
         ),
     ]
 
@@ -166,7 +164,7 @@ def test_all_seven_constraint_kinds_and_rollback(backend_name: str) -> None:
     try:
         for params, samples in _all_kinds_cases():
             cid = compiler.compile(params)
-            matcher = compiler.matcher(cid)
+            matcher = compiler.matcher(cid, params)
             token_seq = [tid for s in samples for tid in tok.encode(s, add_special_tokens=False)]
             assert matcher.validate_tokens(token_seq)
             mask_before = matcher.mask()
@@ -187,8 +185,10 @@ def test_all_seven_constraint_kinds_and_rollback(backend_name: str) -> None:
 def test_guided_speculative_verification_matches_step_by_step_decoding() -> None:
     pytest.importorskip("torch")
     pytest.importorskip("llguidance")
-
     import torch
+
+    from ayaka.sampling.logits import LogitRow, build_controls
+    from ayaka.sampling.structured.runtime import ConstraintRuntime
 
     tok = _MiniTokenizer()
     compiler = GrammarCompiler(tok, vocab_size=tok.vocab_size, eos_token_ids=(EOS,))
@@ -197,7 +197,7 @@ def test_guided_speculative_verification_matches_step_by_step_decoding() -> None
     target_ids = tok.encode("aba12", add_special_tokens=False)
 
     # Non-speculative single-step masks
-    seq_matcher = compiler.matcher(cid)
+    seq_matcher = compiler.matcher(cid, params)
     seq_tokens: list[int] = []
     for expected in target_ids:
         runtime = ConstraintRuntime()
@@ -226,7 +226,7 @@ def test_guided_speculative_verification_matches_step_by_step_decoding() -> None
         seq_matcher.accept([drawn])
 
     # Speculative single verification window covering all draft positions in one shot
-    spec_matcher = compiler.matcher(cid)
+    spec_matcher = compiler.matcher(cid, params)
     drafts = target_ids[:-1]
     spec_runtime = ConstraintRuntime()
     spec_runtime.admit(RequestId("r1"), spec_matcher)

@@ -25,7 +25,7 @@ from ayaka.sampling.structured.backend import (
     json_openers,
     vocabulary_bytes,
 )
-from ayaka.sampling.structured.grammar import call_schema, grammar_text
+from ayaka.sampling.structured.grammar import JSON_SEPARATORS, call_schema, grammar_text
 from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
@@ -133,15 +133,8 @@ def _build_tokenizer_info(
     tokens, special_ids = vocabulary_bytes(tokenizer, vocab_size)
     openers = json_openers(tokens, set(special_ids) - set(eos))
     eos_list = sorted(eos) or None
-    hf_tok = getattr(tokenizer, "_tokenizer", None)
-    if hf_tok is not None and include_specials:
-        try:
-            info = xgr.TokenizerInfo.from_huggingface(
-                hf_tok, vocab_size=vocab_size, stop_token_ids=eos_list
-            )
-            return info, openers
-        except (TypeError, ValueError, RuntimeError) as exc:
-            _LOG.debug("TokenizerInfo.from_huggingface unavailable, using raw byte vocab: %s", exc)
+    # Latin-1 maps each byte to one character, which xgrammar's RAW vocabulary reads back as that
+    # byte, so tokens holding part of a UTF-8 character keep their exact bytes.
     encoded_vocab = [t.decode("latin1") if t else "" for t in tokens]
     if not include_specials:
         # Mask non-EOS special tokens out of JSON-only grammars.
@@ -242,10 +235,13 @@ class XGrammarBackend:
         if params.kind is ConstraintKind.JSON_SCHEMA:
             assert params.schema is not None  # noqa: S101
             return json_compiler.compile_json_schema(
-                _json_str(params.schema), any_whitespace=False, separators=(",", ":")
+                _json_str(params.schema), any_whitespace=False, separators=JSON_SEPARATORS
             )
         if params.kind is ConstraintKind.JSON_OBJECT:
-            return json_compiler.compile_builtin_json_grammar()
+            # Not the builtin JSON grammar: it allows any whitespace between tokens.
+            return json_compiler.compile_json_schema(
+                '{"type":"object"}', any_whitespace=False, separators=JSON_SEPARATORS
+            )
         if params.kind is ConstraintKind.REGEX:
             assert params.pattern is not None  # noqa: S101
             return full_compiler.compile_regex(params.pattern)
@@ -293,13 +289,15 @@ class XGrammarBackend:
         )
         if syntax.bare and not (params.parallel and syntax.separator):
             return json_compiler.compile_json_schema(
-                _json_str(schema), any_whitespace=False, separators=(",", ":")
+                _json_str(schema), any_whitespace=False, separators=JSON_SEPARATORS
             )
         if not syntax.bare:
-            lark = (
-                f"start: NEWLINE? call_body NEWLINE? {json.dumps(syntax.close)}\n"
-                f"call_body: %json {_json_str(schema)}\n"
-                'NEWLINE: "\\n"\n'
+            # One optional newline around the body, as Hermes writes it, then the closing marker;
+            # the body has the same layout as on llguidance.
+            newline = xgr.Grammar.from_ebnf('root ::= "\\n" | ""')
+            body = xgr.Grammar.from_json_schema(
+                _json_str(schema), any_whitespace=False, separators=JSON_SEPARATORS
             )
-            return full_compiler.compile_lark(lark)
+            close = xgr.Grammar.from_ebnf(f"root ::= {json.dumps(syntax.close)}")
+            return full_compiler.compile_grammar(xgr.Grammar.concat(newline, body, newline, close))
         return full_compiler.compile_lark(grammar_text(params))

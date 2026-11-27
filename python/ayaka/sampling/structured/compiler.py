@@ -131,11 +131,23 @@ class GrammarCompiler:
                 self._cache.popitem(last=False)
         return key
 
-    def matcher(self, constraint_id: str) -> ConstraintMatcher:
-        """Build a running :class:`ConstraintMatcher` from compiled template ``constraint_id``."""
+    def matcher(self, constraint_id: str, params: StructuredParams) -> ConstraintMatcher:
+        """A running constraint for one request, from a compiled template.
+
+        ``params`` are the request's own. The cache key covers only what changes the grammar, so
+        requests with the same grammar share one template while their start differs:
+        ``start_after`` and ``reasoning_open`` follow each request's thinking. Taken from the
+        cached entry, they would start every request the way the first one to compile that
+        grammar started.
+
+        Raises:
+            KeyError: If the constraint was never compiled or has been evicted.
+            ValueError: If ``params`` do not compile to ``constraint_id``.
+        """
         with self._lock:
             entry = self._cache[constraint_id]
-        params = entry.params
+        if params is not entry.params and params.canonical() != entry.params.canonical():
+            raise ValueError("the parameters do not match the compiled constraint")
         syntax = params.syntax
         is_call = params.kind is ConstraintKind.TOOL_CALL
         brace: frozenset[int] | None = None

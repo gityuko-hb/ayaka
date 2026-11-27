@@ -270,7 +270,7 @@ def _isolated(
     constraint_id = compiler.compile(structured)
 
     # llguidance, one row, over the tokens of a real constrained answer.
-    matcher = compiler.matcher(constraint_id)
+    matcher = compiler.matcher(constraint_id, structured)
     micros: list[float] = []
     accepts: list[float] = []
     for token in answer:
@@ -294,7 +294,7 @@ def _isolated(
         rows: list[LogitRow] = []
         for index in range(batch):
             request_id = RequestId(f"iso-{index}")
-            runtime.admit(request_id, compiler.matcher(constraint_id))
+            runtime.admit(request_id, compiler.matcher(constraint_id, structured))
             runtime.accept(request_id, answer[:warm])
             rows.append(LogitRow(request_id, SamplingParams(temperature=0.0), warm))
 
