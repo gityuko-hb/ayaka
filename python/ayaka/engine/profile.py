@@ -50,6 +50,7 @@ from ayaka.__version__ import __version__
 from ayaka.core.errors import EngineError
 from ayaka.core.types import ForwardMode
 from ayaka.layers.context import ForwardContext
+from ayaka.ops.linear_attention import LinearAttentionMetadata
 from ayaka.utils.math_utils import div_ceil
 
 if TYPE_CHECKING:
@@ -59,7 +60,8 @@ if TYPE_CHECKING:
     from ayaka.execution.graph import CapturedBucket
     from ayaka.memory.budget import MemoryBudget
     from ayaka.models.base import CausalLM
-    from ayaka.ops.kvcache import KVBuffers
+    from ayaka.ops.kvcache import KVBuffers, LatentKVBuffers
+    from ayaka.ops.linear_attention import RecurrentStateBuffers
 
 __all__ = [
     "PROFILE_VERSION",
@@ -387,6 +389,10 @@ def measure_startup(
     buckets: Sequence[int],
     block_size: int,
     usable_blocks: int,
+    latent_kv_buffers: Mapping[int, LatentKVBuffers] | None = None,
+    state_buffers: Mapping[int, RecurrentStateBuffers] | None = None,
+    group_layers: Sequence[tuple[int, ...]] = (),
+    state_bytes: int = 0,
 ) -> StartupProfile:
     """Run the dummy prefill and decode steps and read the device.
 
@@ -415,6 +421,10 @@ def measure_startup(
     target = device.torch_device
     attention = model.ops.attention
 
+    latent_map = dict(latent_kv_buffers or {})
+    state_map = dict(state_buffers or {})
+    num_groups = max(len(group_layers), 1)
+
     def step(rows: list[int], lengths: list[int], tables: list[list[int]]) -> None:
         width = max(len(table) for table in tables)
         block_rows = torch.tensor(
@@ -422,15 +432,41 @@ def measure_startup(
             dtype=torch.int32,
             device=target,
         )
-        meta = attention.plan(
-            ForwardMode.PREFILL if max(rows) > 1 else ForwardMode.DECODE,
-            torch.tensor(rows, dtype=torch.int32, device=target),
-            torch.tensor(lengths, dtype=torch.int32, device=target),
-            block_rows,
-            block_size,
+        mode = ForwardMode.PREFILL if max(rows) > 1 else ForwardMode.DECODE
+        rows_t = torch.tensor(rows, dtype=torch.int32, device=target)
+        lengths_t = torch.tensor(lengths, dtype=torch.int32, device=target)
+        metas = tuple(
+            attention.plan(mode, rows_t, lengths_t, block_rows, block_size)
+            for _ in range(num_groups)
         )
+        layer_attention = {
+            layer_id: meta
+            for meta, layer_ids in zip(metas, group_layers, strict=False)
+            for layer_id in layer_ids
+        }
+        lin_meta = None
+        if state_map:
+            cu_list = [0]
+            for r in rows:
+                cu_list.append(cu_list[-1] + r)
+            lin_meta = LinearAttentionMetadata(
+                is_prefill=mode is ForwardMode.PREFILL,
+                cu_seqlens=torch.tensor(cu_list, dtype=torch.int32, device=target),
+                state_slots=torch.zeros(len(rows), dtype=torch.int32, device=target),
+                rows_per_request=rows_t,
+            )
         tokens = torch.zeros(sum(rows), dtype=torch.int64, device=target)
-        hidden = model(tokens, ForwardContext(attention=meta, kv_buffers=kv_buffers))
+        hidden = model(
+            tokens,
+            ForwardContext(
+                attention=metas[0],
+                kv_buffers=kv_buffers,
+                layer_attention=layer_attention,
+                latent_kv_buffers=latent_map,
+                state_buffers=state_map,
+                linear_attention=lin_meta,
+            ),
+        )
         last = torch.tensor(
             [sum(rows[: i + 1]) - 1 for i in range(len(rows))], dtype=torch.int64, device=target
         )
@@ -474,10 +510,11 @@ def measure_startup(
     # In a process that held GPU memory before this engine (an earlier engine, a test), part of the
     # weights and the cache can land in memory the allocator already held: the device did not lose
     # it, so it is counted here and added back when the ledger is compared with the device.
-    reused = max(weights + kv_bytes - reserved, 0)
+    cache_total = kv_bytes + state_bytes
+    reused = max(weights + cache_total - reserved, 0)
     # What the allocator holds beyond the weights and the cache: the step's activations, the
     # matrix libraries' workspaces and the allocator's own rounding.
-    workspace = max(reserved + reused - weights - kv_bytes, max(peak, 0))
+    workspace = max(reserved + reused - weights - cache_total, max(peak, 0))
     profile = StartupProfile(
         key=key,
         weights_bytes=weights,

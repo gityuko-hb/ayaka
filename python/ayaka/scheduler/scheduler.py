@@ -302,6 +302,9 @@ class Scheduler:
                 if not size:
                     break
                 head.computed = head.cached_tokens = start
+                head.pending_state_restore = (
+                    match.checkpoint_digest if match is not None and match.num_tokens > 0 else None
+                )
                 head.blocked_on = None
                 self._admit_delay = max(self._admit_delay, now - head.arrival)
                 self._queue.pop()
@@ -363,6 +366,28 @@ class Scheduler:
     ) -> StepInput:
         """Freeze the entries into a ``StepInput`` and remember it as the step in flight."""
         self._steps += 1
+        has_state = self._kv.state_slots is not None
+        state_slots: tuple[int, ...] = ()
+        restore_digests: tuple[bytes | None, ...] = ()
+        ckpt_targets: tuple[tuple[tuple[int, bytes], ...], ...] = ()
+        if has_state:
+            state_slots = tuple(self._kv.state_slot(r.request_id) for r, _, _, _ in entries)
+            if mode is ForwardMode.PREFILL:
+                restore_list: list[bytes | None] = []
+                target_list: list[tuple[tuple[int, bytes], ...]] = []
+                for req, rows, _, _ in entries:
+                    restore_list.append(req.pending_state_restore)
+                    req.pending_state_restore = None
+                    target_list.append(
+                        self._kv.preview_state_checkpoints(
+                            req.request_id,
+                            req.prompt[: req.computed + rows],
+                            req.computed,
+                            rows,
+                        )
+                    )
+                restore_digests = tuple(restore_list)
+                ckpt_targets = tuple(target_list)
         step = StepInput(
             step_id=self._steps,
             mode=mode,
@@ -376,6 +401,9 @@ class Scheduler:
             table_updates=tuple(self._kv.table.take_dirty()),
             sequence_indices=tuple(r.sequence_index for r, _, _, _ in entries),
             output_lengths=tuple(len(r.output) for r, _, _, _ in entries),
+            state_slots=state_slots,
+            state_restore_digests=restore_digests,
+            state_checkpoint_targets=ckpt_targets,
         )
         self._flight = InFlight(
             step_id=step.step_id,

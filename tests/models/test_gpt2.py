@@ -274,7 +274,9 @@ class TestKVSpecs:
         model = _model(DType.FP16)
 
         [group] = model.kv_specs(block_size=BLOCK_SIZE, layout=layout)
+        from ayaka.kvcache.storage.spec import KVGroup
 
+        assert isinstance(group, KVGroup)
         assert group.layer_ids == (0, 1)
         assert group.spec.num_kv_heads == 4
         assert group.spec.head_dim == 8

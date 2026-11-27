@@ -80,6 +80,9 @@ class Attention(nn.Module):
         rotary: RotaryEmbedding | None = None,
         qk_norm: QKNorm | None = None,
         norm_eps: float = 1e-6,
+        window: int | None = None,
+        use_sinks: bool = False,
+        sink_dtype: torch.dtype | None = None,
         ops: OpsBackend,
         dtype: torch.dtype,
         device: torch.device | str | None = None,
@@ -93,6 +96,7 @@ class Attention(nn.Module):
         self.head_dim = head_dim
         self.layer_id = layer_id
         self.scale = head_dim**-0.5
+        self.window = window
         self.qkv_proj = Linear(
             hidden_size,
             (num_heads + 2 * num_kv_heads) * head_dim,
@@ -125,6 +129,14 @@ class Attention(nn.Module):
         # Every layer of a model holds the same module; it has no parameters and its table is
         # a non-persistent buffer, so sharing it adds nothing to a checkpoint.
         self.rotary = rotary
+        self.sinks: nn.Parameter | None = (
+            nn.Parameter(
+                torch.empty(num_heads, dtype=sink_dtype or dtype, device=device),
+                requires_grad=False,
+            )
+            if use_sinks
+            else None
+        )
         self._kvcache = ops.kvcache
         self._attention = ops.attention
 
@@ -154,7 +166,16 @@ class Attention(nn.Module):
             self.rotary(context.positions, q, k)
 
         buffers = context.buffers(self.layer_id)
-        self._kvcache.store(k, v, buffers, context.attention)
+        meta = context.attention_for(self.layer_id)
+        self._kvcache.store(k, v, buffers, meta)
         attended = torch.empty_like(q)
-        self._attention.attend(q, buffers, context.attention, attended, scale=self.scale)
+        self._attention.attend(
+            q,
+            buffers,
+            meta,
+            attended,
+            scale=self.scale,
+            window=self.window,
+            sinks=self.sinks,
+        )
         return self.o_proj(attended.reshape(rows, q_width))

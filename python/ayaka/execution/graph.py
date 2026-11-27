@@ -58,7 +58,8 @@ if TYPE_CHECKING:
     from ayaka.execution.inputs import InputBuilder, StagedDecode
     from ayaka.models.base import CausalLM
     from ayaka.ops.attention import AttentionMetadata
-    from ayaka.ops.kvcache import KVBuffers
+    from ayaka.ops.kvcache import KVBuffers, LatentKVBuffers
+    from ayaka.ops.linear_attention import RecurrentStateBuffers
     from ayaka.scheduler.step import StepInput
 
 __all__ = ["CapturedBucket", "GraphRunner"]
@@ -108,6 +109,10 @@ class GraphRunner:
         kv_buffers: Mapping[int, KVBuffers],
         *,
         buckets: Sequence[int],
+        latent_kv_buffers: Mapping[int, LatentKVBuffers] | None = None,
+        state_buffers: Mapping[int, RecurrentStateBuffers] | None = None,
+        group_layers: Sequence[tuple[int, ...]] | None = None,
+        device: torch.device | str | None = None,
     ) -> None:
         if not model.ops.graph_safe:
             raise ConfigError(
@@ -115,10 +120,21 @@ class GraphRunner:
                 "GRAPH_NEEDS_GRAPH_SAFE_OPS",
                 "the ops backend was not loaded with cuda_graph=True",
             )
-        device = next(iter(kv_buffers.values())).k.device
-        if device.type != "cuda":
+        latent_map = dict(latent_kv_buffers or {})
+        state_map = dict(state_buffers or {})
+        if device is not None:
+            resolved = torch.device(device)
+        elif kv_buffers:
+            resolved = next(iter(kv_buffers.values())).k.device
+        elif latent_map:
+            resolved = next(iter(latent_map.values())).ckv.device
+        elif state_map:
+            resolved = next(iter(state_map.values())).ssm_state.device
+        else:
+            resolved = next(model.parameters()).device
+        if resolved.type != "cuda":
             raise ConfigError(
-                "device.cuda_graph", "GRAPH_NEEDS_CUDA", f"CUDA graphs need a GPU, got {device}"
+                "device.cuda_graph", "GRAPH_NEEDS_CUDA", f"CUDA graphs need a GPU, got {resolved}"
             )
         capacity = min(builder.max_rows, builder.max_requests)
         usable = tuple(sorted({bucket for bucket in buckets if 1 <= bucket <= capacity}))
@@ -131,11 +147,14 @@ class GraphRunner:
         self._model = model
         self._builder = builder
         self._kv_buffers = dict(kv_buffers)
-        self._device = device
+        self._latent_kv_buffers = latent_map
+        self._state_buffers = state_map
+        self._group_layers = tuple(group_layers) if group_layers is not None else ()
+        self._device = resolved
         self._buckets = usable
         self._sampler = Sampler(model.ops.sampling)
         self._words = (model.config.vocab_size + 31) // 32  # words of a token mask
-        self._meta: dict[int, AttentionMetadata] = {}
+        self._meta: dict[int, tuple[AttentionMetadata, ...]] = {}
         # (bucket, greedy, masked)
         self._graphs: dict[tuple[int, bool, bool], torch.cuda.CUDAGraph] = {}
         self._pool: Any = None
@@ -176,14 +195,17 @@ class GraphRunner:
             started = time.monotonic()
             torch.cuda.synchronize(self._device)
             before = torch.cuda.memory_reserved(self._device)
-            meta = attention.graph_metadata(
-                bucket, builder.max_blocks, builder.block_size, self._device
+            metas = tuple(
+                attention.graph_metadata(
+                    bucket, builder.max_blocks, builder.block_size, self._device
+                )
+                for _ in range(builder.num_groups)
             )
-            self._meta[bucket] = meta
+            self._meta[bucket] = metas
             for greedy in (True, False):
                 for masked in (False, True):
                     self._graphs[bucket, greedy, masked] = self._capture_one(
-                        bucket, greedy, masked, meta
+                        bucket, greedy, masked, metas
                     )
             torch.cuda.synchronize(self._device)
             after = torch.cuda.memory_reserved(self._device)
@@ -199,10 +221,25 @@ class GraphRunner:
         )
         return results
 
-    def _capture_one(self, bucket: int, greedy: bool, masked: bool, meta: AttentionMetadata) -> Any:
+    def _capture_one(
+        self, bucket: int, greedy: bool, masked: bool, metas: tuple[AttentionMetadata, ...]
+    ) -> Any:
         tokens, batch, sampled = self._builder.graph_views(bucket)
         batch = replace(batch, all_greedy=greedy)
-        context = ForwardContext(attention=meta, kv_buffers=self._kv_buffers)
+        layer_attention = {
+            layer_id: meta
+            for meta, layer_ids in zip(metas, self._group_layers, strict=False)
+            for layer_id in layer_ids
+        }
+        linear_meta = self._builder.graph_linear_metadata(bucket) if self._state_buffers else None
+        context = ForwardContext(
+            attention=metas[0],
+            kv_buffers=self._kv_buffers,
+            layer_attention=layer_attention,
+            latent_kv_buffers=self._latent_kv_buffers,
+            state_buffers=self._state_buffers,
+            linear_attention=linear_meta,
+        )
         # The same controls an eager step with only a structural mask builds, so the two draw
         # from the same float32 logits.
         controls = (
@@ -239,7 +276,8 @@ class GraphRunner:
         builder = self._builder
         lengths = torch.zeros(bucket, dtype=torch.int32)
         rows = torch.zeros((bucket, builder.max_blocks), dtype=torch.int32)
-        self._model.ops.attention.update_graph_metadata(self._meta[bucket], lengths, rows)
+        for meta in self._meta[bucket]:
+            self._model.ops.attention.update_graph_metadata(meta, lengths, rows)
         builder.reset_graph_inputs(bucket)
 
     def launch(
@@ -267,9 +305,9 @@ class GraphRunner:
         masked = bool(masks)
         if masks:
             self._builder.stage_mask(masks, bucket)
-        self._model.ops.attention.update_graph_metadata(
-            self._meta[bucket], staged.kv_lengths, staged.block_rows
-        )
+        group_rows = staged.group_block_rows or (staged.block_rows,)
+        for meta, rows in zip(self._meta[bucket], group_rows, strict=True):
+            self._model.ops.attention.update_graph_metadata(meta, staged.kv_lengths, rows)
         self._graphs[bucket, staged.all_greedy, masked].replay()
         self.replays += 1
         return staged

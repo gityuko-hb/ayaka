@@ -54,7 +54,8 @@ from typing import TYPE_CHECKING, ClassVar
 from torch import nn
 
 from ayaka.core.errors import ModelLoadError
-from ayaka.kvcache.storage.spec import KVGroup, KVSpec
+from ayaka.kvcache.storage.spec import KVGroup, KVSpec, LatentKVGroup, RecurrentStateGroup
+from ayaka.ops.kvcache import RAW_CODEC
 from ayaka.weights.spec import TensorSpec
 
 if TYPE_CHECKING:
@@ -202,17 +203,26 @@ class CausalLM(nn.Module, ABC):
         del name
         return ()
 
-    def kv_specs(self, *, block_size: int, layout: KVLayoutKind) -> tuple[KVGroup, ...]:
-        """Describe the KV cache this model needs, one group per distinct geometry.
+    def kv_specs(
+        self,
+        *,
+        block_size: int,
+        layout: KVLayoutKind,
+        codec: str = RAW_CODEC,
+        kv_scale: float = 1.0,
+    ) -> tuple[KVGroup | LatentKVGroup, ...]:
+        """Describe the KV or latent-KV cache this model needs, one group per geometry.
 
         The default is full attention in every layer: one group of all
         ``num_layers`` layers, ids ``0`` to ``num_layers - 1``, each with
-        ``num_kv_heads`` heads of ``head_dim``. A model with other layer kinds
-        overrides it.
+        ``num_kv_heads`` heads of ``head_dim``. Models with sliding windows,
+        mixed head widths, linear attention, or MLA override this.
 
         Args:
             block_size: Tokens per cache block, from the cache config.
             layout: The layout the ops backend reads fastest (``ops.kvcache.layout()``).
+            codec: KV storage codec (``"raw"`` or ``"fp8_e4m3"``).
+            kv_scale: Static dequantization scale for FP8 KV caches.
         """
         config = self.config
         spec = KVSpec(
@@ -222,8 +232,18 @@ class CausalLM(nn.Module, ABC):
             block_size=block_size,
             dtype=self.compute_dtype,
             layout=layout,
+            codec=codec,
+            kv_scale=kv_scale,
         )
         return (KVGroup(layer_ids=tuple(range(config.num_layers)), spec=spec),)
+
+    def state_spec(self) -> RecurrentStateGroup | None:
+        """Recurrent state group for hybrid linear-attention models, or ``None``."""
+        return None
+
+    def vision_weight_bytes(self) -> int:
+        """Bytes held by vision tower and projector parameters, or 0 for text models."""
+        return 0
 
     def checkpoint_specs(self) -> list[TensorSpec]:
         """List every parameter as the checkpoint stores it.

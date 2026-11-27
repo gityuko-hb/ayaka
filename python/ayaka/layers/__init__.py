@@ -19,7 +19,9 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 if TYPE_CHECKING:
     from ayaka.layers.activation import GELU, GELUAndMul, SiLUAndMul
     from ayaka.layers.attention.dense import Attention
-    from ayaka.layers.context import ForwardContext
+    from ayaka.layers.attention.linear import GatedDeltaNetAttention, KimiDeltaAttention
+    from ayaka.layers.attention.mla import MultiHeadLatentAttention
+    from ayaka.layers.context import ForwardContext, StateCheckpointCapture
     from ayaka.layers.embedding.token import LMHead, TokenEmbedding
     from ayaka.layers.ffn.dense import MLP, GatedMLP
     from ayaka.layers.ffn.moe import MoEBlock, StackedExperts
@@ -33,15 +35,19 @@ __all__ = [
     "Attention",
     "ForwardContext",
     "GELUAndMul",
+    "GatedDeltaNetAttention",
     "GatedMLP",
+    "KimiDeltaAttention",
     "LMHead",
     "LayerNorm",
     "Linear",
     "MoEBlock",
+    "MultiHeadLatentAttention",
     "RMSNorm",
     "RotaryEmbedding",
     "SiLUAndMul",
     "StackedExperts",
+    "StateCheckpointCapture",
     "TokenEmbedding",
     "rope_inverse_frequencies",
 ]
@@ -49,7 +55,9 @@ __all__ = [
 _EXPORTS = {
     "activation": ("GELU", "GELUAndMul", "SiLUAndMul"),
     "attention.dense": ("Attention",),
-    "context": ("ForwardContext",),
+    "attention.linear": ("GatedDeltaNetAttention", "KimiDeltaAttention"),
+    "attention.mla": ("MultiHeadLatentAttention",),
+    "context": ("ForwardContext", "StateCheckpointCapture"),
     "embedding.token": ("LMHead", "TokenEmbedding"),
     "ffn.dense": ("MLP", "GatedMLP"),
     "ffn.moe": ("MoEBlock", "StackedExperts"),

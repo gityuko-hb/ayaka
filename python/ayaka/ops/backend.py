@@ -3,12 +3,7 @@
 A backend is a named set of op-family implementations with a
 :class:`BackendCaps` record of where they run and what they can do.
 :func:`load_backend` takes backend names in priority order and returns one
-:class:`OpsBackend`: for every family, the first listed backend that implements
-it, supports the requested device and dtype, and has every capability the
-engine asked for (running inside a CUDA graph, several query rows per request).
-The choice is made once, when the engine is built, and it is logged; no op
-switches to another backend during a call, and nothing is checked again on the
-hot path.
+:class:`OpsBackend`.
 """
 
 from __future__ import annotations
@@ -33,6 +28,8 @@ if TYPE_CHECKING:
     from ayaka.ops.embedding import EmbeddingOps
     from ayaka.ops.kvcache import KVCacheOps
     from ayaka.ops.linear import LinearOps
+    from ayaka.ops.linear_attention import LinearAttentionOps
+    from ayaka.ops.mla import MLAOps
     from ayaka.ops.moe import MoeOps
     from ayaka.ops.norm import NormOps
     from ayaka.ops.rope import RopeOps
@@ -61,11 +58,12 @@ type FamilyName = Literal[
     "attention",
     "sampling",
     "moe",
+    "linear_attention",
+    "mla",
 ]
 """One op family: a field of :class:`OpsBackend` and a key of :class:`BackendFamilies`."""
 
-#: Op families, in the order logs and error messages list them. One field of
-#: :class:`OpsBackend` and one key of :class:`BackendFamilies` per entry.
+#: Op families, in the order logs and error messages list them.
 _FAMILIES: Final[tuple[FamilyName, ...]] = (
     "norm",
     "activation",
@@ -76,12 +74,11 @@ _FAMILIES: Final[tuple[FamilyName, ...]] = (
     "attention",
     "sampling",
     "moe",
+    "linear_attention",
+    "mla",
 )
 
-#: The families a captured decode step calls: the model's forward, the cache write,
-#: attention over graph metadata and the sampler. With ``cuda_graph=True``,
-#: :func:`load_backend` takes each of them only from a backend that lists it in
-#: :attr:`BackendCaps.graph_safe`.
+#: The families a captured decode step may call.
 GRAPH_FAMILIES: Final[frozenset[FamilyName]] = frozenset(_FAMILIES)
 
 _CONFIG_PATH: Final = "ops.backends"
@@ -100,40 +97,13 @@ class BackendFamilies(TypedDict, total=False):
     attention: AttentionOps
     sampling: SamplingOps
     moe: MoeOps
+    linear_attention: LinearAttentionOps
+    mla: MLAOps
 
 
 @dataclass(frozen=True, slots=True)
 class BackendCaps:
-    """What one backend implements, where it runs and what it can do.
-
-    Attributes:
-        name: Registry name, as written in the list given to :func:`load_backend`.
-        families: Op families the backend implements.
-        platforms: ``sys.platform`` values it runs on.
-        devices: Torch device types it runs on (``"cpu"``, ``"cuda"``).
-        dtypes: Compute dtypes its ops accept.
-        graph_safe: Families whose ops can be captured in a CUDA graph and replayed:
-            they read nothing back to the host, allocate nothing that outlives the
-            call and, for attention, run on the fixed metadata of
-            :meth:`~ayaka.ops.attention.AttentionOps.graph_metadata`. A subset of
-            ``families``.
-        external_uniform: The sampling family draws its token from the random
-            number it is given (:meth:`~ayaka.ops.sampling.SamplingOps.sample`'s
-            ``u``) rather than from a generator of its own. Every sampling family
-            must; a backend whose library cannot does not implement ``sampling``.
-        multi_row_attention: The attention family serves several query rows per
-            request (prefill chunks, verify windows), not only decode rows. Every
-            engine prefills, so :func:`load_backend` takes attention only from a
-            backend that has it.
-        attention_head_dims: The head widths the attention family has kernels for, or
-            ``None`` for any. Given a model's ``head_dim``, :func:`load_backend` takes
-            attention from a backend that has it.
-
-    Raises:
-        ValueError: If ``name`` is blank, ``families`` names an unknown family,
-            ``graph_safe`` names a family the backend does not implement, or a
-            backend implements ``sampling`` without ``external_uniform``.
-    """
+    """What one backend implements, where it runs and what it can do."""
 
     name: str
     families: frozenset[FamilyName]
@@ -162,13 +132,7 @@ class BackendCaps:
 
 @dataclass(frozen=True, slots=True)
 class OpsBackend:
-    """One implementation of every op family, as chosen by :func:`load_backend`.
-
-    Layers receive this record, or the one family they use, when they are built.
-    ``providers`` maps each family name to the backend that supplies it.
-    ``graph_safe`` is true when it was built with ``cuda_graph=True``, so every
-    family can be captured in a CUDA graph.
-    """
+    """One implementation of every op family, as chosen by :func:`load_backend`."""
 
     norm: NormOps
     activation: ActivationOps
@@ -179,6 +143,8 @@ class OpsBackend:
     attention: AttentionOps
     sampling: SamplingOps
     moe: MoeOps
+    linear_attention: LinearAttentionOps
+    mla: MLAOps
     providers: Mapping[FamilyName, str]
     graph_safe: bool = False
 
@@ -187,30 +153,14 @@ _registry: dict[str, tuple[BackendCaps, Callable[[], BackendFamilies]]] = {}
 
 
 def register_backend(caps: BackendCaps, loader: Callable[[], BackendFamilies]) -> None:
-    """Add a backend to the registry.
-
-    Args:
-        caps: What the backend implements and where it runs.
-        loader: Returns an implementation for every family in ``caps.families``.
-            :func:`load_backend` calls it only when the backend is about to be
-            used, so this is where the backend imports its library. Raising
-            :class:`~ayaka.core.errors.CapabilityError` from it marks the
-            backend as unavailable on this machine.
-
-    Raises:
-        ValueError: If a backend named ``caps.name`` is already registered.
-    """
+    """Add a backend to the registry."""
     if caps.name in _registry:
         raise ValueError(f"ops backend {caps.name!r} is already registered")
     _registry[caps.name] = (caps, loader)
 
 
 def available_backends() -> tuple[BackendCaps, ...]:
-    """Return the capability record of every registered backend.
-
-    Registered is not the same as installed: whether a backend's library can be
-    imported is only known once :func:`load_backend` needs it.
-    """
+    """Return the capability record of every registered backend."""
     return tuple(caps for caps, _ in _registry.values())
 
 
@@ -222,31 +172,7 @@ def load_backend(
     cuda_graph: bool = False,
     head_dim: int | None = None,
 ) -> OpsBackend:
-    """Build the ops for one device from backends listed in priority order.
-
-    Each family comes from the first listed backend that implements it, runs on
-    this platform and ``device``, accepts ``dtype``, has the capabilities the
-    family needs and can be loaded. A backend is loaded only when it is the best
-    candidate for some family. Attention always needs
-    :attr:`BackendCaps.multi_row_attention`; with ``cuda_graph`` every family of
-    :data:`GRAPH_FAMILIES` must also be in the backend's
-    :attr:`BackendCaps.graph_safe`.
-
-    Args:
-        names: Registered backend names, most preferred first.
-        device: Torch device type the ops will run on: ``"cpu"`` or ``"cuda"``.
-        dtype: Compute dtype of the model.
-        cuda_graph: Whether decode steps will be captured in CUDA graphs.
-        head_dim: The model's attention head width, so that attention comes from a
-            backend with kernels for it; ``None`` when no model is known yet.
-
-    Raises:
-        ConfigError: If ``names`` is empty, repeats a name or contains an
-            unregistered one, or if some family is left without a backend. In
-            the last case the message names every such family and why each
-            listed backend was rejected for it.
-        BackendError: If a loader does not return a family its record declares.
-    """
+    """Build the ops for one device from backends listed in priority order."""
     _check_names(names)
     loaded: dict[str, Mapping[str, object]] = {}
     unavailable: dict[str, str] = {}
@@ -306,6 +232,8 @@ def load_backend(
         attention=cast("AttentionOps", chosen["attention"]),
         sampling=cast("SamplingOps", chosen["sampling"]),
         moe=cast("MoeOps", chosen["moe"]),
+        linear_attention=cast("LinearAttentionOps", chosen["linear_attention"]),
+        mla=cast("MLAOps", chosen["mla"]),
         providers=MappingProxyType(providers),
         graph_safe=cuda_graph,
     )
@@ -337,7 +265,6 @@ def _rejection(
     cuda_graph: bool,
     head_dim: int | None,
 ) -> str | None:
-    """Return why ``caps`` cannot serve ``family`` here, or ``None`` if it can."""
     if family not in caps.families:
         return _NOT_IMPLEMENTED
     problems: list[str] = []
@@ -365,7 +292,6 @@ def _rejection(
 def _ensure_loaded(
     name: str, loaded: dict[str, Mapping[str, object]], unavailable: dict[str, str]
 ) -> str | None:
-    """Load ``name`` on first use; return why it is unavailable, or ``None``."""
     if name not in loaded and name not in unavailable:
         caps, loader = _registry[name]
         try:
@@ -395,6 +321,8 @@ def _load_torch() -> BackendFamilies:
         embedding,
         kvcache,
         linear,
+        linear_attention,
+        mla,
         moe,
         norm,
         rope,
@@ -411,6 +339,8 @@ def _load_torch() -> BackendFamilies:
         "attention": attention,
         "sampling": sampling,
         "moe": moe,
+        "linear_attention": linear_attention,
+        "mla": mla,
     }
 
 
@@ -437,11 +367,11 @@ register_backend(
 register_backend(
     BackendCaps(
         name="flashinfer",
-        families=frozenset({"attention"}),
+        families=frozenset({"attention", "linear_attention", "mla"}),
         platforms=frozenset({"linux"}),
         devices=frozenset({"cuda"}),
         dtypes=frozenset({DType.FP16, DType.BF16}),
-        graph_safe=frozenset({"attention"}),
+        graph_safe=frozenset({"attention", "linear_attention", "mla"}),
         multi_row_attention=True,
         attention_head_dims=FLASHINFER_HEAD_DIMS,
     ),
