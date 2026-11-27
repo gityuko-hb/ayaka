@@ -38,6 +38,7 @@ This module imports torch. Import it through ``ayaka.execution``, which loads it
 
 from __future__ import annotations
 
+import gc
 from typing import TYPE_CHECKING, cast
 
 import torch
@@ -230,6 +231,25 @@ class ModelRunner:
         captured = graph.capture()
         self._graph = graph
         return captured
+
+    def release(self) -> None:
+        """Drop captured graphs, cache tensor views, and state pools."""
+        if self._graph is not None:
+            self._graph.release()
+            self._graph = None
+        self._buffers.clear()
+        self._latent_buffers.clear()
+        self._state_buffers.clear()
+        self._state_pool = None
+        self._state_checkpoints = None
+
+    @staticmethod
+    def clear_device_cache() -> None:
+        """Reclaim unreferenced host/device memory after dropping an engine runner."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
     def plan_lookahead(self) -> Mapping[RequestId, int]:
         """Ask for draft rows per request; none, because no draft proposer exists yet."""

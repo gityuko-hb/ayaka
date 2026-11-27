@@ -316,7 +316,7 @@ def _mapping(model: CausalLM) -> WeightMapping:
     """The model's names, plus the scales and the unused tensors of its quantization recipe."""
     mapping = type(model).weight_mapping(model.config)
     quant = model.quant_format
-    if quant is None:
+    if quant is None or quant.producer == "mxfp4":
         return mapping
     return dataclasses.replace(
         mapping,

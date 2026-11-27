@@ -20,36 +20,26 @@ the sliding window (``sliding_window``) with Qwen2; mixture-of-experts and visio
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
+from ayaka.configs._hf_model import (
+    SLIDING_WINDOW_ARCHITECTURES,
+    parse_hf_model_fields,
+)
 from ayaka.configs.base import ConfigMixin
-from ayaka.core.errors import ConfigError, ModelLoadError
+from ayaka.core.errors import ConfigError
 from ayaka.utils.validation import require_bool, require_int, require_number, require_text
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 __all__ = ["ModelConfig", "RopeScaling", "RopeScalingKind"]
 
-type RopeScalingKind = Literal["linear", "llama3", "yarn"]
+type RopeScalingKind = Literal["linear", "llama3", "yarn", "proportional"]
 """The rotary scalings Ayaka implements; ``config.json`` calls this ``rope_type``."""
 
-_ROPE_KINDS: Final[tuple[RopeScalingKind, ...]] = ("linear", "llama3", "yarn")
-
-#: ``tie_word_embeddings`` when ``config.json`` does not say. Hugging Face's base config
-#: ties by default, but some architectures' own config classes do not, and a checkpoint
-#: written from one of those omits the key. Tying by mistake would silently replace the
-#: stored output head by the embedding, so the default follows the architecture.
-_UNTIED_BY_DEFAULT: Final = frozenset(
-    {
-        "LlamaForCausalLM",
-        "MiMoForCausalLM",
-        "OlmoeForCausalLM",
-        "Phi3ForCausalLM",
-        "Qwen2ForCausalLM",
-        "Qwen3ForCausalLM",
-        "Qwen3MoeForCausalLM",
-    }
-)
+_ROPE_KINDS: Final[tuple[RopeScalingKind, ...]] = ("linear", "llama3", "yarn", "proportional")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +77,8 @@ class RopeScaling(ConfigMixin):
     beta_fast: float = 32.0
     beta_slow: float = 1.0
     attention_factor: float | None = None
+    truncate: bool = True
+    partial_rotary_factor: float = 1.0
 
     def __post_init__(self) -> None:
         if self.kind not in _ROPE_KINDS:
@@ -95,15 +87,27 @@ class RopeScaling(ConfigMixin):
                 "INVALID_CHOICE",
                 f"{self.kind!r} is not one of {list(_ROPE_KINDS)}",
             )
-        for name in ("factor", "low_freq_factor", "high_freq_factor", "beta_fast", "beta_slow"):
+        for name in (
+            "factor",
+            "low_freq_factor",
+            "high_freq_factor",
+            "beta_fast",
+            "beta_slow",
+            "partial_rotary_factor",
+        ):
             value = require_number(getattr(self, name), f"model.rope_scaling.{name}")
             if not math.isfinite(value) or value <= 0:
                 raise ConfigError(
                     f"model.rope_scaling.{name}", "INVALID_RANGE", "must be finite and positive"
                 )
             object.__setattr__(self, name, float(value))
+        require_bool(self.truncate, "model.rope_scaling.truncate")
         if self.factor < 1:
             raise ConfigError("model.rope_scaling.factor", "INVALID_RANGE", "must be >= 1")
+        if self.partial_rotary_factor > 1:
+            raise ConfigError(
+                "model.rope_scaling.partial_rotary_factor", "INVALID_RANGE", "must be <= 1"
+            )
         if self.attention_factor is not None:
             value = require_number(self.attention_factor, "model.rope_scaling.attention_factor")
             if not math.isfinite(value) or value <= 0:
@@ -119,7 +123,7 @@ class RopeScaling(ConfigMixin):
                 "model.rope_scaling.original_max_position_embeddings",
                 minimum=1,
             )
-        elif self.kind != "linear":
+        elif self.kind not in ("linear", "proportional"):
             raise ConfigError(
                 "model.rope_scaling.original_max_position_embeddings",
                 "ROPE_SCALING_INCOMPLETE",
@@ -136,16 +140,7 @@ class RopeScaling(ConfigMixin):
     def from_hf(
         cls, raw: Mapping[str, object], *, max_position_embeddings: int
     ) -> RopeScaling | None:
-        """Read the ``rope_scaling`` (or ``rope_parameters``) object of a ``config.json``.
-
-        ``rope_type`` (or the older ``type``) ``"default"`` means no scaling and
-        returns ``None``. ``original_max_position_embeddings`` falls back to the
-        model's ``max_position_embeddings`` for ``yarn``, as Hugging Face does.
-
-        Raises:
-            ConfigError: ``ROPE_SCALING_UNSUPPORTED`` for a kind Ayaka does not
-                implement (``dynamic``, ``longrope``, ...); any error of the constructor.
-        """
+        """Read the ``rope_scaling`` (or ``rope_parameters``) object of a ``config.json``."""
         kind = raw.get("rope_type", raw.get("type", "default"))
         if kind == "default":
             return None
@@ -158,8 +153,6 @@ class RopeScaling(ConfigMixin):
         unsupported = [
             name for name in ("mscale", "mscale_all_dim") if raw.get(name) not in (None, 0, 0.0)
         ]
-        if raw.get("truncate") is False:
-            unsupported.append("truncate")
         if unsupported:
             raise ConfigError(
                 "model.rope_scaling",
@@ -172,9 +165,10 @@ class RopeScaling(ConfigMixin):
 
         def number(name: str, default: float) -> float:
             value = raw.get(name)
-            return default if value is None else cast("float", value)  # checked by the constructor
+            return default if value is None else cast("float", value)
 
         attention_factor = raw.get("attention_factor")
+        truncate = raw.get("truncate")
         return cls(
             kind=kind,
             factor=number("factor", 1.0),
@@ -184,21 +178,9 @@ class RopeScaling(ConfigMixin):
             beta_fast=number("beta_fast", 32.0),
             beta_slow=number("beta_slow", 1.0),
             attention_factor=cast("float | None", attention_factor),
+            truncate=True if truncate is None else bool(truncate),
+            partial_rotary_factor=number("partial_rotary_factor", 1.0),
         )
-
-
-# ``config.json`` spells the same hyperparameter differently per family: the first
-# present, non-null key wins. GPT-2 style on the right, Llama style on the left.
-_HF_KEYS: dict[str, tuple[str, ...]] = {
-    "vocab_size": ("vocab_size",),
-    "hidden_size": ("hidden_size", "n_embd"),
-    "num_layers": ("num_hidden_layers", "n_layer"),
-    "num_attention_heads": ("num_attention_heads", "n_head"),
-    "intermediate_size": ("intermediate_size", "n_inner"),
-    "max_position_embeddings": ("max_position_embeddings", "n_positions"),
-    "hidden_act": ("hidden_act", "activation_function"),
-    "norm_eps": ("rms_norm_eps", "layer_norm_epsilon", "layer_norm_eps"),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +262,40 @@ class ModelConfig(ConfigMixin):
     moe_intermediate_size: int = 0
     norm_topk_prob: bool = False
     dense_layers: tuple[int, ...] = ()
+    num_shared_experts: int = 0
+    partial_rotary_factor: float = 1.0
+    rope_interleave: bool = False
+    layer_types: tuple[str, ...] = ()
+    attn_output_gate: bool = False
+    mrope_interleaved: bool = False
+    mrope_section: tuple[int, ...] = ()
+    linear_num_key_heads: int = 0
+    linear_num_value_heads: int = 0
+    linear_key_head_dim: int = 0
+    linear_value_head_dim: int = 0
+    linear_conv_kernel_dim: int = 0
+    global_head_dim: int | None = None
+    num_global_kv_heads: int | None = None
+    num_kv_shared_layers: int = 0
+    use_double_wide_mlp: bool = False
+    hidden_size_per_layer_input: int = 0
+    final_logit_softcapping: float | None = None
+    full_rope_theta: float | None = None
+    full_rope_scaling: RopeScaling | None = None
+    full_partial_rotary_factor: float = 1.0
+    attention_k_eq_v: bool = False
+    swiglu_limit: float | None = None
+    swiglu_alpha: float = 1.702
+    kv_lora_rank: int = 0
+    q_lora_rank: int | None = None
+    qk_nope_head_dim: int = 0
+    qk_rope_head_dim: int = 0
+    v_head_dim: int = 0
+    vision_config: Mapping[str, Any] | None = None
+    image_token_id: int | None = None
+    vision_start_token_id: int | None = None
+    vision_end_token_id: int | None = None
+    vision_soft_tokens_per_image: int | None = None
 
     def __post_init__(self) -> None:
         require_text(self.architecture, "model.architecture")
@@ -304,6 +320,10 @@ class ModelConfig(ConfigMixin):
         require_bool(self.mlp_bias, "model.mlp_bias")
         if self.sliding_window is not None:
             require_int(self.sliding_window, "model.sliding_window", minimum=1)
+        partial = require_number(self.partial_rotary_factor, "model.partial_rotary_factor")
+        if not math.isfinite(partial) or not (0 < partial <= 1):
+            raise ConfigError("model.partial_rotary_factor", "INVALID_RANGE", "must be in (0, 1]")
+        object.__setattr__(self, "partial_rotary_factor", float(partial))
         self._check_experts()
         if self.rope_theta is not None:
             theta = require_number(self.rope_theta, "model.rope_theta")
@@ -377,12 +397,8 @@ class ModelConfig(ConfigMixin):
 
     @property
     def context_length(self) -> int:
-        """The longest sequence this engine serves: the trained context, or the window if shorter.
-
-        Windowed attention is not implemented, so a model whose window is shorter than its
-        trained context is served up to the window, where both attentions agree.
-        """
-        if self.sliding_window is None:
+        """Longest sequence this engine serves (full for native windowing, capped otherwise)."""
+        if self.sliding_window is None or self.architecture in SLIDING_WINDOW_ARCHITECTURES:
             return self.max_position_embeddings
         return min(self.max_position_embeddings, self.sliding_window)
 
@@ -393,192 +409,5 @@ class ModelConfig(ConfigMixin):
 
     @classmethod
     def from_hf_config(cls, config: Mapping[str, object]) -> ModelConfig:
-        """Build a config from a parsed HuggingFace ``config.json``.
-
-        Reads the Llama spelling of each key and the GPT-2 one (``n_embd``,
-        ``n_layer``, ...). Implicit values follow HuggingFace: ``num_kv_heads``
-        defaults to ``num_attention_heads``, ``head_dim`` to ``hidden_size //
-        num_attention_heads``, ``tie_word_embeddings`` to ``True`` (``False``
-        for Llama, whose config class says so), and a GPT-2 style config
-        without ``n_inner`` gets ``4 * n_embd``.
-
-        ``sliding_window`` is kept only when some layer uses it: ``layer_types`` lists a
-        ``sliding_attention`` layer, or (configs written before ``layer_types``) the window
-        is not switched off by ``use_sliding_window: false`` and ``max_window_layers`` leaves
-        at least one layer to it, as Qwen2 reads them.
-
-        The rotary embedding is read from ``rope_theta`` and ``rope_scaling``
-        (``config.json`` written before transformers 5) or from
-        ``rope_parameters`` (written by transformers 5). A Llama config with
-        neither gets ``rope_theta`` 10000, the default of its config class.
-
-        Args:
-            config: The parsed JSON object. It is not modified.
-
-        Returns:
-            The validated config.
-
-        Raises:
-            ModelLoadError: ``config`` lacks required keys. The message lists every
-                missing one, not just the first.
-            ConfigError: ``head_dim`` is not given and ``hidden_size`` is not a
-                multiple of ``num_attention_heads``; or any error of the
-                constructor.
-        """
-        found: dict[str, object] = {}
-        for name, keys in _HF_KEYS.items():
-            for key in keys:
-                if config.get(key) is not None:
-                    found[name] = config[key]
-                    break
-        architectures = config.get("architectures")
-        if isinstance(architectures, Sequence) and not isinstance(architectures, str):
-            first = next(iter(cast("Sequence[object]", architectures)), None)
-            if first is not None:
-                found["architecture"] = first
-        if "intermediate_size" not in found and "n_embd" in config:
-            hidden = found.get("hidden_size")
-            if type(hidden) is int:
-                found["intermediate_size"] = 4 * hidden
-        missing = [name for name in ("architecture", *_HF_KEYS) if name not in found]
-        if missing:
-            raise ModelLoadError(
-                f"config.json lacks required keys for {', '.join(missing)}",
-                context={"missing": tuple(missing)},
-            )
-        heads = require_int(found["num_attention_heads"], "model.num_attention_heads", minimum=1)
-        head_dim = config.get("head_dim")
-        if head_dim is None:
-            hidden_size = require_int(found["hidden_size"], "model.hidden_size", minimum=1)
-            if hidden_size % heads:
-                raise ConfigError(
-                    "model.head_dim",
-                    "HEAD_DIM_UNDEFINED",
-                    f"config.json has no head_dim and hidden_size {hidden_size} is not a "
-                    f"multiple of {heads} attention heads",
-                )
-            head_dim = hidden_size // heads
-        if config.get("clip_qkv") is not None:
-            raise ConfigError(
-                "model.clip_qkv",
-                "CLIP_QKV_UNSUPPORTED",
-                f"clipping the q, k and v projections (clip_qkv {config['clip_qkv']}) is "
-                "not implemented",
-            )
-        kv_heads = config.get("num_key_value_heads")
-        architecture = cast("str", found["architecture"])
-        max_positions = cast("int", found["max_position_embeddings"])
-        rope_theta, rope_scaling = _hf_rope(config, architecture, max_positions)
-        return cls(
-            architecture=architecture,
-            vocab_size=cast("int", found["vocab_size"]),
-            hidden_size=cast("int", found["hidden_size"]),
-            num_layers=cast("int", found["num_layers"]),
-            num_attention_heads=heads,
-            num_kv_heads=heads if kv_heads is None else cast("int", kv_heads),
-            head_dim=cast("int", head_dim),
-            intermediate_size=cast("int", found["intermediate_size"]),
-            max_position_embeddings=max_positions,
-            hidden_act=cast("str", found["hidden_act"]),
-            norm_eps=cast("float", found["norm_eps"]),
-            tie_word_embeddings=cast(
-                "bool",
-                config.get("tie_word_embeddings", architecture not in _UNTIED_BY_DEFAULT),
-            ),
-            rope_theta=rope_theta,
-            rope_scaling=rope_scaling,
-            attention_bias=cast("bool", config.get("attention_bias", False)),
-            mlp_bias=cast("bool", config.get("mlp_bias", False)),
-            sliding_window=_hf_sliding_window(config, cast("int", found["num_layers"])),
-            **_hf_experts(config, cast("int", found["num_layers"]), found["intermediate_size"]),
-        )
-
-
-def _hf_experts(
-    config: Mapping[str, object], num_layers: int, intermediate_size: object
-) -> dict[str, Any]:
-    """The MoE fields of a ``config.json``: none for a dense model.
-
-    ``num_experts`` (OLMoE, Qwen3-MoE) or ``num_local_experts``; ``num_experts_per_tok``;
-    ``moe_intermediate_size``, else ``intermediate_size`` (OLMoE's experts have that width); a
-    layer is dense when ``mlp_only_layers`` lists it or ``decoder_sparse_step`` skips it, as
-    Qwen3-MoE reads them.
-    """
-    experts = config.get("num_experts", config.get("num_local_experts"))
-    if not experts:
-        return {}
-    step = config.get("decoder_sparse_step", 1)
-    only = config.get("mlp_only_layers") or ()
-    listed = (
-        {cast("int", layer) for layer in cast("Sequence[object]", only)}
-        if isinstance(only, Sequence) and not isinstance(only, str)
-        else set[int]()
-    )
-    step_value = step if type(step) is int and step >= 1 else 1
-    dense = tuple(
-        layer for layer in range(num_layers) if layer in listed or (layer + 1) % step_value
-    )
-    return {
-        "num_experts": experts,
-        "experts_per_token": config.get("num_experts_per_tok", 0),
-        "moe_intermediate_size": config.get("moe_intermediate_size") or intermediate_size,
-        "norm_topk_prob": config.get("norm_topk_prob", False),
-        "dense_layers": dense,
-    }
-
-
-def _hf_sliding_window(config: Mapping[str, object], num_layers: int) -> int | None:
-    """The window of the layers that use one, or ``None`` if no layer does."""
-    window = config.get("sliding_window")
-    if window is None:
-        return None
-    layer_types = config.get("layer_types")
-    if isinstance(layer_types, Sequence) and not isinstance(layer_types, str):
-        kinds = cast("Sequence[object]", layer_types)
-        return cast("int", window) if "sliding_attention" in kinds else None
-    if config.get("use_sliding_window") is False:
-        return None
-    max_window_layers = config.get("max_window_layers")
-    if type(max_window_layers) is int and max_window_layers >= num_layers:
-        return None
-    return cast("int", window)
-
-
-#: Architectures with a rotary embedding, and the ``rope_theta`` their config class
-#: defaults to when ``config.json`` does not give one.
-_ROPE_THETA_DEFAULT: Final = {
-    "LlamaForCausalLM": 10000.0,
-    "MiMoForCausalLM": 10000.0,
-    "OlmoeForCausalLM": 10000.0,
-    "Phi3ForCausalLM": 10000.0,
-    "Qwen2ForCausalLM": 10000.0,
-    "Qwen3ForCausalLM": 10000.0,
-    "Qwen3MoeForCausalLM": 10000.0,
-}
-
-
-def _hf_rope(
-    config: Mapping[str, object], architecture: str, max_positions: int
-) -> tuple[float | None, RopeScaling | None]:
-    """``rope_theta`` and the scaling of a ``config.json``, in either spelling."""
-    parameters = config.get("rope_parameters")
-    raw: Mapping[str, object]
-    if isinstance(parameters, Mapping):
-        raw = cast("Mapping[str, object]", parameters)
-        theta = raw.get("rope_theta")
-    else:
-        scaling = config.get("rope_scaling")
-        raw = cast("Mapping[str, object]", scaling) if isinstance(scaling, Mapping) else {}
-        theta = config.get("rope_theta")
-    if theta is None:
-        theta = _ROPE_THETA_DEFAULT.get(architecture)
-    if theta is None:
-        return None, None
-    partial = config.get("partial_rotary_factor", raw.get("partial_rotary_factor"))
-    if partial not in (None, 1, 1.0):
-        raise ConfigError(
-            "model.partial_rotary_factor",
-            "ROPE_SCALING_UNSUPPORTED",
-            f"a rotary embedding over part of each head ({partial}) is not implemented",
-        )
-    return cast("float", theta), RopeScaling.from_hf(raw, max_position_embeddings=max_positions)
+        """Build a validated config from a parsed Hugging Face ``config.json``."""
+        return cls(**parse_hf_model_fields(config))

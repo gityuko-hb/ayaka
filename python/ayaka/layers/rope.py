@@ -65,6 +65,17 @@ def rope_inverse_frequencies(
             return _llama3(base, scaling), 1.0
         case "yarn":
             return _yarn(rotary_dim, theta, scaling)
+        case "proportional":
+            return _proportional(rotary_dim, theta, scaling), 1.0
+
+
+def _proportional(rotary_dim: int, theta: float, scaling: RopeScaling) -> list[float]:
+    half = rotary_dim // 2
+    angles = int(scaling.partial_rotary_factor * rotary_dim // 2)
+    freqs = [(theta ** -(2 * i / rotary_dim)) / scaling.factor for i in range(angles)]
+    if angles < half:
+        freqs.extend([0.0] * (half - angles))
+    return freqs
 
 
 def _trained_context(scaling: RopeScaling) -> int:
@@ -104,9 +115,12 @@ def _yarn(rotary_dim: int, theta: float, scaling: RopeScaling) -> tuple[list[flo
         # The dimension whose wavelength fits ``rotations`` times into the trained context.
         return (rotary_dim * math.log(trained / (rotations * 2 * math.pi))) / (2 * math.log(theta))
 
-    low = max(math.floor(correction(scaling.beta_fast)), 0)
-    high = min(math.ceil(correction(scaling.beta_slow)), rotary_dim - 1)
-    # Equal bounds would divide by zero; Hugging Face moves the upper one by 0.001.
+    raw_low = correction(scaling.beta_fast)
+    raw_high = correction(scaling.beta_slow)
+    low_val = math.floor(raw_low) if scaling.truncate else raw_low
+    high_val = math.ceil(raw_high) if scaling.truncate else raw_high
+    low = max(low_val, 0)
+    high = min(high_val, rotary_dim - 1)
     high_f = high + 0.001 if low == high else float(high)
     half = rotary_dim // 2
     frequencies: list[float] = []

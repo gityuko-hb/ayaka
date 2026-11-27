@@ -353,12 +353,6 @@ def attend(
             f"{op}: flashinfer computes in fp16 or bf16, not {q.dtype}",
             context={"op": op, "argument": "q"},
         )
-    if buffers.head_dim not in HEAD_DIMS:
-        raise BackendError(
-            f"{op}: flashinfer has kernels for heads of {sorted(HEAD_DIMS)}, "
-            f"not {buffers.head_dim}",
-            context={"op": op, "argument": "q"},
-        )
     if heads == 0 or heads % buffers.num_kv_heads:
         raise BackendError(
             f"{op}: q has {heads} heads, which is not a positive multiple of the cache's "
@@ -372,6 +366,22 @@ def attend(
         )
     if sinks is not None:
         require_like(op, "sinks", sinks, (heads,), sinks.dtype)
+    if buffers.head_dim not in HEAD_DIMS:
+        ref_plan: object = (
+            holder.graph.staging
+            if holder.graph is not None
+            else reference.TorchAttentionPlan(holder.host_rows, holder.host_kv_lengths)
+        )
+        reference.attend(
+            q,
+            buffers,
+            replace(meta, plan=ref_plan),
+            out,
+            scale=scale,
+            window=window,
+            sinks=sinks,
+        )
+        return
     if q.shape[0] == 0:
         return
     window_left = -1 if window is None else window - 1

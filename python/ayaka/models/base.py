@@ -51,22 +51,21 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
+import torch
 from torch import nn
 
 from ayaka.core.errors import ModelLoadError
 from ayaka.kvcache.storage.spec import KVGroup, KVSpec, LatentKVGroup, RecurrentStateGroup
 from ayaka.ops.kvcache import RAW_CODEC
+from ayaka.utils.dtypes import DType
 from ayaka.weights.spec import TensorSpec
 
 if TYPE_CHECKING:
-    import torch
-
     from ayaka.configs.model import ModelConfig
     from ayaka.core.types import KVLayoutKind
     from ayaka.layers.context import ForwardContext
     from ayaka.layers.quantization.method import QuantMethod
     from ayaka.ops.backend import OpsBackend
-    from ayaka.utils.dtypes import DType
     from ayaka.weights.mapping import WeightMapping
     from ayaka.weights.quant import QuantFormat
 
@@ -109,6 +108,8 @@ class CausalLM(nn.Module, ABC):
     #: Whether the architecture builds its linear layers with :attr:`quant_method`; a model
     #: that does not refuses a quantized checkpoint instead of misreading it.
     quantizable: ClassVar[bool] = False
+    #: Supported quantization producers when ``quantizable`` is True.
+    supported_quants: ClassVar[tuple[str, ...]] = ("fp8", "compressed-tensors")
 
     def __init__(
         self,
@@ -122,7 +123,9 @@ class CausalLM(nn.Module, ABC):
         super().__init__()
         from ayaka.layers.quantization.method import quant_method
 
-        if quant is not None and not self.quantizable:
+        if quant is not None and (
+            not self.quantizable or quant.producer not in self.supported_quants
+        ):
             raise ModelLoadError(
                 f"{config.architecture} does not run quantized checkpoints "
                 f"({quant.producer}, {quant.name})",
@@ -282,7 +285,8 @@ class CausalLM(nn.Module, ABC):
             shape = tuple(parameter.shape)
             if self._is_stored_transposed(name):
                 shape = tuple(reversed(shape))
-            specs.append(TensorSpec(name, shape, self.compute_dtype))
+            stored_dtype = DType.UINT8 if parameter.dtype == torch.uint8 else self.compute_dtype
+            specs.append(TensorSpec(name, shape, stored_dtype))
         return specs
 
     def load_weight(self, name: str, tensor: torch.Tensor) -> None:

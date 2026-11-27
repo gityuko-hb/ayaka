@@ -170,6 +170,15 @@ class GraphRunner:
         """Whether :meth:`capture` has run."""
         return bool(self._graphs)
 
+    def release(self) -> None:
+        """Drop captured CUDA graphs, metadata, and buffer views to free device memory."""
+        self._graphs.clear()
+        self._meta.clear()
+        self._kv_buffers.clear()
+        self._latent_kv_buffers.clear()
+        self._state_buffers.clear()
+        self._pool = None
+
     def bucket_for(self, step: StepInput) -> int | None:
         """The smallest bucket that can replay ``step``, or ``None`` if it must run eagerly."""
         if not self._graphs or step.mode is not ForwardMode.DECODE:

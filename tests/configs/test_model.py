@@ -334,9 +334,11 @@ class TestFromHfConfig:
 
         assert caught.value.code == "ROPE_SCALING_UNSUPPORTED"
 
-    def test_a_partial_rotary_factor_is_refused(self) -> None:
-        with pytest.raises(ConfigError, match="part of each head"):
-            ModelConfig.from_hf_config({**LLAMA_JSON, "partial_rotary_factor": 0.5})
+    def test_partial_rotary_factor_is_validated(self) -> None:
+        cfg = ModelConfig.from_hf_config({**LLAMA_JSON, "partial_rotary_factor": 0.25})
+        assert cfg.partial_rotary_factor == 0.25
+        with pytest.raises(ConfigError, match="partial_rotary_factor"):
+            ModelConfig.from_hf_config({**LLAMA_JSON, "partial_rotary_factor": 1.5})
 
     def test_projection_biases_are_read(self) -> None:
         config = ModelConfig.from_hf_config({**LLAMA_JSON, "attention_bias": True})

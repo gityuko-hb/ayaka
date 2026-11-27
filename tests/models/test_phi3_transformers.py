@@ -3,8 +3,8 @@
 Needs torch and the ``hf`` extra. ``transformers`` keeps ``qkv_proj`` and ``gate_up_proj`` fused,
 as Phi-3 checkpoints store them, so the state dict is loaded under its own names with nothing
 split. Float32 hidden states and logits over a paged KV cache must agree with ``transformers``'
-full-sequence forward to ``1e-4``. The configs Ayaka refuses (``longrope``, a partial rotary) are
-refused with the reason.
+full-sequence forward to ``1e-4``. Configs Ayaka still refuses (``longrope``) are refused with
+the reason.
 """
 
 from __future__ import annotations
@@ -70,10 +70,16 @@ def test_the_window_of_phi_3_mini_4k_caps_the_context() -> None:
     assert config.context_length == 2047
 
 
+def test_partial_rotary_matches_transformers() -> None:
+    reference = randomise(transformers.Phi3ForCausalLM(_config(partial_rotary_factor=0.75)))
+    model = ours_like(reference, Phi3ForCausalLM)
+
+    assert_matches_over_paged_kv(reference, model, [16], [8], 4)
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"partial_rotary_factor": 0.75}, "part of each head"),
         (
             {
                 "max_position_embeddings": 512,
@@ -88,7 +94,7 @@ def test_the_window_of_phi_3_mini_4k_caps_the_context() -> None:
             "'longrope' is not implemented",
         ),
     ],
-    ids=["partial-rotary", "longrope"],
+    ids=["longrope"],
 )
 def test_what_is_not_implemented_is_refused(overrides: dict[str, object], message: str) -> None:
     raw = _config(**overrides).to_dict()

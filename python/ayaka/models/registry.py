@@ -26,7 +26,11 @@ __all__ = ["register_model", "resolve_model"]
 
 #: Architecture name to ``"module:Class"`` of the models in this package.
 _BUILTIN: Final = {
+    "DeepseekV2ForCausalLM": "ayaka.models.deepseek_mla:DeepseekV2ForCausalLM",
+    "DeepseekV3ForCausalLM": "ayaka.models.deepseek_mla:DeepseekV3ForCausalLM",
     "GPT2LMHeadModel": "ayaka.models.gpt2:GPT2LMHeadModel",
+    "Gemma4ForConditionalGeneration": "ayaka.models.gemma4:Gemma4ForConditionalGeneration",
+    "GptOssForCausalLM": "ayaka.models.gpt_oss:GptOssForCausalLM",
     "LlamaForCausalLM": "ayaka.models.llama:LlamaForCausalLM",
     "MiMoForCausalLM": "ayaka.models.mimo:MiMoForCausalLM",
     "OlmoeForCausalLM": "ayaka.models.olmoe:OlmoeForCausalLM",
@@ -34,6 +38,7 @@ _BUILTIN: Final = {
     "Qwen2ForCausalLM": "ayaka.models.qwen2:Qwen2ForCausalLM",
     "Qwen3ForCausalLM": "ayaka.models.qwen3:Qwen3ForCausalLM",
     "Qwen3MoeForCausalLM": "ayaka.models.qwen3_moe:Qwen3MoeForCausalLM",
+    "Qwen3_5ForConditionalGeneration": "ayaka.models.qwen3_5:Qwen3_5ForConditionalGeneration",
 }
 
 _registered: dict[str, type[CausalLM]] = {}

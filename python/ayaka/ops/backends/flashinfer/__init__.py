@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Final
 
 from ayaka.utils.import_utils import require_module
@@ -22,11 +23,14 @@ def load() -> BackendFamilies:
         capability="ops.flashinfer",
         remedy="install PyTorch with `uv sync --extra cu130`",
     )
-    require_module(
-        "flashinfer",
-        capability="ops.flashinfer",
-        remedy="install it on Linux or WSL2 with `uv sync --extra cu130 --extra flashinfer`",
-    )
+    with warnings.catch_warnings():
+        # FlashInfer imports cutlass_dsl utilities that emit cutlass.utils DeprecationWarnings.
+        warnings.filterwarnings("ignore", category=DeprecationWarning, message=r"cutlass\.utils\.")
+        require_module(
+            "flashinfer",
+            capability="ops.flashinfer",
+            remedy="install it on Linux or WSL2 with `uv sync --extra cu130 --extra flashinfer`",
+        )
     from ayaka.ops.backends.flashinfer import attention, linear_attention, mla
 
     return {
