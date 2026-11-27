@@ -19,9 +19,7 @@ from ayaka.core.constraints import (
 )
 from ayaka.core.params import SamplingParams
 from ayaka.core.types import RequestId
-from ayaka.sampling.logits import LogitRow, build_controls
 from ayaka.sampling.structured.compiler import GrammarCompiler
-from ayaka.sampling.structured.runtime import ConstraintRuntime
 from tokenizer_fakes import EOS, SPECIALS, FakeTokenizer
 
 if TYPE_CHECKING:
@@ -187,8 +185,10 @@ def test_all_seven_constraint_kinds_and_rollback(backend_name: str) -> None:
 def test_guided_speculative_verification_matches_step_by_step_decoding() -> None:
     pytest.importorskip("torch")
     pytest.importorskip("llguidance")
-
     import torch
+
+    from ayaka.sampling.logits import LogitRow, build_controls
+    from ayaka.sampling.structured.runtime import ConstraintRuntime
 
     tok = _MiniTokenizer()
     compiler = GrammarCompiler(tok, vocab_size=tok.vocab_size, eos_token_ids=(EOS,))
