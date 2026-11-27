@@ -198,7 +198,7 @@ class TestToolCalls:
                 )
             )
         )
-        body = '{"name":"get_weather","arguments":{"city":"Hue"}}'
+        body = '{"name": "get_weather", "arguments": {"city": "Hue"}}'
 
         matcher.accept([OPEN_CALL, *body.encode(), CLOSE_CALL])
 
@@ -218,7 +218,7 @@ class TestToolCalls:
                 )
             )
         )
-        matcher.accept([OPEN_CALL, *b'{"name":"get_weather","arguments":{"city":"'])
+        matcher.accept([OPEN_CALL, *b'{"name": "get_weather", "arguments": {"city": "'])
 
         inside = _allowed(matcher.mask())
         matcher.accept(list(b'Hue"}}'))

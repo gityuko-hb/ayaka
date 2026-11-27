@@ -19,7 +19,7 @@ separator. The key of the arguments comes from the format (``parameters`` for Ll
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from ayaka.core.constraints import ConstraintKind
 
@@ -38,18 +38,31 @@ def _json(value: object) -> str:
 
 
 def _compact(schema: Mapping[str, object], *, lenient: bool = False) -> Mapping[str, object]:
-    """The schema with llguidance's compact JSON layout, unless the request chose its own.
+    """The schema with a fixed single-line JSON layout, unless the request chose its own.
 
-    Without layout whitespace inside the JSON, a small model cannot spend its tokens on spaces.
-    ``lenient`` makes llguidance skip the keywords it does not implement (an unknown ``format``)
-    instead of refusing the schema: for a constraint the request did not ask for.
+    The layout is the one ``json.dumps`` writes by default: ``", "`` between items, ``": "``
+    between a key and its value, and no other whitespace. It leaves the model no free whitespace
+    to spend its tokens on, and it is the layout models write unconstrained (and the one the
+    Hermes tool-call template shows). With no space at all after the colon (``{"name":"``), Qwen3-8B
+    reads the next token as the start of a string and writes placeholders such as ``":name:"``:
+    11 of 18 sampled answers did, and one never closed its string. ``lenient`` makes llguidance
+    skip the keywords it does not implement (an unknown ``format``) instead of refusing the
+    schema: for a constraint the request did not ask for.
     """
     if "x-guidance" in schema:
         return schema
-    options: dict[str, object] = {"whitespace_flexible": False}
+    options: dict[str, object] = dict(_LAYOUT)
     if lenient:
         options["lenient"] = True
     return {**schema, "x-guidance": options}
+
+
+#: llguidance options of the JSON layout every constraint without its own ``x-guidance`` uses.
+_LAYOUT: Final[Mapping[str, object]] = {
+    "whitespace_flexible": False,
+    "item_separator": ", ",
+    "key_separator": ": ",
+}
 
 
 def call_schema(
