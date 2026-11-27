@@ -335,14 +335,10 @@ class KVCacheManager:
             len(digests) - 1 if len(digests) * self._block_size >= len(token_ids) else len(digests)
         )
         matched = [list(ids) for ids in match.blocks]
-        to_release: list[tuple[BlockPool, int]] = []
-        # The blocks matched in VRAM hold no reference yet: allocate() below takes the least
-        # recently used free block, which may be one of them, and a promotion would overwrite
-        # it while the match still names it as a prefix block. Hold them until the end.
-        for pool, ids in zip(self._pools, matched, strict=True):
-            for block_id in ids:
-                pool.touch(block_id)
-                to_release.append((pool, block_id))
+        # Hold the VRAM-matched blocks: unreferenced, allocate() could hand one out to a promotion.
+        to_release = [(p, b) for p, ids in zip(self._pools, matched, strict=True) for b in ids]
+        for pool, block_id in to_release:
+            pool.touch(block_id)
         idx = match.num_blocks
         while idx < limit:
             digest = digests[idx]
