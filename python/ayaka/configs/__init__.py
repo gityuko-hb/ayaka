@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ayaka.configs.cache import CacheConfig
     from ayaka.configs.device import DeviceConfig
     from ayaka.configs.engine import EngineConfig
+    from ayaka.configs.host_memory import HostMemoryConfig
     from ayaka.configs.model import ModelConfig, RopeScaling, RopeScalingKind
     from ayaka.configs.model_source import ModelSourceConfig, ModelTrustPolicy, RequestFormat
     from ayaka.configs.scheduler import (
@@ -51,6 +52,7 @@ __all__ = [
     "EncodeResult",
     "EngineConfig",
     "FrozenMapping",
+    "HostMemoryConfig",
     "ModelConfig",
     "ModelSourceConfig",
     "ModelTrustPolicy",
@@ -81,6 +83,7 @@ _EXPORTS = {
     "cache": ("CacheConfig",),
     "device": ("DeviceConfig",),
     "engine": ("EngineConfig",),
+    "host_memory": ("HostMemoryConfig",),
     "model": ("ModelConfig", "RopeScaling", "RopeScalingKind"),
     "model_source": ("ModelSourceConfig", "ModelTrustPolicy", "RequestFormat"),
     "scheduler": ("PreemptionPolicyName", "SchedulerConfig", "SchedulingPolicyName"),

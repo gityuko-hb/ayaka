@@ -41,6 +41,7 @@ from ayaka.core.errors import (
     OverloadedError,
 )
 from ayaka.core.types import FinishReason, ForwardMode
+from ayaka.kvcache.inflight import InFlightPrefixTracker
 from ayaka.kvcache.pressure import PressureLevel, PressureThresholds, evaluate_pressure
 from ayaka.scheduler.planning import (
     check_context,
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
     from ayaka.core.request import TokenizedRequest
     from ayaka.core.types import RequestId, TokenId
     from ayaka.kvcache.manager import KVCacheManager
+    from ayaka.kvcache.prefix.base import PrefixMatch
     from ayaka.scheduler.step import StepOutput
 
 __all__ = ["Scheduler"]
@@ -131,6 +133,7 @@ class Scheduler:
         self._prefill_streak = 0
         self._admit_delay = 0.0
         self._oom_recoveries = 0
+        self._inflight_prefixes = InFlightPrefixTracker()
         # The minimal step that ran out of memory once and is retried before it fails.
         self._oom_retried: tuple[RequestId, ...] | None = None
         self._stats: SchedulerStats | None = None
@@ -250,6 +253,7 @@ class Scheduler:
             if request.abort_reason is None:
                 request.abort_reason = reason
             return True
+        self._inflight_prefixes.complete(request_id)
         self._roster.finish(request, reason, release=True)
         return True
 
@@ -316,7 +320,7 @@ class Scheduler:
                 resuming = self._roster.preempted[0]
                 tokens = resuming.prefill_tokens()
                 match = (
-                    self._kv.match_prefix(tokens, resuming.cache_salt)
+                    self._kv.match_and_promote_prefix(tokens, resuming.cache_salt)
                     if resuming.prefix_cache
                     else None
                 )
@@ -348,10 +352,12 @@ class Scheduler:
                 if head is None or self._waits_for_sibling(head):
                     break
                 match = (
-                    self._kv.match_prefix(head.prompt, head.cache_salt)
+                    self._kv.match_and_promote_prefix(head.prompt, head.cache_salt)
                     if head.prefix_cache
                     else None
                 )
+                if self._waits_for_inflight_prefix(head, match, now):
+                    break
                 start = match.num_tokens if match is not None else 0
                 size = grant_chunk(
                     self._kv,
@@ -368,6 +374,10 @@ class Scheduler:
                 head.row = self._kv.table.row_of(head.request_id)
                 head.move_to(RequestStatus.RUNNING)
                 self._running[head.request_id] = head
+                if match is not None and match.digests[match.num_blocks :]:
+                    self._inflight_prefixes.register(
+                        head.request_id, match.digests[match.num_blocks :]
+                    )
                 chunks.append((head, size))
                 budget -= size
         if not chunks:
@@ -395,6 +405,25 @@ class Scheduler:
             sibling.status in (RequestStatus.WAITING, RequestStatus.PREEMPTED)
             or sibling.is_prefilling
         )
+
+    def _waits_for_inflight_prefix(
+        self,
+        head: Request,
+        match: PrefixMatch | None,
+        now: float,
+    ) -> bool:
+        if head.blocked_on is not None or match is None:
+            return False
+        uncached = match.digests[match.num_blocks :]
+        leader_id = self._inflight_prefixes.leader_for(uncached)
+        if leader_id is None or leader_id == head.request_id:
+            return False
+        leader = self._requests.get(leader_id)
+        if leader is None or leader.status is not RequestStatus.RUNNING or not leader.is_prefilling:
+            self._inflight_prefixes.complete(leader_id)
+            return False
+        timeout = self._config.prefix_wait_timeout
+        return timeout is None or now - head.arrival <= timeout
 
     def _plan_decode(self, lookahead: Mapping[RequestId, int]) -> StepInput | None:
         entries: list[tuple[Request, int, tuple[TokenId, ...], bool]] = []
@@ -511,6 +540,7 @@ class Scheduler:
         recovered = True
         if len(self._running) > 1:
             victim = select_victim(self._running.values(), self._config.preemption_policy)
+            self._inflight_prefixes.complete(victim.request_id)
             self._roster.preempt(victim, now=self._clock())
             if flight.mode is ForwardMode.PREFILL and max(flight.rows) > self._kv.block_size:
                 self._effective_budget = max(self._kv.block_size, max(flight.rows) // 2)
@@ -527,6 +557,7 @@ class Scheduler:
             self._oom_retried = None
             self._effective_budget = self._budget
             for request_id in flight.request_ids:
+                self._inflight_prefixes.complete(request_id)
                 request = self._requests.get(request_id)
                 if request is not None:
                     self._roster.finish(request, FinishReason.ERROR, error=error, release=True)
@@ -567,6 +598,7 @@ class Scheduler:
     ) -> int:
         """Apply one request's answer; returns the tokens it emitted."""
         if output.error is not None:
+            self._inflight_prefixes.complete(request.request_id)
             self._roster.finish(request, FinishReason.ERROR, error=output.error, release=release)
             return 0
         produced = output.tokens[index]
@@ -581,6 +613,7 @@ class Scheduler:
             if request.is_prefilling and produced:
                 raise EngineError(f"request {request.request_id!r}: a prefill chunk emitted tokens")
             if not request.is_prefilling:
+                self._inflight_prefixes.complete(request.request_id)
                 request.resuming = False
                 if len(produced) != 1:
                     raise EngineError(

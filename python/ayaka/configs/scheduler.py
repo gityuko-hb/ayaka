@@ -67,6 +67,7 @@ class SchedulerConfig(ConfigMixin):
     pressure_high: float = 0.80
     pressure_critical: float = 0.92
     preemption_timeout: float | None = None
+    prefix_wait_timeout: float | None = 5.0
 
     def __post_init__(self) -> None:
         if self.max_running is not None:
@@ -102,3 +103,12 @@ class SchedulerConfig(ConfigMixin):
                     f"must be > 0, got {timeout}",
                 )
             object.__setattr__(self, "preemption_timeout", timeout)
+        if self.prefix_wait_timeout is not None:
+            wait = require_number(self.prefix_wait_timeout, "scheduler.prefix_wait_timeout")
+            if wait <= 0.0:
+                raise ConfigError(
+                    "scheduler.prefix_wait_timeout",
+                    "INVALID_RANGE",
+                    f"must be > 0, got {wait}",
+                )
+            object.__setattr__(self, "prefix_wait_timeout", wait)

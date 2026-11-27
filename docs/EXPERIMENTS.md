@@ -1070,3 +1070,55 @@ Revisions: the parity runs and the bf16 `ayaka bench` runs at `ca93917`, the KL 
 FP8 buffer fix; its code under `python/` differs from `40fbf48` only in that fix, which 16-bit and
 MoE models do not use. A first Phi-4 FP8 run, at `ca93917` before the fix, gave the same 0.9 tok/s
 and is replaced by the one above.
+
+## Host-RAM KV tiering and pinned memory ceilings (pre-registered gates)
+
+Pre-registered evaluation protocol before enabling host-RAM KV offloading (`--host-kv`) by default:
+
+- **Pinning probe** (`benchmarks/memory/probe_host_pinning.py`): measure safe `cudaHostAlloc` pinned allocation
+  ceilings and H2D/D2H copy bandwidth on native Linux (NVIDIA L4 24 GB) and WSL2 (RTX 3050 4 GB), comparing pinned vs
+  pageable buffers alongside `ayaka doctor` NVML-vs-CUDA gap checks.
+- **Host KV tier promotion benchmark** (`benchmarks/e2e/bench_host_kv_tier.py`): evict warm prefixes from a tight
+  device KV pool under load, flush write-behind offloads, and measure returned-turn TTFT vs cold prefill.
+  - Gate 1 (speedup): returned prompts of at least 4,096 tokens must achieve `< 0.5x` cold prefill TTFT on both L4
+    (Llama-3.1-8B) and RTX 3050 (Llama-3.2-1B) with exact token parity.
+  - Gate 2 (overhead & default): steady-state asynchronous write-behind overhead must stay `<= 2%`; until Linux and
+    WSL2 GPU numbers satisfy both gates, `HostMemoryConfig.enabled` stays `False` (opt-in via `--host-kv`).
+- **Status:** Probe, host KV store, atomic pool resize, and `ayaka replay` verified on CPU (`torch 2.14.1+cpu`,
+  unit and tiny-model parity suites passing). Validated on **NVIDIA A100-SXM4-80GB** (`sm_80`, 80.0 GiB, driver
+  `580.82.07`, CUDA `13.0`, Python `3.13.16`, `torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, 12 vCPUs) with
+  `Qwen/Qwen3-8B` (`revision b968826d`, `bf16`, `flashinfer` attention, pinned host memory):
+
+  - **Pinning probe & doctor** (`probe_host_pinning.py --sizes-mb 16 64 256 1024 4096 8192 --json`): all tested
+    sizes up to `8,192 MiB` succeeded with `pinned_ok = true`, `pageable_fallback = false`, sustained `12.31–12.35 GB/s`
+    H2D and `13.13–13.19 GB/s` D2H at `1–8 GiB` (`alloc_ms = 4,056.0 ms` at `8,192 MiB`). `ayaka doctor --output json`
+    returned `ok = true` (5 pass, 1 warn on `RLIMIT_MEMLOCK = 8 MiB`).
+  - **Gate 1 — promotion vs cold recomputation** (`bench_host_kv_tier.py --prompt-tokens 4096 8192 --rounds 5 --write-behind-overhead`,
+    5 alternating rounds; initial measurement `0.408` / `0.320`, repeated alongside Gate 2):
+
+    | Prompt | Recompute | Host tier | Ratio | Token parity |
+    | ---: | ---: | ---: | ---: | --- |
+    | 4,096 | 440.66 ms | 180.79 ms (251 blocks) | 0.410 | yes (32/32) |
+    | 8,192 | 939.03 ms | 303.91 ms (507 blocks) | 0.324 | yes (32/32) |
+
+    Both lengths pass Gate 1 (`< 0.5×`) with exact greedy token parity.
+  - **Gate 2 — steady-state asynchronous write-behind overhead** (`bench_host_kv_tier.py --write-behind-overhead
+    --wb-prompt 1024 --wb-decode 128 --wb-requests 4 --rounds 5`, `284` evicted blocks offloaded per round,
+    `pinned_memory = true`):
+
+    | Execution mode | Baseline wall | Host-tier wall | Wall delta | Decode delta | Threshold |
+    | --- | ---: | ---: | ---: | ---: | --- |
+    | Eager (`cuda_graph=false`) | 34,955.62 ms | 35,005.89 ms | +0.14% | +0.18% | `<= 2%` (Pass) |
+    | CUDA graphs (`cuda_graph=true`) | 9,066.37 ms | 9,158.13 ms | +1.01% | +0.39% | `<= 2%` (Pass) |
+
+  - **Pressure preemption, step-OOM, resize & batched bf16 token parity** (`benchmarks/e2e/memory_pressure.py`,
+    `Qwen/Qwen3-8B`, `pool_blocks = 242`, `blocks_needed_at_once = 483`, 3 requests × 512 prompt + 2,048 tokens):
+    `alone_twice_equal = true` (`[null, null, null]`), pressure finished `3/3` over `4,359` steps (`433` preemptions,
+    `integrity_checked_every_step = true`, `338.76 s`), injected step OOM kept `engine_alive = true` (`3/3` finished),
+    and pool resize (`242 -> 483 -> 241` blocks) finished `3/3` (`all_conditions_met = true`). Batched vs solo runs
+    differed starting at tokens `[168, 38, 40]` (pressure and resize) and `[168, 38, 63]` (step OOM) solely from bf16
+    non-associative reduction tree differences across batch shapes, with clean KV integrity after every step.
+
+  Both Gate 1 (`< 0.5×`) and Gate 2 (`<= 2%`) are validated on NVIDIA A100-SXM4-80GB. `HostMemoryConfig.enabled` stays
+  `False` (`--host-kv` opt-in) while **NVIDIA L4 (Llama-3.1-8B)** and **WSL2 RTX 3050 (Llama-3.2-1B)** remain future
+  multi-device baselines.

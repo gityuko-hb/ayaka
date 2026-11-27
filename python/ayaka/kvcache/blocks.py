@@ -29,7 +29,7 @@ from ayaka.kvcache.storage.spec import PADDING_BLOCK_ID
 from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
 __all__ = ["Block", "BlockPool"]
 
@@ -78,6 +78,7 @@ class BlockPool:
         require_int(num_blocks, "num_blocks", minimum=2)
         self._num_blocks = num_blocks
         self._ref = array("i", [0]) * num_blocks
+        self._pin = array("i", [0]) * num_blocks
         self._prev = array("i", [_NONE] * num_blocks)
         self._next = array("i", [_NONE] * num_blocks)
         self._queued = bytearray(num_blocks)
@@ -86,7 +87,9 @@ class BlockPool:
         self._head = _NONE
         self._tail = _NONE
         self._free_count = 0
+        self._pinned_count = 0
         self._evictions = 0
+        self._on_evict: Callable[[int, bytes], None] | None = None
         for block_id in range(PADDING_BLOCK_ID + 1, num_blocks):
             self._push_tail(block_id)
 
@@ -111,6 +114,25 @@ class BlockPool:
     def evictions(self) -> int:
         """How many registered blocks have been reused, losing their digest."""
         return self._evictions
+
+    @property
+    def pinned_count(self) -> int:
+        """Blocks holding at least one shared-prefix pin."""
+        return self._pinned_count
+
+    def set_eviction_hook(self, hook: Callable[[int, bytes], None] | None) -> None:
+        """Register or clear a callback invoked right before a cached block is evicted."""
+        self._on_evict = hook
+
+    def pin_count(self, block_id: int) -> int:
+        """Shared-prefix pins held on a block."""
+        self._check_id(block_id)
+        return self._pin[block_id]
+
+    def is_pinned(self, block_id: int) -> bool:
+        """Whether a block is pinned against eviction."""
+        self._check_id(block_id)
+        return self._pin[block_id] > 0
 
     def block(self, block_id: int) -> Block:
         """A view of one block."""
@@ -164,6 +186,8 @@ class BlockPool:
         self._unlink(block_id)
         digest = self._digest[block_id]
         if digest is not None:
+            if self._on_evict is not None:
+                self._on_evict(block_id, digest)
             del self._by_digest[digest]
             self._digest[block_id] = None
             self._evictions += 1
@@ -174,17 +198,18 @@ class BlockPool:
         """Add a reference to a block a request now shares; a cached block leaves the queue.
 
         Raises:
-            EngineError: If the block is unreferenced and not in the queue.
+            EngineError: If the block is unreferenced and neither queued nor pinned.
         """
         self._check_id(block_id)
         if self._ref[block_id] == 0:
-            if not self._queued[block_id]:
+            if self._queued[block_id]:
+                self._unlink(block_id)
+            elif self._pin[block_id] <= 0:
                 raise EngineError(f"block {block_id} has no references and is not free")
-            self._unlink(block_id)
         self._ref[block_id] += 1
 
     def free(self, block_id: int) -> None:
-        """Drop one reference; at zero the block rejoins the queue.
+        """Drop one reference; at zero (and unpinned) the block rejoins the queue.
 
         With a digest it goes to the tail (reused last); without one, to the head
         (reused first).
@@ -196,11 +221,108 @@ class BlockPool:
         if self._ref[block_id] <= 0:
             raise EngineError(f"block {block_id} is already free")
         self._ref[block_id] -= 1
-        if self._ref[block_id] == 0:
+        if self._ref[block_id] == 0 and self._pin[block_id] == 0:
             if self._digest[block_id] is None:
                 self._push_head(block_id)
             else:
                 self._push_tail(block_id)
+
+    def pin(self, block_id: int) -> None:
+        """Pin a referenced or cached block in VRAM so LRU eviction skips it.
+
+        Raises:
+            EngineError: If the block is neither referenced nor cached with a digest.
+        """
+        self._check_id(block_id)
+        if self._ref[block_id] <= 0 and self._digest[block_id] is None:
+            raise EngineError(f"block {block_id} has no content to pin")
+        if self._pin[block_id] == 0:
+            if self._ref[block_id] == 0:
+                if not self._queued[block_id]:
+                    raise EngineError(f"block {block_id} is unreferenced and not queued")
+                self._unlink(block_id)
+            self._pinned_count += 1
+        self._pin[block_id] += 1
+
+    def unpin(self, block_id: int) -> None:
+        """Release one pin from a block; unreferenced blocks rejoin the free queue.
+
+        Raises:
+            EngineError: If the block is not pinned.
+        """
+        self._check_id(block_id)
+        if self._pin[block_id] <= 0:
+            raise EngineError(f"block {block_id} is not pinned")
+        self._pin[block_id] -= 1
+        if self._pin[block_id] == 0:
+            self._pinned_count -= 1
+            if self._ref[block_id] == 0:
+                if self._digest[block_id] is None:
+                    self._push_head(block_id)
+                else:
+                    self._push_tail(block_id)
+
+    def apply_resize(self, new_num_blocks: int, remap: Mapping[int, int]) -> None:
+        """Rebuild pool arrays for ``new_num_blocks`` applying ``old_id -> new_id`` compaction."""
+        require_int(new_num_blocks, "new_num_blocks", minimum=2)
+        new_ref = array("i", [0]) * new_num_blocks
+        new_pin = array("i", [0]) * new_num_blocks
+        new_digest: list[bytes | None] = [None] * new_num_blocks
+        new_by_digest: dict[bytes, int] = {}
+
+        old_free_order = self.free_queue()
+        preserved_free: list[int] = []
+        evicted_cached = 0
+        for old_id in range(PADDING_BLOCK_ID + 1, self._num_blocks):
+            digest = self._digest[old_id]
+            new_id = remap.get(old_id)
+            if new_id is None:
+                if self._ref[old_id] > 0 or self._pin[old_id] > 0:
+                    raise EngineError(f"resize remap dropped active or pinned block {old_id}")
+                if digest is not None:
+                    evicted_cached += 1
+                continue
+            if not 0 < new_id < new_num_blocks:
+                raise ValueError(f"remapped block id {new_id} is outside 1..{new_num_blocks - 1}")
+            new_ref[new_id] = self._ref[old_id]
+            new_pin[new_id] = self._pin[old_id]
+            new_digest[new_id] = digest
+            if digest is not None:
+                new_by_digest[digest] = new_id
+
+        for old_id in old_free_order:
+            new_id = remap.get(old_id)
+            if new_id is not None and new_ref[new_id] == 0 and new_pin[new_id] == 0:
+                preserved_free.append(new_id)
+
+        self._num_blocks = new_num_blocks
+        self._ref = new_ref
+        self._pin = new_pin
+        self._prev = array("i", [_NONE] * new_num_blocks)
+        self._next = array("i", [_NONE] * new_num_blocks)
+        self._queued = bytearray(new_num_blocks)
+        self._digest = new_digest
+        self._by_digest = new_by_digest
+        self._head = _NONE
+        self._tail = _NONE
+        self._free_count = 0
+        self._pinned_count = sum(1 for p in new_pin[PADDING_BLOCK_ID + 1 :] if p > 0)
+        self._evictions += evicted_cached
+
+        seen_free: set[int] = set()
+        for new_id in preserved_free:
+            seen_free.add(new_id)
+            if self._digest[new_id] is None:
+                self._push_head(new_id)
+            else:
+                self._push_tail(new_id)
+        for new_id in range(PADDING_BLOCK_ID + 1, new_num_blocks):
+            if new_id not in seen_free and self._ref[new_id] == 0 and self._pin[new_id] == 0:
+                if self._digest[new_id] is None:
+                    self._push_head(new_id)
+                else:
+                    self._push_tail(new_id)
+        self.check_integrity()
 
     def free_chain(self, block_ids: Sequence[int]) -> None:
         """Drop one reference on each block of a request's chain, last block first."""
@@ -308,17 +430,27 @@ class BlockPool:
                 problems.append(f"queue ends at {previous} but the tail is {self._tail}")
         if len(order) != self._free_count:
             problems.append(f"queue holds {len(order)} blocks but free_count is {self._free_count}")
+        pinned_seen = 0
         for candidate in range(PADDING_BLOCK_ID + 1, self._num_blocks):
             refs = self._ref[candidate]
+            pins = self._pin[candidate]
             queued = bool(self._queued[candidate])
             if refs < 0:
                 problems.append(f"block {candidate} has negative references: {refs}")
+            if pins < 0:
+                problems.append(f"block {candidate} has negative pins: {pins}")
+            if pins > 0:
+                pinned_seen += 1
             if queued != (candidate in seen):
                 problems.append(f"block {candidate} queued flag disagrees with the queue")
-            if queued and refs != 0:
-                problems.append(f"free block {candidate} has {refs} references")
-            if not queued and refs == 0:
-                problems.append(f"block {candidate} has no references and is not free (leaked)")
+            if queued and (refs != 0 or pins != 0):
+                problems.append(f"free block {candidate} has refs={refs} pins={pins}")
+            if not queued and refs == 0 and pins == 0:
+                problems.append(
+                    f"block {candidate} has no references or pins and is not free (leaked)"
+                )
+        if pinned_seen != self._pinned_count:
+            problems.append(f"pinned_count is {self._pinned_count}, expected {pinned_seen}")
         for digest, owner in self._by_digest.items():
             if not 0 < owner < self._num_blocks or self._digest[owner] != digest:
                 problems.append(f"digest table points at block {owner}, which disagrees")
@@ -329,6 +461,7 @@ class BlockPool:
             )
         if (
             self._ref[PADDING_BLOCK_ID]
+            or self._pin[PADDING_BLOCK_ID]
             or self._queued[PADDING_BLOCK_ID]
             or self._digest[PADDING_BLOCK_ID] is not None
         ):

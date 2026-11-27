@@ -41,3 +41,6 @@ class IterationStats:
     step_seconds: float = 0.0
     pressure_level: str = "normal"
     num_oom_recoveries: int = 0
+    host_kv_stored_blocks: int = 0
+    host_kv_offloads: int = 0
+    host_kv_promotions: int = 0

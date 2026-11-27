@@ -19,6 +19,8 @@ from ayaka.utils.torch_utils import require_torch, resolve_device
 from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from torch import Tensor
 
     from ayaka.kvcache.storage.spec import KVGroup
@@ -110,3 +112,35 @@ class KVPool:
         index = self._group.layer_index(layer_id)
         spec = self._group.spec
         return KVBuffers(self._k[index], self._v[index], spec.layout, spec.codec)
+
+    def block_tensors(self, block_id: int) -> tuple[Tensor, Tensor]:
+        """Return ``(k_block, v_block)`` slices across every layer of this group."""
+        return self._k[:, block_id], self._v[:, block_id]
+
+    def copy_block_from(
+        self,
+        block_id: int,
+        k_src: Tensor,
+        v_src: Tensor,
+        *,
+        non_blocking: bool = False,
+    ) -> None:
+        """Copy one block's key and value slices into ``block_id``."""
+        self._k[:, block_id].copy_(k_src, non_blocking=non_blocking)
+        self._v[:, block_id].copy_(v_src, non_blocking=non_blocking)
+
+    def reallocate(self, new_num_blocks: int, remap: Mapping[int, int]) -> KVPool:
+        """Allocate a new pool of ``new_num_blocks`` and copy ``old_id -> new_id`` slices.
+
+        Allocates destination tensors before modifying anything on ``self``; if allocation
+        fails (for example with an out-of-memory error), ``self`` remains untouched.
+        """
+        new_pool = KVPool(self._group, new_num_blocks, device=self.device)
+        for old_id, new_id in remap.items():
+            if old_id <= 0 or old_id >= self._num_blocks:
+                raise ValueError(f"source block id {old_id} out of range 1..{self._num_blocks - 1}")
+            if new_id <= 0 or new_id >= new_num_blocks:
+                raise ValueError(f"target block id {new_id} out of range 1..{new_num_blocks - 1}")
+            new_pool._k[:, new_id].copy_(self._k[:, old_id])
+            new_pool._v[:, new_id].copy_(self._v[:, old_id])
+        return new_pool

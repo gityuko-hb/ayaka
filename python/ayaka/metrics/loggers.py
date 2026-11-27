@@ -140,6 +140,21 @@ class PrometheusStatLogger:
             "Step-level out-of-memory recoveries",
             registry=self.registry,
         )
+        self._host_stored = Gauge(
+            "ayaka_kv_host_stored_blocks",
+            "Host-RAM KV blocks stored",
+            registry=self.registry,
+        )
+        self._host_offloads = Counter(
+            "ayaka_kv_host_offloads_total",
+            "Evicted KV blocks offloaded to host RAM",
+            registry=self.registry,
+        )
+        self._host_promotions = Counter(
+            "ayaka_kv_host_promotions_total",
+            "KV blocks promoted from host RAM back to device",
+            registry=self.registry,
+        )
         self._step = Histogram(
             "ayaka_engine_step_seconds",
             "Engine step duration",
@@ -159,6 +174,11 @@ class PrometheusStatLogger:
         self._pressure.set(_PRESSURE_GAUGE.get(stats.pressure_level, 0))
         if stats.num_oom_recoveries:
             self._oom_recoveries.inc(stats.num_oom_recoveries)
+        self._host_stored.set(stats.host_kv_stored_blocks)
+        if stats.host_kv_offloads:
+            self._host_offloads.inc(stats.host_kv_offloads)
+        if stats.host_kv_promotions:
+            self._host_promotions.inc(stats.host_kv_promotions)
         if stats.num_finished:
             self._requests.labels("finished").inc(stats.num_finished)
         if stats.num_aborted:

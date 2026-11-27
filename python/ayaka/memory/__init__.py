@@ -24,6 +24,8 @@ if TYPE_CHECKING:
         MemoryBudget,
         plan_budget,
     )
+    from ayaka.memory.host_policy import HostMemoryPlan, plan_host_memory
+    from ayaka.memory.host_probe import PinningProbeResult, probe_host_pinning
     from ayaka.memory.workspace import WORKSPACE_ALIGNMENT, Workspace
 
 __all__ = [
@@ -34,10 +36,14 @@ __all__ = [
     "BudgetPlan",
     "DraftCost",
     "ExpertCost",
+    "HostMemoryPlan",
     "KVCost",
     "MemoryBudget",
+    "PinningProbeResult",
     "Workspace",
     "plan_budget",
+    "plan_host_memory",
+    "probe_host_pinning",
 ]
 
 _EXPORTS = {
@@ -52,6 +58,8 @@ _EXPORTS = {
         "MemoryBudget",
         "plan_budget",
     ),
+    "host_policy": ("HostMemoryPlan", "plan_host_memory"),
+    "host_probe": ("PinningProbeResult", "probe_host_pinning"),
     "workspace": ("WORKSPACE_ALIGNMENT", "Workspace"),
 }
 

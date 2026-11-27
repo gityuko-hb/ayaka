@@ -10,7 +10,7 @@ the code or ask before assuming either way.
 | Method and path | Protocol | Notes |
 | --- | --- | --- |
 | `GET /health` | | `{"status": "ready"}` with 200; `starting`, `draining`, `stalled` or `dead` with 503. `stalled`: the engine has had work and no progress for `--stall-timeout` seconds (60); it goes back to `ready` once a step finishes, and the server keeps serving meanwhile. No key needed. |
-| `GET /metrics` | Prometheus text | counters, gauges and histograms; no per-request labels. `ayaka_engine_progress_age_seconds` is the seconds since the engine last made progress while it had work (0 when idle) |
+| `GET /metrics` | Prometheus text | counters, gauges and histograms; no per-request labels. `ayaka_engine_progress_age_seconds` is the seconds since the engine last made progress while it had work (0 when idle); memory & host-tier metrics expose `ayaka_engine_preemptions_total`, `ayaka_engine_kv_pressure_level`, `ayaka_engine_oom_recoveries_total`, `ayaka_kv_host_stored_blocks`, `ayaka_kv_host_offloads_total`, and `ayaka_kv_host_promotions_total` |
 | `GET /v1/models` | OpenAI | each served name with `max_model_len`, `max_context_tokens` (what one request can hold on this machine), `prefix_cache` and, when detected from the chat template, `suggested_tool_call_parser` |
 | `POST /v1/chat/completions` | OpenAI Chat Completions | streaming, tools, `n`, logprobs, `response_format` |
 | `POST /v1/completions` | OpenAI Completions | streaming; `echo` and `suffix` are refused |
@@ -268,14 +268,16 @@ ignored with a debug log line. The tables below are generated from the table the
 | `ayaka config show` | the server settings and where each comes from | 0 |
 | `ayaka connect TOOL [--write\|--check\|--observe]` | configure and check a coding tool | `--check`: 0 no step failed, 1 a step failed, 2 could not run |
 | `ayaka bench MODEL` | measure prompt read, generation, first token, an agent session, sanity | 0 done, 1 the benchmark failed, 2 a sanity check failed (results written, marked invalid) |
+| `ayaka replay SESSION --model MODEL` | replay a recorded `ayaka.session/1` JSONL trace, checking token parity, cache hits, and latencies | 0 all matched, 6 parity mismatch |
 
 The common exit codes: 0 done; 1 an unexpected error (a bug; `-v` prints the traceback); 2 wrong arguments or a
 wrong request; 3 the model or the tokenizer cannot be loaded; 4 something needed is not installed or available (torch,
 a tokenizer package, a GPU); 5 the memory plan does not fit; 6 the engine failed while generating; 130 interrupted.
 A problem the user can fix is one line, `ayaka: error: ...`, never a traceback.
 
-Flags shared by `run`, `serve`, `plan` and `bench`: `--device`, `--dtype`, `--backends`, `--cuda-graph`,
-`--memory-ratio`, `--kv-reserve-tokens`, `--no-prefix-cache`, `--revision`, `--tokenizer`, `--offline`.
+Flags shared by `run`, `serve`, `plan`, `bench` and `replay`: `--device`, `--dtype`, `--backends`, `--cuda-graph`,
+`--memory-ratio`, `--kv-reserve-tokens`, `--no-prefix-cache`, `--revision`, `--tokenizer`, `--offline`,
+`--host-kv` (off by default), `--ram-keep` (0.20), and `--host-kv-max-mb`.
 `serve` and `bench` also take `--record DIR` (token ids of every request, owner-only). `ayaka COMMAND --help` lists
 every flag with its default.
 
