@@ -6,6 +6,7 @@
     ayaka serve MODEL --port 8000 --tool-call-parser hermes
     ayaka plan MODEL --device cuda --dtype fp16
     ayaka info
+    ayaka doctor [--output json]
     ayaka config show
     ayaka connect claude-code [--write | --check | --observe]
     ayaka bench MODEL [--quick] [--out DIR] [--record DIR]
@@ -92,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "run": _run,
             "plan": _plan,
             "info": _info,
+            "doctor": _doctor,
             "config": _config_show,
             "connect": _connect,
             "bench": _bench,
@@ -218,6 +220,13 @@ def _plan(args: argparse.Namespace) -> int:
         for line in plan_lines(plan, args.model) + (tool_fit_lines(fit) if fit else []):
             print(line)
     return EXIT_MEMORY if fit is not None and fit.fits is False else EXIT_OK
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    """Run environment and memory diagnostics."""
+    from ayaka.entrypoints.doctor import doctor_command
+
+    return doctor_command(args)
 
 
 def _info(args: argparse.Namespace) -> int:

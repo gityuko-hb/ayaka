@@ -62,6 +62,7 @@ from ayaka.entrypoints.parsers.output_grammar import (
 )
 from ayaka.entrypoints.parsers.parameters import ToolSchemas
 from ayaka.entrypoints.parsers.unified import OutputInterpretation
+from ayaka.entrypoints.prompting import PromptPreparation
 from ayaka.entrypoints.render.selection import PromptRenderer
 from ayaka.entrypoints.stream import (
     WRITE_BUFFER_HIGH,
@@ -70,22 +71,19 @@ from ayaka.entrypoints.stream import (
     collect_events,
     pump,
 )
-from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
 from ayaka.utils.import_utils import has_module
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from ayaka.configs.server import ServerConfig
-    from ayaka.configs.tokenizer import EncodeResult
     from ayaka.core.params import SamplingParams
     from ayaka.engine.async_llm import RequestStream
     from ayaka.engine.seam import EngineClient
     from ayaka.entrypoints.conversation import Collected, OutputEvent, OutputRequest
     from ayaka.entrypoints.parsers.output import EventParser
-    from ayaka.entrypoints.render.selection import RenderedChat, RenderRequest
+    from ayaka.entrypoints.render.selection import RenderedChat
     from ayaka.entrypoints.stream import StreamEncoder
-    from ayaka.tokenizers.contracts import EncodeInput
     from ayaka.tokenizers.service import TokenizerService
 
 
@@ -146,7 +144,7 @@ class Generation:
                     pass
 
 
-class Serving:
+class Serving(PromptPreparation):
     """What every handler shares.
 
     Args:
@@ -305,84 +303,6 @@ class Serving:
         )
 
     # -- the generation path ---------------------------------------------------------------
-
-    async def tokenize_chat(
-        self, conversation: Conversation, *, max_tokens: int | None = None, vouch: bool = True
-    ) -> tuple[int, ...]:
-        """Render a conversation with the model's chat template and tokenize it.
-
-        Args:
-            conversation: What to render.
-            max_tokens: The output limit the client asked for; it is only reported in the
-                error of a prompt that does not fit, since :meth:`output_tokens` caps it.
-            vouch: The ids go to the engine next (``False`` when only their count is wanted):
-                the tokenizer remembers it checked them, and the engine does not check every id
-                again.
-
-        Raises:
-            ContextLengthError: If the prompt leaves no room for one output token.
-            InvalidRequestError: If it cannot be rendered.
-            OverloadedError: If the tokenizer is busy.
-        """
-        return await self._encode(conversation.template_data, max_tokens, vouch=vouch)
-
-    async def render_chat(
-        self,
-        request: RenderRequest,
-        *,
-        max_tokens: int | None = None,
-        vouch: bool = True,
-    ) -> RenderedChat:
-        """Render and tokenize a chat request with request-scoped thinking metadata."""
-        self.require_ready()
-        renderer = self.renderer
-        assert renderer is not None  # noqa: S101  # attach() sets it with the engine
-        try:
-            return await asyncio.get_running_loop().run_in_executor(
-                self._preprocess,
-                lambda: renderer.render(request, max_tokens=max_tokens, vouch=vouch),
-            )
-        except ContextLengthError as exc:
-            raise ContextLengthError(
-                prompt_tokens=exc.prompt_tokens,
-                output_tokens=max(max_tokens or 1, 1),
-                max_context_tokens=exc.max_context_tokens,
-            ) from None
-
-    async def tokenize_text(
-        self, prompt: str | tuple[int, ...], *, max_tokens: int | None = None
-    ) -> tuple[int, ...]:
-        """Tokenize a raw completion prompt (text, or ids to validate); as :meth:`tokenize_chat`."""
-
-        def value() -> EncodeInput:
-            return TokenIdsInput(prompt) if isinstance(prompt, tuple) else TextInput(prompt)
-
-        return await self._encode(value, max_tokens, vouch=True)
-
-    async def _encode(
-        self, make: Callable[[], EncodeInput], max_tokens: int | None, *, vouch: bool
-    ) -> tuple[int, ...]:
-        """Build the input with ``make`` and encode it, both on the preprocess thread."""
-        self.require_ready()
-        service = self.tokenizer
-        assert service is not None  # noqa: S101  # attach() sets it with the engine
-
-        def run() -> EncodeResult:
-            return service.encode(make(), EncodeOptions(max_output_tokens=1), vouch=vouch)
-
-        try:
-            result = await asyncio.get_running_loop().run_in_executor(self._preprocess, run)
-        except ContextLengthError as exc:
-            raise ContextLengthError(
-                prompt_tokens=exc.prompt_tokens,
-                output_tokens=max(max_tokens or 1, 1),
-                max_context_tokens=exc.max_context_tokens,
-            ) from None
-        except ValueError as exc:
-            raise InvalidRequestError(f"cannot use this prompt: {exc}") from exc
-        except RuntimeError as exc:
-            raise InvalidRequestError(f"cannot render this prompt: {exc}") from exc
-        return result.token_ids
 
     def output_tokens(self, prompt_tokens: int, requested: int | None) -> int | None:
         """``max_tokens`` for the engine: the request's, capped by the room the context leaves.

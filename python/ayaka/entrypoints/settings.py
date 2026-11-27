@@ -49,6 +49,7 @@ SERVER_FLAGS: Final = (
     ("slow_client_timeout", "slow_client_seconds"),
     ("stall_timeout", "stall_seconds"),
     ("normalize_prompts", "normalize_prompts"),
+    ("overlong_policy", "overlong_policy"),
 )
 
 

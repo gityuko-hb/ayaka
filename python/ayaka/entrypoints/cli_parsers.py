@@ -94,6 +94,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     )
     server_flags(show)
     show.add_argument("-v", "--verbose", action="count", default=0, help="log more")
+    _doctor_parser(commands)
     _connect_parser(commands)
     _bench_parser(commands)
     _engine_server_parser(commands)
@@ -239,6 +240,32 @@ def server_flags(command: argparse.ArgumentParser) -> None:
         default=None,
         help="send every prompt to the tokenizer unchanged, with no client churn rules",
     )
+    server.add_argument(
+        "--overlong-policy",
+        choices=("reject", "truncate"),
+        default=None,
+        help="what to do when a conversation exceeds context or KV capacity (reject)",
+    )
+
+
+def _doctor_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]
+    doctor = commands.add_parser(
+        "doctor",
+        help="check CUDA, memory, toolchain, disk space and startup profiles",
+        description="Run environment and memory-health diagnostics: CUDA driver visibility, "
+        "NVML-vs-CUDA free-memory gap, host pinned-RAM headroom, FlashInfer/nvcc availability, "
+        "cache disk space and startup profile validity. Prints pass/warn/fail with one concrete "
+        "fix per issue. Exits 1 when any check fails.",
+    )
+    doctor.add_argument("--output", choices=("text", "json"), default="text", help="text or json")
+    doctor.add_argument(
+        "--min-disk-gib",
+        type=float,
+        default=5.0,
+        metavar="GIB",
+        help="minimum free disk space on cache directories in GiB (5.0)",
+    )
+    doctor.add_argument("-v", "--verbose", action="count", default=0, help="log more")
 
 
 def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]

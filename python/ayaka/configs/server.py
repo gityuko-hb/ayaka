@@ -25,7 +25,10 @@ from ayaka.core.errors import ConfigError
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["DEFAULT_PORT", "ServerConfig", "user_config_path"]
+__all__ = ["DEFAULT_PORT", "OverlongPolicy", "ServerConfig", "user_config_path"]
+
+type OverlongPolicy = Literal["reject", "truncate"]
+_OVERLONG_POLICIES: Final = ("reject", "truncate")
 
 #: The port ``ayaka serve`` listens on unless told otherwise.
 DEFAULT_PORT: Final = 8000
@@ -97,6 +100,7 @@ class ServerConfig(ConfigMixin):
     tool_strict_level: Literal["auto", "function", "parameter"] = "auto"
     engine_grpc: str | None = None
     normalize_prompts: bool = True
+    overlong_policy: OverlongPolicy = "reject"
 
     def __post_init__(self) -> None:
         if self.tool_strict_level not in ("auto", "function", "parameter"):  # pyright: ignore[reportUnnecessaryComparison]
@@ -124,6 +128,12 @@ class ServerConfig(ConfigMixin):
         _strings(self.served_model_names, "server.served_model_names")
         if len(set(self.served_model_names)) != len(self.served_model_names):
             raise ConfigError("server.served_model_names", "DUPLICATE", "names must be unique")
+        if cast("object", self.overlong_policy) not in _OVERLONG_POLICIES:
+            raise ConfigError(
+                "server.overlong_policy",
+                "INVALID_CHOICE",
+                f"must be one of {_OVERLONG_POLICIES}",
+            )
 
     @property
     def is_loopback(self) -> bool:

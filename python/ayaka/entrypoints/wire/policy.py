@@ -223,7 +223,11 @@ _RESPONSES: Final = EndpointPolicy(
         *_rules(Rule.READ, "sampling", "temperature", "top_p"),
         *_rules(Rule.READ, "answer with server-sent events", "stream"),
         *_rules(Rule.READ, "text.format: json_object or json_schema, enforced", "text"),
-        *_rules(Rule.READ, "only disabled is available", "truncation"),
+        *_rules(
+            Rule.READ,
+            "disabled (default) or auto to drop oldest turns to fit context",
+            "truncation",
+        ),
         *_rules(Rule.READ, "one answer per request; 1 only", "n"),
         *_rules(Rule.READ, "true is refused: this server stores no responses", "store"),
         *_rules(Rule.READ, "echoed in the response object", "metadata"),

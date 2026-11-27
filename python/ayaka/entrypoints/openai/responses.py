@@ -119,6 +119,7 @@ class ResponsesRequest:
     parallel_tool_calls: bool
     echo: dict[str, object]
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
+    truncation: Literal["disabled", "auto"] = "disabled"
     thinking: ThinkingRequest = dataclasses.field(default_factory=ThinkingRequest)
     named_tool_choice: bool = False
 
@@ -135,8 +136,10 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
         raise _invalid("store", "this server stores no responses; send store: false")
     if body.has("n") and body.raw("n") != 1:
         raise _unsupported("n", "the Responses API returns one answer; use Chat Completions")
-    if body.string("truncation") not in (None, "disabled"):
-        raise _unsupported("truncation", "only disabled is available")
+    raw_truncation = body.string("truncation")
+    if raw_truncation not in (None, "disabled", "auto"):
+        raise _unsupported("truncation", "must be disabled or auto")
+    truncation: Literal["disabled", "auto"] = "auto" if raw_truncation == "auto" else "disabled"
     text = body.child("text")
     text_format = text.child("format") if text is not None else None
     response, schema = response_format(text_format, "text.format")
@@ -178,6 +181,7 @@ def parse_responses_request(body: JsonObject) -> ResponsesRequest:
         output=OutputRequest(
             response=response, schema=schema, tool_choice=constrained, strict=strict
         ),
+        truncation=truncation,
         thinking=thinking,
         named_tool_choice=constrained not in ("auto", "required"),
     )
@@ -344,6 +348,7 @@ class _Snapshot:
     usage: UsageEvent | None = None
     error: ErrorEvent | None = None
     incomplete: bool = False
+    truncation: Literal["disabled", "auto"] = "disabled"
 
     def render(self) -> dict[str, object]:
         return {
@@ -360,7 +365,7 @@ class _Snapshot:
             "previous_response_id": None,
             "store": False,
             "text": {"format": {"type": "text"}},
-            "truncation": "disabled",
+            "truncation": self.truncation,
             "usage": _usage(self.usage),
             **self.echo,
         }
@@ -623,6 +628,7 @@ async def create_response(request: web.Request) -> web.StreamResponse:
             named_tool_choice=responses.named_tool_choice,
         ),
         max_tokens=responses.max_tokens,
+        truncate=responses.truncation == "auto",
     )
     prompt = rendered.token_ids
     sampling = responses.sampling.build(serving.output_tokens(len(prompt), responses.max_tokens))
@@ -643,7 +649,13 @@ async def create_response(request: web.Request) -> web.StreamResponse:
         rendered=rendered,
         tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
     )
-    snapshot = _Snapshot(f"resp_{public_id}", int(time.time()), serving.model_name, responses.echo)
+    snapshot = _Snapshot(
+        f"resp_{public_id}",
+        int(time.time()),
+        serving.model_name,
+        responses.echo,
+        truncation=responses.truncation,
+    )
     try:
         if responses.stream:
             encoder = ResponsesStreamEncoder(snapshot, public_id)

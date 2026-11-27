@@ -39,3 +39,5 @@ class IterationStats:
     num_failed: int = 0
     num_settled: int = 0
     step_seconds: float = 0.0
+    pressure_level: str = "normal"
+    num_oom_recoveries: int = 0

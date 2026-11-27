@@ -38,11 +38,12 @@ This module imports torch. Import it through ``ayaka.execution``, which loads it
 
 from __future__ import annotations
 
+import gc
 from typing import TYPE_CHECKING
 
 import torch
 
-from ayaka.core.errors import BackendError
+from ayaka.core.errors import BackendError, OutOfMemoryError
 from ayaka.execution.graph import GraphRunner
 from ayaka.execution.inputs import InputBuilder
 from ayaka.layers.context import ForwardContext
@@ -51,6 +52,7 @@ from ayaka.sampling.penalties import PenaltyStates
 from ayaka.sampling.sampler import Sampler
 from ayaka.sampling.structured.runtime import ConstraintRuntime
 from ayaka.scheduler.step import StepOutput
+from ayaka.utils.torch_memory import empty_cache
 from ayaka.utils.validation import require_int
 
 if TYPE_CHECKING:
@@ -228,6 +230,19 @@ class ModelRunner:
             return StepOutput(
                 step_id=step.step_id, request_ids=step.request_ids, error=exc.to_info()
             )
+        except (torch.OutOfMemoryError, RuntimeError) as exc:
+            if not _is_oom(exc):
+                raise
+            self._builder.mark_stale()
+            gc.collect()
+            empty_cache()
+            return StepOutput(
+                step_id=step.step_id,
+                request_ids=step.request_ids,
+                error=OutOfMemoryError(
+                    f"step {step.step_id} ran out of device memory: {exc}"
+                ).to_info(),
+            )
         return _answer(step, inputs, sampled, logprobs)
 
     def _forward(
@@ -286,6 +301,10 @@ class ModelRunner:
 
     def _context(self, inputs: ModelInputs) -> ForwardContext:
         return ForwardContext(attention=inputs.attention, kv_buffers=self._buffers)
+
+
+def _is_oom(exc: BaseException) -> bool:
+    return isinstance(exc, torch.OutOfMemoryError) or "out of memory" in str(exc).lower()
 
 
 def _logit_rows(step: StepInput, logit_counts: Sequence[int]) -> list[LogitRow]:
