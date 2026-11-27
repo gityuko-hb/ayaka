@@ -163,3 +163,94 @@ def test_qwen3_5_9b_chunk_and_state_prefix_exact_parity() -> None:
     chunk_ids = _run_cold_case(model_id, prompt_b, max_tokens_per_step=24)
     warm_ids = _run_warm_case(model_id, (*prefix, *suffix_a), prompt_b)
     assert single_ids == chunk_ids == warm_ids
+
+
+def test_deepseek_mla_flashinfer_cuda_graph_gpu(tmp_path: Any) -> None:
+    pytest.importorskip("flashinfer")
+    import json
+
+    from ayaka.configs.model_source import RequestFormat
+    from ayaka.engine.build import plan_engine
+    from ayaka.kvcache.storage.spec import LatentKVGroup
+    from gpt2_support import tensor_data
+    from safetensors_files import write_safetensors
+    from tiny_model import tiny_tokenizer
+
+    raw: dict[str, Any] = {
+        "architectures": ["DeepseekV2ForCausalLM"],
+        "model_type": "deepseek_v2",
+        "vocab_size": 260,
+        "hidden_size": 512,
+        "intermediate_size": 1024,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 16,
+        "head_dim": 128,
+        "q_lora_rank": 256,
+        "kv_lora_rank": 512,
+        "qk_nope_head_dim": 128,
+        "qk_rope_head_dim": 64,
+        "v_head_dim": 128,
+        "hidden_act": "silu",
+        "rms_norm_eps": 1e-6,
+        "max_position_embeddings": 1024,
+        "tie_word_embeddings": False,
+        "rope_theta": 10000.0,
+        "rope_interleave": True,
+        "n_routed_experts": 0,
+        "num_experts_per_tok": 0,
+        "moe_intermediate_size": 0,
+        "n_shared_experts": 0,
+        "first_k_dense_replace": 2,
+    }
+    hf_cfg = transformers.DeepseekV2Config(**raw, attn_implementation="eager")
+    torch.manual_seed(42)
+    ref = transformers.DeepseekV2ForCausalLM(hf_cfg).to(torch.bfloat16)
+    with torch.no_grad():
+        for name, param in ref.named_parameters():
+            if "norm" in name:
+                param.fill_(1.0)
+            else:
+                param.normal_(0.0, 0.04)
+
+    (tmp_path / "config.json").write_text(json.dumps(raw), encoding="utf-8")
+    write_safetensors(
+        tmp_path / "model.safetensors",
+        {name: tensor_data(tensor, torch.bfloat16) for name, tensor in ref.state_dict().items()},
+    )
+    prompt = tuple(range(5, 25))
+    ref_cuda = ref.to("cuda").eval()
+    ids_t = torch.tensor([prompt], dtype=torch.int64, device="cuda")
+    with torch.inference_mode():
+        seq = ref_cuda.generate(
+            input_ids=ids_t,
+            attention_mask=torch.ones_like(ids_t),
+            max_new_tokens=10,
+            do_sample=False,
+        )
+    expected = [int(t) for t in seq[0, len(prompt) :].tolist()]
+    del ref_cuda, ref
+    _clear_cuda()
+
+    cfg = EngineConfig(
+        source=ModelSourceConfig(str(tmp_path), format=RequestFormat.SAFETENSORS, offline=True),
+        device=DeviceConfig(
+            device="cuda",
+            dtype=DType.BF16,
+            backends=("flashinfer", "torch"),
+            cuda_graph=True,
+            graph_buckets=(1, 2),
+        ),
+        cache=CacheConfig(block_size=16, kv_reserve_tokens=512, prefix_cache=True),
+        scheduler=SchedulerConfig(max_running=2, max_tokens_per_step=16),
+    )
+    plan = plan_engine(cfg)
+    assert isinstance(plan.group, LatentKVGroup)
+    params = SamplingParams(temperature=0.0, max_tokens=10, ignore_eos=True)
+    with LLM.from_config(cfg, tokenizer=tiny_tokenizer()) as llm:
+        out = llm.generate(prompt, params)
+        assert not isinstance(out, list)
+        assert out.error is None
+        actual = [int(t) for t in out.outputs[0].token_ids]
+    _clear_cuda()
+    assert actual == expected
