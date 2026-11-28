@@ -1,0 +1,525 @@
+{
+  "machine": {
+    "date": "2026-11-24T19:12:15+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "6543176a80876e5ba7dce746335a52d22d593734-dirty"
+  },
+  "results": [
+    {
+      "target": "Qwen/Qwen3-8B",
+      "label": "plain_b1",
+      "batch_size": 1,
+      "draft_bytes": 0,
+      "displaced_kv_blocks": 0,
+      "displaced_kv_tokens": 0,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 8.3706,
+          "tok_per_sec": 15.29,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "tau": 1.0
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 8.3876,
+          "tok_per_sec": 15.26,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "tau": 1.0
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 8.3936,
+          "tok_per_sec": 15.25,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "tau": 1.0
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 15.27,
+      "peak_vram_bytes": 21142018560,
+      "speedup_vs_plain_b1": 1.0,
+      "exact_match_plain": true
+    },
+    {
+      "target": "Qwen/Qwen3-8B",
+      "label": "dflash_b1_t0",
+      "batch_size": 1,
+      "draft_bytes": 2355137024,
+      "displaced_kv_blocks": 999,
+      "displaced_kv_tokens": 15984,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.5167,
+          "tok_per_sec": 23.2,
+          "rounds": 57,
+          "drafted": 778,
+          "accepted": 69,
+          "tau": 2.211
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 4.3279,
+          "tok_per_sec": 29.58,
+          "rounds": 46,
+          "drafted": 666,
+          "accepted": 81,
+          "tau": 2.761
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 6.8152,
+          "tok_per_sec": 18.78,
+          "rounds": 73,
+          "drafted": 1041,
+          "accepted": 54,
+          "tau": 1.74
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 23.05,
+      "peak_vram_bytes": 20728660480,
+      "speedup_vs_plain_b1": 1.509,
+      "exact_match_plain": false
+    },
+    {
+      "target": "Qwen/Qwen3-8B",
+      "label": "dflash_b1_conf05",
+      "batch_size": 1,
+      "draft_bytes": 2277804544,
+      "displaced_kv_blocks": 966,
+      "displaced_kv_tokens": 15456,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.6192,
+          "tok_per_sec": 22.78,
+          "rounds": 34,
+          "drafted": 85,
+          "accepted": 64,
+          "tau": 2.882
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 5.5557,
+          "tok_per_sec": 23.04,
+          "rounds": 41,
+          "drafted": 81,
+          "accepted": 65,
+          "tau": 2.585
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 7.6601,
+          "tok_per_sec": 16.71,
+          "rounds": 31,
+          "drafted": 46,
+          "accepted": 40,
+          "tau": 2.29
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 20.39,
+      "peak_vram_bytes": 20160642048,
+      "speedup_vs_plain_b1": 1.335,
+      "exact_match_plain": false
+    },
+    {
+      "target": "Qwen/Qwen3-8B",
+      "label": "dflash_b1_cap256",
+      "batch_size": 1,
+      "draft_bytes": 2102495744,
+      "displaced_kv_blocks": 891,
+      "displaced_kv_tokens": 14256,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.4257,
+          "tok_per_sec": 23.59,
+          "rounds": 57,
+          "drafted": 778,
+          "accepted": 69,
+          "tau": 2.211
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 4.3654,
+          "tok_per_sec": 29.32,
+          "rounds": 46,
+          "drafted": 666,
+          "accepted": 81,
+          "tau": 2.761
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 6.8575,
+          "tok_per_sec": 18.67,
+          "rounds": 73,
+          "drafted": 1041,
+          "accepted": 54,
+          "tau": 1.74
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 23.06,
+      "peak_vram_bytes": 20350648832,
+      "speedup_vs_plain_b1": 1.51,
+      "exact_match_plain": false
+    },
+    {
+      "target": "Qwen/Qwen3-8B",
+      "label": "dflash_b1_hybrid6",
+      "batch_size": 1,
+      "draft_bytes": 2277804544,
+      "displaced_kv_blocks": 966,
+      "displaced_kv_tokens": 15456,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.3532,
+          "tok_per_sec": 23.91,
+          "rounds": 56,
+          "drafted": 763,
+          "accepted": 70,
+          "tau": 2.25
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 4.3424,
+          "tok_per_sec": 29.48,
+          "rounds": 46,
+          "drafted": 666,
+          "accepted": 81,
+          "tau": 2.761
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 6.8071,
+          "tok_per_sec": 18.8,
+          "rounds": 73,
+          "drafted": 1035,
+          "accepted": 54,
+          "tau": 1.74
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 23.27,
+      "peak_vram_bytes": 20174488064,
+      "speedup_vs_plain_b1": 1.524,
+      "exact_match_plain": false
+    },
+    {
+      "target": "Qwen/Qwen3-8B",
+      "label": "dflash_b2_t0",
+      "batch_size": 2,
+      "draft_bytes": 2277804544,
+      "displaced_kv_blocks": 966,
+      "displaced_kv_tokens": 15456,
+      "prompts": {
+        "code": {
+          "tokens": 256,
+          "seconds": 7.1224,
+          "tok_per_sec": 35.94,
+          "rounds": 114,
+          "drafted": 1556,
+          "accepted": 138,
+          "tau": 2.211
+        },
+        "math": {
+          "tokens": 256,
+          "seconds": 5.6247,
+          "tok_per_sec": 45.51,
+          "rounds": 92,
+          "drafted": 1332,
+          "accepted": 162,
+          "tau": 2.761
+        },
+        "chat": {
+          "tokens": 256,
+          "seconds": 8.809,
+          "tok_per_sec": 29.06,
+          "rounds": 146,
+          "drafted": 2082,
+          "accepted": 108,
+          "tau": 1.74
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 35.63,
+      "peak_vram_bytes": 20221649408,
+      "speedup_vs_plain_b1": 2.333,
+      "exact_match_plain": false
+    },
+    {
+      "target": "unsloth/Llama-3.1-8B-Instruct",
+      "label": "plain_b1",
+      "batch_size": 1,
+      "draft_bytes": 0,
+      "displaced_kv_blocks": 0,
+      "displaced_kv_tokens": 0,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 8.1173,
+          "tok_per_sec": 15.77,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "tau": 1.0
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 8.1372,
+          "tok_per_sec": 15.73,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "tau": 1.0
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 8.1458,
+          "tok_per_sec": 15.71,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "tau": 1.0
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 15.74,
+      "peak_vram_bytes": 20133051904,
+      "speedup_vs_plain_b1": 1.0,
+      "exact_match_plain": true
+    },
+    {
+      "target": "unsloth/Llama-3.1-8B-Instruct",
+      "label": "dflash_b1_t0",
+      "batch_size": 1,
+      "draft_bytes": 2328922624,
+      "displaced_kv_blocks": 1110,
+      "displaced_kv_tokens": 17760,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 3.0108,
+          "tok_per_sec": 42.51,
+          "rounds": 34,
+          "drafted": 299,
+          "accepted": 93,
+          "tau": 3.735
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 3.1027,
+          "tok_per_sec": 41.25,
+          "rounds": 35,
+          "drafted": 308,
+          "accepted": 92,
+          "tau": 3.629
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 4.4685,
+          "tok_per_sec": 28.65,
+          "rounds": 50,
+          "drafted": 442,
+          "accepted": 76,
+          "tau": 2.52
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 36.29,
+      "peak_vram_bytes": 20048350720,
+      "speedup_vs_plain_b1": 2.306,
+      "exact_match_plain": false
+    },
+    {
+      "target": "unsloth/Llama-3.1-8B-Instruct",
+      "label": "dflash_b1_conf05",
+      "batch_size": 1,
+      "draft_bytes": 2328594944,
+      "displaced_kv_blocks": 1110,
+      "displaced_kv_tokens": 17760,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 3.4752,
+          "tok_per_sec": 36.83,
+          "rounds": 34,
+          "drafted": 105,
+          "accepted": 87,
+          "tau": 3.559
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 3.6414,
+          "tok_per_sec": 35.15,
+          "rounds": 32,
+          "drafted": 97,
+          "accepted": 85,
+          "tau": 3.656
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 5.5455,
+          "tok_per_sec": 23.08,
+          "rounds": 44,
+          "drafted": 75,
+          "accepted": 62,
+          "tau": 2.409
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 30.33,
+      "peak_vram_bytes": 20057359872,
+      "speedup_vs_plain_b1": 1.927,
+      "exact_match_plain": false
+    },
+    {
+      "target": "unsloth/Llama-3.1-8B-Instruct",
+      "label": "dflash_b1_cap256",
+      "batch_size": 1,
+      "draft_bytes": 2102495744,
+      "displaced_kv_blocks": 1002,
+      "displaced_kv_tokens": 16032,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 3.0072,
+          "tok_per_sec": 42.56,
+          "rounds": 34,
+          "drafted": 299,
+          "accepted": 93,
+          "tau": 3.735
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 3.0898,
+          "tok_per_sec": 41.43,
+          "rounds": 35,
+          "drafted": 308,
+          "accepted": 92,
+          "tau": 3.629
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 4.4864,
+          "tok_per_sec": 28.53,
+          "rounds": 50,
+          "drafted": 442,
+          "accepted": 76,
+          "tau": 2.52
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 36.28,
+      "peak_vram_bytes": 20274843136,
+      "speedup_vs_plain_b1": 2.305,
+      "exact_match_plain": false
+    },
+    {
+      "target": "unsloth/Llama-3.1-8B-Instruct",
+      "label": "dflash_b1_hybrid6",
+      "batch_size": 1,
+      "draft_bytes": 2328594944,
+      "displaced_kv_blocks": 1110,
+      "displaced_kv_tokens": 17760,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 3.0805,
+          "tok_per_sec": 41.55,
+          "rounds": 35,
+          "drafted": 308,
+          "accepted": 92,
+          "tau": 3.629
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 3.2342,
+          "tok_per_sec": 39.58,
+          "rounds": 37,
+          "drafted": 326,
+          "accepted": 90,
+          "tau": 3.432
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 4.4733,
+          "tok_per_sec": 28.61,
+          "rounds": 50,
+          "drafted": 442,
+          "accepted": 76,
+          "tau": 2.52
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 35.6,
+      "peak_vram_bytes": 20048350720,
+      "speedup_vs_plain_b1": 2.262,
+      "exact_match_plain": false
+    },
+    {
+      "target": "unsloth/Llama-3.1-8B-Instruct",
+      "label": "dflash_b2_t0",
+      "batch_size": 2,
+      "draft_bytes": 2328594944,
+      "displaced_kv_blocks": 1110,
+      "displaced_kv_tokens": 17760,
+      "prompts": {
+        "code": {
+          "tokens": 256,
+          "seconds": 3.9944,
+          "tok_per_sec": 64.09,
+          "rounds": 68,
+          "drafted": 598,
+          "accepted": 186,
+          "tau": 3.735
+        },
+        "math": {
+          "tokens": 256,
+          "seconds": 4.0076,
+          "tok_per_sec": 63.88,
+          "rounds": 68,
+          "drafted": 608,
+          "accepted": 186,
+          "tau": 3.735
+        },
+        "chat": {
+          "tokens": 256,
+          "seconds": 5.8606,
+          "tok_per_sec": 43.68,
+          "rounds": 100,
+          "drafted": 880,
+          "accepted": 154,
+          "tau": 2.54
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 55.4,
+      "peak_vram_bytes": 20096592384,
+      "speedup_vs_plain_b1": 3.52,
+      "exact_match_plain": false
+    }
+  ]
+}

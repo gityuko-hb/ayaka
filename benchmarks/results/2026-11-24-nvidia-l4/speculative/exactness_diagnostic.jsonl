@@ -4,3 +4,6 @@
 {"method": "mtp", "prompt": "code", "plain_with_vs_without_logprobs_same": true, "spec_identical_to_plain": false, "first_divergence_index": 27, "plain_token": 323, "spec_token": 88153, "plain_top2": [[323, -0.9369], [88153, -1.0619]], "margin_nats": 0.125, "spec_token_is_plain_second": true}
 {"method": "mtp", "prompt": "math", "plain_with_vs_without_logprobs_same": false, "spec_identical_to_plain": false, "first_divergence_index": 5, "plain_token": 30696, "spec_token": 504, "note": "plain with logprobs diverged earlier than the comparison point, margin not available"}
 {"method": "mtp", "prompt": "chat", "plain_with_vs_without_logprobs_same": true, "spec_identical_to_plain": false, "first_divergence_index": 2, "plain_token": 1378, "spec_token": 5068, "plain_top2": [[1378, -0.935], [5068, -0.935]], "margin_nats": 0.0, "spec_token_is_plain_second": true}
+{"method": "dflash", "prompt": "code", "plain_with_vs_without_logprobs_same": true, "spec_identical_to_plain": true}
+{"method": "dflash", "prompt": "math", "plain_with_vs_without_logprobs_same": false, "spec_identical_to_plain": true}
+{"method": "dflash", "prompt": "chat", "plain_with_vs_without_logprobs_same": true, "spec_identical_to_plain": true}

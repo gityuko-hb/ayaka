@@ -340,6 +340,26 @@ def _speculative_flags(command: argparse.ArgumentParser) -> None:
         metavar="N",
         help="prefer n-gram lookup over model drafter when match reaches N tokens; 0 disables (0)",
     )
+    spec.add_argument(
+        "--spec-draft-model",
+        default="",
+        metavar="MODEL",
+        help="draft checkpoint for --speculative=dflash",
+    )
+    spec.add_argument(
+        "--spec-confidence-threshold",
+        type=float,
+        default=0.0,
+        metavar="P",
+        help="cumulative probability cutoff for block drafting; 0 disables (0)",
+    )
+    spec.add_argument(
+        "--spec-context-cap",
+        type=int,
+        default=0,
+        metavar="N",
+        help="maximum committed context tokens kept for DFlash; 0 keeps all (0)",
+    )
 
 
 def _serve_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # pyright: ignore[reportPrivateUsage]

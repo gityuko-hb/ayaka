@@ -116,6 +116,16 @@ class EngineConfig(ConfigMixin):
                 f"max_running={running} needs a block each, but cache.num_blocks={blocks} "
                 f"leaves {blocks - 1} after the padding block",
             )
+        if (
+            self.speculative.enabled
+            and self.speculative.method == "dflash"
+            and not self.speculative.draft_model.strip()
+        ):
+            raise ConfigError(
+                "engine.speculative.draft_model",
+                "DFLASH_NEEDS_DRAFT_MODEL",
+                "speculative.method='dflash' requires speculative.draft_model to be set",
+            )
 
     @property
     def tokenizer_config(self) -> TokenizerConfig:

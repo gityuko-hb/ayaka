@@ -1,0 +1,162 @@
+{
+  "machine": {
+    "date": "2026-11-24T19:30:13+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "6543176a80876e5ba7dce746335a52d22d593734-dirty"
+  },
+  "comparisons": [
+    {
+      "model": "Qwen/Qwen3-8B",
+      "runner": "ayaka_plain",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 15.27,
+          "seconds": 8.3819,
+          "tokens": 128
+        },
+        "reasoning": {
+          "tok_per_sec": 15.26,
+          "seconds": 8.3875,
+          "tokens": 128
+        }
+      },
+      "peak_vram_bytes": 21103107072
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "runner": "ayaka_lookup_cost",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 23.49,
+          "seconds": 5.4484,
+          "tokens": 128
+        },
+        "reasoning": {
+          "tok_per_sec": 17.54,
+          "seconds": 7.2964,
+          "tokens": 128
+        }
+      },
+      "peak_vram_bytes": 20439802880
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "runner": "ayaka_dflash",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 27.88,
+          "seconds": 4.5911,
+          "tokens": 128
+        },
+        "reasoning": {
+          "tok_per_sec": 16.39,
+          "seconds": 7.8096,
+          "tokens": 128
+        }
+      },
+      "peak_vram_bytes": 19913769984
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "runner": "transformers_plain",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 15.08,
+          "seconds": 8.4885,
+          "tokens": 128
+        },
+        "reasoning": {
+          "tok_per_sec": 15.1,
+          "seconds": 8.476,
+          "tokens": 128
+        }
+      },
+      "peak_vram_bytes": 16588343808
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "runner": "transformers_prompt_lookup_4",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 21.13,
+          "seconds": 6.0588,
+          "tokens": 128
+        },
+        "reasoning": {
+          "tok_per_sec": 16.82,
+          "seconds": 7.6099,
+          "tokens": 128
+        }
+      },
+      "peak_vram_bytes": 16594566144
+    },
+    {
+      "model": "Qwen/Qwen3-8B",
+      "runner": "zlab_dflash_ref_hf",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 37.18,
+          "tokens": 128,
+          "mean_accepted_per_step": 3.432
+        },
+        "reasoning": {
+          "tok_per_sec": 16.54,
+          "tokens": 128,
+          "mean_accepted_per_step": 1.5
+        }
+      },
+      "peak_vram_bytes": 18717082112
+    },
+    {
+      "model": "XiaomiMiMo/MiMo-7B-RL",
+      "runner": "ayaka_plain",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 16.62,
+          "seconds": 7.7004,
+          "tokens": 128
+        },
+        "reasoning": {
+          "tok_per_sec": 16.64,
+          "seconds": 7.6903,
+          "tokens": 128
+        }
+      },
+      "peak_vram_bytes": 19869800448
+    },
+    {
+      "model": "XiaomiMiMo/MiMo-7B-RL",
+      "runner": "ayaka_mtp",
+      "prompts": {
+        "code_edit": {
+          "tok_per_sec": 24.1,
+          "seconds": 5.311,
+          "tokens": 128
+        },
+        "reasoning": {
+          "tok_per_sec": 25.5,
+          "seconds": 5.0201,
+          "tokens": 128
+        }
+      },
+      "peak_vram_bytes": 20089858560
+    },
+    {
+      "model": "XiaomiMiMo/MiMo-7B-RL",
+      "runner": "transformers_qwen2_plain",
+      "error": "The repository /root/.cache/huggingface/hub/models--XiaomiMiMo--MiMo-7B-RL/snapshots/7c7707596b0ef1032ef82970d7a4a484ca457c4d contains custom code which must be executed to correctly load the model. You can inspect the repository content at /root/.cache/huggingface/hub/models--XiaomiMiMo--MiMo-7B-RL/snapshots/7c7707596b0ef1032ef82970d7a4a484ca457c4d .\n You can inspect the repository content at https://hf.co//root/.cache/huggingface/hub/models--XiaomiMiMo--MiMo-7B-RL/snapshots/7c7707596b0ef1032ef82970d7a4a484ca457c4d.\nPlease pass the argument `trust_remote_code=True` to allow custom code to be run."
+    }
+  ]
+}

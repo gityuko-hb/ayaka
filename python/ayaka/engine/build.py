@@ -259,6 +259,34 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             spec=replace(group.spec, num_layers=group.spec.num_layers + 1),
         )
         groups = (group,)
+    elif (
+        config.speculative.enabled
+        and config.speculative.method == "dflash"
+        and config.speculative.draft_model
+    ):
+        from ayaka.configs.model_source import ModelSourceConfig
+        from ayaka.model_loader.source import resolve_source
+        from ayaka.models.dflash import (
+            DFlashConfig,
+            describe_dflash_bytes,
+            describe_dflash_kv_bytes_per_token,
+        )
+
+        draft_dir = resolve_source(
+            ModelSourceConfig(
+                config.speculative.draft_model,
+                revision=config.source.revision,
+                offline=config.source.offline,
+            )
+        )
+        dflash_cfg = DFlashConfig.from_directory(draft_dir)
+        kv_per_tok = describe_dflash_kv_bytes_per_token(dflash_cfg, dtype=device.dtype)
+        fixed = describe_dflash_bytes(dflash_cfg, dtype=device.dtype)
+        if config.speculative.draft_context_cap > 0:
+            est_running = max(config.scheduler.max_running or 1, 1)
+            fixed += config.speculative.draft_context_cap * kv_per_tok * est_running
+            kv_per_tok = 0
+        draft_costs = (DraftCost(name="dflash", fixed_bytes=fixed, bytes_per_kv_token=kv_per_tok),)
     block_size = group.spec.block_size
     context = model_config.context_length
     if (
@@ -543,6 +571,7 @@ def build_engine(
         pool=pools[0],
         group=group,
         mtp_active=mtp_active,
+        source=config.source,
         has_recurrent_state=state_group is not None,
     )
     proposer, controller, lookahead = (
