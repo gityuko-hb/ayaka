@@ -32,7 +32,7 @@ from ayaka.utils.parsing import parse_json_strict
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from ayaka.core.constraints import ConstraintKind
+    from ayaka.core.constraints import ConstraintKind, StructuralTagSpec
     from ayaka.core.multimodal import ImageInput
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import FinishReason
@@ -144,6 +144,10 @@ class OutputRequest:
 
     response: ConstraintKind | None = None
     schema: Mapping[str, object] | None = None
+    pattern: str | None = None
+    choices: tuple[str, ...] = ()
+    grammar: str | None = None
+    structural_tag: StructuralTagSpec | None = None
     tool_choice: str = "auto"
     strict: bool = False
 

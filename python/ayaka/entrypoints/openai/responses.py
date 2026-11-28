@@ -57,6 +57,7 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.failures import responses_code
 from ayaka.entrypoints.http import read_body
 from ayaka.entrypoints.openai.protocol import response_format
+from ayaka.entrypoints.parsers.parameters import ToolSchemas
 from ayaka.entrypoints.render.reasoning import ThinkingRequest, parse_reasoning_effort
 from ayaka.entrypoints.render.selection import RenderRequest
 from ayaka.entrypoints.serving import REQUEST_ID, SERVING
@@ -672,6 +673,7 @@ async def create_response(request: web.Request) -> web.StreamResponse:
         images=conversation.images,
         image_spans=rendered.image_spans,
         rendered=rendered,
+        tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
     )
     snapshot = _Snapshot(f"resp_{public_id}", int(time.time()), serving.model_name, responses.echo)
     try:

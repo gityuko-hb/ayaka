@@ -1,40 +1,16 @@
-"""One request's constraint as it runs: which tokens the next draw may pick.
-
-:class:`ConstraintMatcher` is a small state machine around a grammar matcher::
-
-    MAYBE        the first draw of a model that may open a reasoning block: what the state after
-                 it allows, plus the block's opening token; that token leads to WAIT_START,
-                 anything else is learned by the state after it
-    WAIT_START   free; waits for ``start_after`` (the end of a reasoning block)
-    WAIT_OPEN    free; waits for the model to open a tool call (a lazy call)
-    WAIT_BRACE   free; an optional call in a format without markers: blank and special tokens
-                 (Llama 3.1's ``<|python_tag|>``) keep waiting,
-                 a token that opens a JSON object starts the grammar with it, any other token
-                 makes the whole answer free text
-    FREE         free to the end
-    FORCE        only the opening marker may follow (a call the request forces)
-    ON           the grammar decides (JSON, or the body of a call)
-    END          only an end-of-sequence token may follow
-
-A free state needs no mask at all, so a request whose constraint has not started pays nothing and
-its decode steps can still replay a CUDA graph. The matcher only learns **committed** tokens, the
-ones the scheduler emitted, through :meth:`ConstraintMatcher.accept`; the mask it gives is for
-the token after them.
-
-A grammar error (a token the grammar refused, which the mask should have prevented) moves the
-matcher to ``END``: the output stays as the model wrote it and is never repaired.
-"""
+"""One request's running output constraint with token masking, validation, and rollback."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable
+    from collections.abc import Collection, Iterable, Sequence
 
     from numpy.typing import NDArray
 
@@ -44,7 +20,7 @@ _LOG = logging.getLogger(__name__)
 
 
 class GrammarState(Protocol):
-    """The part of a grammar matcher (llguidance's ``LLMatcher``) a constraint uses."""
+    """Minimal compiled grammar interface supported by both backends and test doubles."""
 
     def compute_bitmask(self) -> bytes: ...
 
@@ -56,7 +32,7 @@ class GrammarState(Protocol):
 
     def get_error(self) -> str: ...
 
-    def deep_copy(self) -> GrammarState: ...
+    def deep_copy(self) -> Any: ...
 
 
 class _State(Enum):
@@ -69,27 +45,18 @@ class _State(Enum):
     END = auto()
 
 
-class ConstraintMatcher:
-    """The running constraint of one request.
+@dataclass(frozen=True, slots=True)
+class _Step:
+    state: _State
+    reasoning_open: int | None
+    seen: tuple[int, ...]
+    grammar: Any
+    grammar_consumed: bool
+    grammar_snapshot: Any = None
 
-    Args:
-        template: The compiled grammar in its start state; each start of the grammar works on a
-            copy, so the template is shared by every request with the same constraint.
-        vocab_size: Bits of a mask.
-        eos_token_ids: The tokens ``END`` allows.
-        start_after: A token that switches the constraint on, or ``None`` to start at once.
-        reasoning_open: With ``start_after``, the token that opens a reasoning block the model
-            may write as its first token; any other first token starts the constraint at once.
-            The output parser follows the same rule (``ayaka.entrypoints.parsers.formats``).
-        opening: The tokens that open a tool call (one marker token, or the marker's spelling),
-            or empty for a JSON constraint.
-        forced: Whether the answer must start with a call.
-        parallel: Whether the model may write on (more calls) after a call; otherwise ``END``.
-        brace: For an optional call without an opening marker, the tokens whose text opens a
-            JSON object (after optional blanks); ``None`` otherwise.
-        skip: With ``brace``, the tokens that keep waiting: whitespace, and the special tokens a
-            model may write before a call (``<|python_tag|>``), which decode to no text.
-    """
+
+class ConstraintMatcher:
+    """Running constraint state machine for one request, supporting rollback and draft windows."""
 
     def __init__(
         self,
@@ -110,15 +77,15 @@ class ConstraintMatcher:
         self._eos = tuple(token for token in eos_token_ids if token < vocab_size)
         self._start_after = start_after
         self._opening = opening
-        self._seen: list[int] = []  # the last tokens, to find a lazy opening
+        self._seen: list[int] = []
         self._forced = forced
         self._parallel = parallel
         self._brace = brace
         self._skip = skip
-        self._grammar: GrammarState | None = None
+        self._grammar: Any = None
         self._state = _State.WAIT_START
-        # The first draw may open a reasoning block: the state after it is already set up.
         self._reasoning_open = reasoning_open if start_after is not None else None
+        self._history: list[_Step] = []
         if start_after is None or self._reasoning_open is not None:
             self._begin()
 
@@ -126,14 +93,14 @@ class ConstraintMatcher:
     def active(self) -> bool:
         """Whether the next draw is constrained."""
         if self._reasoning_open is not None and self._state is _State.WAIT_OPEN:
-            return False  # free either way
+            return False
         if self._state is _State.END:
             return bool(self._eos)
         return self._state in (_State.FORCE, _State.ON)
 
     @property
     def state(self) -> str:
-        """The state's name, for tests and logs."""
+        """Current state name for diagnostics and tests."""
         return "MAYBE" if self._reasoning_open is not None else self._state.name
 
     def _begin(self) -> None:
@@ -163,29 +130,31 @@ class ConstraintMatcher:
             self._grammar = grammar
             self._state = _State.ON
             return
-        # Text, or a brace the grammar refuses (``{%``): the answer is free, never cut short.
         self._state = _State.FREE
 
     def mask(self) -> NDArray[np.uint32] | None:
-        """The allowed tokens of the next draw as ``uint32`` words, or ``None`` if free."""
+        """Allowed tokens for the next draw as ``uint32`` words, or ``None`` when free."""
         words = self._mask()
         opening = self._reasoning_open
         if words is not None and opening is not None and opening // 32 < self._words:
             words = words.copy()
-            words[opening // 32] |= np.uint32(1 << (opening % 32))  # the block may open here
+            words[opening // 32] |= np.uint32(1 << (opening % 32))
         return words
 
     def _mask(self) -> NDArray[np.uint32] | None:
         if self._state is _State.ON:
-            assert self._grammar is not None  # noqa: S101  # ON always has a grammar
+            assert self._grammar is not None  # noqa: S101
+            fill = getattr(self._grammar, "fill_bitmask", None)
+            if callable(fill):
+                words = np.asarray(fill(), dtype=np.uint32)
+                return words[: self._words]
             words = np.frombuffer(self._grammar.compute_bitmask(), dtype="<u4")
             return words[: self._words].astype(np.uint32)
         if self._state is _State.FORCE:
-            # The next token of the opening, in order.
             return self._only((self._opening[len(self._seen)],))
         if self._state is _State.END and self._eos:
             return self._only(self._eos)
-        return None  # free, or an end the model has no token for
+        return None
 
     def _only(self, tokens: Iterable[int]) -> NDArray[np.uint32]:
         words = np.zeros(self._words, dtype=np.uint32)
@@ -194,24 +163,45 @@ class ConstraintMatcher:
         return words
 
     def accept(self, tokens: Iterable[int]) -> None:
-        """Learn committed tokens, in order."""
+        """Advance state through committed ``tokens`` in order."""
         for token in tokens:
             self._accept(token)
 
-    def _accept(self, token: int) -> None:
+    def _accept(self, token: int) -> bool:
+        prev_state = self._state
+        prev_reasoning = self._reasoning_open
+        prev_seen = tuple(self._seen)
+        prev_grammar = self._grammar
+        has_native_rb = prev_grammar is not None and callable(
+            getattr(prev_grammar, "rollback", None)
+        )
+        fallback_snap = (
+            prev_grammar.deep_copy()
+            if prev_grammar is not None and prev_state is _State.ON and not has_native_rb
+            else None
+        )
+        grammar_consumed = False
+        accepted = True
+
         if self._reasoning_open is not None:
             opened = token == self._reasoning_open
             self._reasoning_open = None
             if opened:
                 self._grammar = None
                 self._seen.clear()
-                self._state = _State.WAIT_START  # until the block closes
-                return
+                self._state = _State.WAIT_START
+                self._history.append(
+                    _Step(prev_state, prev_reasoning, prev_seen, prev_grammar, False, fallback_snap)
+                )
+                return True
+
         state = self._state
         if state is _State.WAIT_START:
             if token == self._start_after:
                 self._begin()
         elif state is _State.FORCE:
+            expected = self._opening[len(self._seen)]
+            accepted = token == expected
             self._seen.append(token)
             if len(self._seen) == len(self._opening):
                 self._start_grammar()
@@ -224,14 +214,80 @@ class ConstraintMatcher:
                 self._start_grammar()
         elif state is _State.ON:
             grammar = self._grammar
-            assert grammar is not None  # noqa: S101  # ON always has a grammar
+            assert grammar is not None  # noqa: S101
             if not grammar.consume_token(token) or grammar.is_error():
                 _LOG.debug("constraint: the grammar refused a token: %s", grammar.get_error())
                 self._state = _State.END
-            elif grammar.is_stopped():
-                self._grammar = None
-                if self._opening and self._parallel:
-                    self._seen.clear()
-                    self._state = _State.WAIT_OPEN
-                else:
-                    self._state = _State.END
+                accepted = False
+            else:
+                grammar_consumed = True
+                if grammar.is_stopped():
+                    self._grammar = None
+                    if self._opening and self._parallel:
+                        self._seen.clear()
+                        self._state = _State.WAIT_OPEN
+                    else:
+                        self._state = _State.END
+        elif state is _State.END:
+            accepted = token in self._eos
+
+        self._history.append(
+            _Step(
+                prev_state, prev_reasoning, prev_seen, prev_grammar, grammar_consumed, fallback_snap
+            )
+        )
+        return accepted
+
+    def rollback(self, num_tokens: int) -> None:
+        """Undo the last ``num_tokens`` accepted transitions."""
+        if num_tokens <= 0:
+            return
+        steps = min(num_tokens, len(self._history))
+        for _ in range(steps):
+            step = self._history.pop()
+            self._state = step.state
+            self._reasoning_open = step.reasoning_open
+            self._seen = list(step.seen)
+            if step.grammar_snapshot is not None:
+                self._grammar = step.grammar_snapshot
+            else:
+                self._grammar = step.grammar
+                if step.grammar_consumed and self._grammar is not None:
+                    self._grammar.rollback(1)
+
+    def validate_tokens(self, tokens: Sequence[int]) -> bool:
+        """Check whether ``tokens`` form a valid continuation without mutating committed state."""
+        if not tokens:
+            return True
+        if (
+            self._state is _State.ON
+            and self._reasoning_open is None
+            and not (self._opening and self._parallel)
+            and self._grammar is not None
+            and callable(getattr(self._grammar, "validate_tokens", None))
+        ):
+            return bool(self._grammar.validate_tokens(tokens))
+        taken = 0
+        try:
+            for tok in tokens:
+                taken += 1
+                if not self._accept(tok):
+                    return False
+            return True
+        finally:
+            self.rollback(taken)
+
+    def window_masks(self, draft_tokens: Sequence[int]) -> list[NDArray[np.uint32] | None]:
+        """Compute exact per-row allowed-token masks across a speculative verification window."""
+        masks: list[NDArray[np.uint32] | None] = [self.mask()]
+        if not draft_tokens:
+            return masks
+        taken = 0
+        try:
+            for draft in draft_tokens:
+                self._accept(draft)
+                taken += 1
+                masks.append(self.mask())
+        finally:
+            self.rollback(taken)
+        return masks

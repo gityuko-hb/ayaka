@@ -43,6 +43,7 @@ EXTRAS: Final[Mapping[str, tuple[str, ...]]] = {
     "flashinfer": ("flashinfer-python",),
     "serve": ("aiohttp",),
     "structured": ("llguidance",),
+    "xgrammar": ("xgrammar",),
     "hf": ("transformers", "tokenizers", "huggingface-hub"),
     "tiktoken": ("tiktoken", "jinja2"),
 }

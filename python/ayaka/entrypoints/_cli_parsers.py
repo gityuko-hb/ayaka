@@ -222,6 +222,12 @@ def _engine_flags(command: argparse.ArgumentParser) -> None:
         help="capture decode steps in CUDA graphs at start-up and replay them (GPU only)",
     )
     where.add_argument(
+        "--structured-backend",
+        choices=("llguidance", "xgrammar"),
+        default="llguidance",
+        help="grammar compiler backend for structured output (llguidance)",
+    )
+    where.add_argument(
         "--memory-ratio",
         type=float,
         default=None,
@@ -360,12 +366,19 @@ def _server_flags(command: argparse.ArgumentParser) -> None:
     server.add_argument(
         "--reasoning-parser",
         metavar="NAME",
-        help="the model's reasoning format: think, deepseek_r1",
+        help="the model's reasoning format: think, deepseek_r1, deepseek_v3, glm45, minimax_m3",
     )
     server.add_argument(
         "--tool-call-parser",
         metavar="NAME",
-        help="the model's tool-call format: hermes, llama3_json",
+        help="tool-call format (hermes, llama3_json, qwen3_json, deepseek_json, qwen3_coder, "
+        "mimo, glm_xml, minimax_m2, minimax_m3, deepseek_dsml)",
+    )
+    server.add_argument(
+        "--tool-strict-level",
+        choices=("auto", "function", "parameter"),
+        default=None,
+        help="tool schema enforcement level: auto, function or parameter (auto)",
     )
     server.add_argument("--max-body-bytes", type=int, metavar="N", help="largest request body")
     server.add_argument(

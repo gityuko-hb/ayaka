@@ -520,6 +520,7 @@ def build_engine(
             service,
             max_model_len=context,
             vocab_size=model_config.vocab_size,
+            structured_backend=config.structured_backend,
             vision=model_config.vision_spec,
         ),
         output_processor=OutputProcessor(service, abort=scheduler.abort),

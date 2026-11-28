@@ -97,7 +97,11 @@ ignored with a debug log line. The tables below are generated from the table the
 | `tools` | read | function tools; a call needs --tool-call-parser |
 | `tool_choice` | read | function tools; a call needs --tool-call-parser |
 | `parallel_tool_calls` | read | function tools; a call needs --tool-call-parser |
-| `response_format` | read | json_object or json_schema, always enforced |
+| `response_format` | read | structured answer format: text, json_object, json_schema, regex, choice, grammar, or structural_tag |
+| `guided_regex` | read | structured output constraints (regex, choice, grammar, structural tag) |
+| `guided_choice` | read | structured output constraints (regex, choice, grammar, structural tag) |
+| `guided_grammar` | read | structured output constraints (regex, choice, grammar, structural tag) |
+| `structural_tag` | read | structured output constraints (regex, choice, grammar, structural tag) |
 | `modalities` | read | only text output is available |
 | `reasoning_effort` | read | request-scoped thinking: none disables it, minimal..max sets effort |
 | `chat_template_kwargs` | read | extra keyword arguments passed to the model's chat template |

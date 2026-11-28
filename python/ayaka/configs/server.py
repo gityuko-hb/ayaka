@@ -17,7 +17,7 @@ import os
 import sys
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from ayaka.configs.base import ConfigMixin
 from ayaka.core.errors import ConfigError
@@ -94,9 +94,16 @@ class ServerConfig(ConfigMixin):
     served_model_names: tuple[str, ...] = ()
     reasoning_parser: str | None = None
     tool_call_parser: str | None = None
+    tool_strict_level: Literal["auto", "function", "parameter"] = "auto"
     normalize_prompts: bool = True
 
     def __post_init__(self) -> None:
+        if self.tool_strict_level not in ("auto", "function", "parameter"):  # pyright: ignore[reportUnnecessaryComparison]
+            raise ConfigError(
+                "server.tool_strict_level",
+                "INVALID_CHOICE",
+                f"must be auto, function or parameter, got {self.tool_strict_level!r}",
+            )
         if not isinstance(self.host, str) or not self.host:  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ConfigError("server.host", "INVALID", "must be a non-empty host name or address")
         _int(self.port, "server.port", 0, 65535)

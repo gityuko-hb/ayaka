@@ -34,7 +34,7 @@ from ayaka.entrypoints.conversation import (
 )
 from ayaka.entrypoints.parsers.formats import reasoning_format, tool_call_format
 from ayaka.entrypoints.parsers.reasoning import ReasoningParser
-from ayaka.entrypoints.parsers.tool_calls import ToolCallParser
+from ayaka.entrypoints.parsers.tool_calls.factory import build_tool_call_parser
 from ayaka.entrypoints.parsers.unified import ChatResponseProcessor
 
 if TYPE_CHECKING:
@@ -43,6 +43,8 @@ if TYPE_CHECKING:
     from ayaka.entrypoints.conversation import OutputEvent
     from ayaka.entrypoints.parsers.formats import ReasoningFormat, ToolCallFormat
     from ayaka.entrypoints.parsers.markers import Marker
+    from ayaka.entrypoints.parsers.parameters import ToolSchemas
+    from ayaka.entrypoints.parsers.tool_calls.base import ToolCallParserLike
     from ayaka.entrypoints.parsers.unified import OutputInterpretation
     from ayaka.tokenizers.ports import TokenizerLike
 
@@ -194,7 +196,7 @@ class OutputFormat:
             else None
         )
         calls = (
-            ToolCallParser(
+            build_tool_call_parser(
                 self.tool_calls, call_id_prefix=call_id_prefix, markers=self.tool_markers
             )
             if self.tool_calls is not None and tools
@@ -215,6 +217,7 @@ class OutputFormat:
         interpretation: OutputInterpretation,
         *,
         call_id_prefix: str,
+        tool_schemas: ToolSchemas | None = None,
         withhold_call: bool = False,
     ) -> ChatResponseProcessor:
         """Build a request-scoped :class:`ChatResponseProcessor` from ``interpretation``."""
@@ -229,8 +232,11 @@ class OutputFormat:
             else None
         )
         calls = (
-            ToolCallParser(
-                self.tool_calls, call_id_prefix=call_id_prefix, markers=self.tool_markers
+            build_tool_call_parser(
+                self.tool_calls,
+                call_id_prefix=call_id_prefix,
+                markers=self.tool_markers,
+                schemas=tool_schemas,
             )
             if self.tool_calls is not None and interpretation.tools
             else None
@@ -262,7 +268,7 @@ class OutputParser:
     def __init__(
         self,
         reasoning: ReasoningParser | None,
-        tool_calls: ToolCallParser | None,
+        tool_calls: ToolCallParserLike | None,
         *,
         single_call: bool = False,
         withheld_marker: Marker | None = None,

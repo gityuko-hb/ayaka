@@ -15,8 +15,9 @@ import pytest
 
 from ayaka.core.constraints import ConstraintKind, StructuredParams, ToolCallSyntax, ToolSchema
 from ayaka.core.errors import CapabilityError, InvalidRequestError, UnsupportedFeatureError
-from ayaka.sampling.structured import compiler as compiler_module
+from ayaka.sampling.structured import llguidance_backend as llg_backend_module
 from ayaka.sampling.structured.compiler import GrammarCompiler
+from ayaka.sampling.structured.llguidance_backend import LLGuidanceBackend
 from tokenizer_fakes import (
     CLOSE_CALL,
     EOS,
@@ -335,7 +336,7 @@ class TestCompiler:
             time.sleep(0.5)
             raise AssertionError("never reached in time")
 
-        monkeypatch.setattr(GrammarCompiler, "_build", staticmethod(slow))
+        monkeypatch.setattr(LLGuidanceBackend, "_build", staticmethod(slow))
         compiler = _compiler(timeout=0.05)
 
         with pytest.raises(InvalidRequestError, match="longer than"):
@@ -346,7 +347,7 @@ class TestCompiler:
         def missing(name: str, **_: object) -> object:
             raise CapabilityError(name, detail="not installed", remedy="install it")
 
-        monkeypatch.setattr(compiler_module, "require_module", missing)
+        monkeypatch.setattr(llg_backend_module, "require_module", missing)
 
         with pytest.raises(UnsupportedFeatureError, match="structured extra"):
             _compiler().compile(StructuredParams(kind=ConstraintKind.JSON_OBJECT))

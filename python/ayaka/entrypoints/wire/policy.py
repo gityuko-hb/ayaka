@@ -154,7 +154,20 @@ _CHAT: Final = EndpointPolicy(
             "tool_choice",
             "parallel_tool_calls",
         ),
-        *_rules(Rule.READ, "json_object or json_schema, always enforced", "response_format"),
+        *_rules(
+            Rule.READ,
+            "structured answer format: text, json_object, json_schema, regex, choice, "
+            "grammar, or structural_tag",
+            "response_format",
+        ),
+        *_rules(
+            Rule.READ,
+            "structured output constraints (regex, choice, grammar, structural tag)",
+            "guided_regex",
+            "guided_choice",
+            "guided_grammar",
+            "structural_tag",
+        ),
         *_rules(Rule.READ, "only text output is available", "modalities"),
         *_rules(
             Rule.READ,

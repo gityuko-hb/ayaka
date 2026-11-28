@@ -40,6 +40,7 @@ SERVER_FLAGS: Final = (
     ("served_model_name", "served_model_names"),
     ("reasoning_parser", "reasoning_parser"),
     ("tool_call_parser", "tool_call_parser"),
+    ("tool_strict_level", "tool_strict_level"),
     ("max_body_bytes", "max_body_bytes"),
     ("shutdown_timeout", "shutdown_timeout"),
     ("sse_coalesce_ms", "sse_coalesce_ms"),

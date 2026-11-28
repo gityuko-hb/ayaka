@@ -27,7 +27,7 @@ def _embedded(text: str, rule: str) -> dict[str, object]:
 _LAYOUT = {"whitespace_flexible": False, "item_separator": ", ", "key_separator": ": "}
 
 
-def test_a_json_schema_is_embedded_with_the_single_line_layout() -> None:
+def test_a_json_schema_is_embedded_compact() -> None:
     params = StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema={"type": "integer"})
 
     schema = _embedded(grammar_text(params), "start")
