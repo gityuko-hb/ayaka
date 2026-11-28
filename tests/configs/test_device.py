@@ -90,10 +90,21 @@ class TestDeviceConfig:
     def test_backend_order_is_kept(self) -> None:
         assert DeviceConfig(backends=("flashinfer", "torch")).backends == ("flashinfer", "torch")
 
-    @pytest.mark.parametrize("flag", [1, "yes", None])
+    @pytest.mark.parametrize("flag", [1, "yes"])
     def test_rejects_non_bool_graph_flag(self, flag: object) -> None:
         with pytest.raises(TypeError, match="cuda_graph must be bool"):
             DeviceConfig(device="cuda", cuda_graph=flag)  # type: ignore[arg-type]  # deliberately wrong type
+
+    def test_graphs_are_on_by_default_on_a_gpu_and_off_on_the_cpu(self) -> None:
+        assert DeviceConfig(device="cuda").uses_cuda_graph
+        assert DeviceConfig(device="cuda:1").uses_cuda_graph
+        assert not DeviceConfig(device="cpu").uses_cuda_graph
+        assert DeviceConfig(device="cuda").cuda_graph is None  # unset, not decided by the user
+
+    def test_an_explicit_choice_wins_over_the_default(self) -> None:
+        assert not DeviceConfig(device="cuda", cuda_graph=False).uses_cuda_graph
+        assert DeviceConfig(device="cuda", cuda_graph=True).uses_cuda_graph
+        assert not DeviceConfig(device="cpu", cuda_graph=False).uses_cuda_graph
 
     def test_graph_on_cpu_is_rejected(self) -> None:
         with pytest.raises(ConfigError) as caught:

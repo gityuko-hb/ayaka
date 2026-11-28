@@ -38,7 +38,7 @@ and do not report a step as done without its check's output.
 
    ```sh
    head -c 24 /dev/urandom | base64 > ~/.ayaka-key && chmod 600 ~/.ayaka-key
-   uv run ayaka serve MODEL --device cuda --dtype fp16 --backends flashinfer,torch --cuda-graph \
+   uv run ayaka serve MODEL --device cuda --dtype fp16 --backends flashinfer,torch \
        --kv-reserve-tokens 32768 --tool-call-parser hermes --served-model-name local \
        --api-key-file ~/.ayaka-key
    ```

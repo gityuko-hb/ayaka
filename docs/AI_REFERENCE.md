@@ -276,8 +276,9 @@ wrong request; 3 the model or the tokenizer cannot be loaded; 4 something needed
 a tokenizer package, a GPU); 5 the memory plan does not fit; 6 the engine failed while generating; 130 interrupted.
 A problem the user can fix is one line, `ayaka: error: ...`, never a traceback.
 
-Flags shared by `run`, `serve`, `plan` and `bench`: `--device`, `--dtype`, `--backends`, `--cuda-graph`,
-`--memory-ratio`, `--kv-reserve-tokens`, `--no-prefix-cache`, `--revision`, `--tokenizer`, `--offline`.
+Flags shared by `run`, `serve`, `plan` and `bench`: `--device`, `--dtype`, `--backends`, `--cuda-graph`
+(on by default with `--device cuda`; `--no-cuda-graph` runs every decode step eagerly), `--memory-ratio`,
+`--kv-reserve-tokens`, `--no-prefix-cache`, `--revision`, `--tokenizer`, `--offline`.
 `serve` and `bench` also take `--record DIR` (token ids of every request, owner-only). `ayaka COMMAND --help` lists
 every flag with its default.
 

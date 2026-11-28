@@ -135,7 +135,7 @@ def compute_budget(
                 else 0
             ),
             graph_bytes_estimate=(
-                previous.graph_bytes if previous and config.device.cuda_graph else 0
+                previous.graph_bytes if previous and config.device.uses_cuda_graph else 0
             ),
             drafts=drafts,
         )

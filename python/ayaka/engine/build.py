@@ -204,7 +204,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         device.backends,
         device=device.device_type,
         dtype=device.dtype,
-        cuda_graph=device.cuda_graph,
+        cuda_graph=device.uses_cuda_graph,
         head_dim=read_model_config(config.source).head_dim,
     )
     initial_runtime_bytes = 0
@@ -596,5 +596,5 @@ def build_engine(
         device=device.device,
         dtype=device.dtype.label,
         backends=device.backends,
-        cuda_graph=device.cuda_graph,
+        cuda_graph=device.uses_cuda_graph,
     )

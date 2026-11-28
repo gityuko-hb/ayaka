@@ -221,8 +221,10 @@ def _engine_flags(command: argparse.ArgumentParser) -> None:
     )
     where.add_argument(
         "--cuda-graph",
-        action="store_true",
-        help="capture decode steps in CUDA graphs at start-up and replay them (GPU only)",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="capture decode steps in CUDA graphs at start-up and replay them; on by default on "
+        "a GPU, --no-cuda-graph runs every step eagerly",
     )
     where.add_argument(
         "--structured-backend",
