@@ -9,6 +9,10 @@ tie that the kernels' reduction order can flip, not an error of the acceptance r
 ``PROBE_FP32=1`` runs the engines in float32 with the torch kernels instead of bf16 with
 flashinfer; there every arm should match the reference exactly.
 
+``PROBE_REFERENCE_DEVICE=cpu`` runs the float32 reference on the CPU, for a model whose float32
+weights do not fit the GPU (Qwen3-8B on a 24 GB card); ``PROBE_NUM_BLOCKS`` sizes the engines'
+KV cache (4096 blocks of 16 tokens by default).
+
 Usage::
 
     uv run python benchmarks/e2e/spec_divergence_probe.py Qwen/Qwen3-8B out.json
@@ -39,11 +43,16 @@ from ayaka.model_loader.source import resolve_source
 from ayaka.utils.dtypes import DType
 from tokenizers import Tokenizer
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _machine import machine
+
 MODEL = sys.argv[1] if len(sys.argv) > 1 else "Qwen/Qwen3-8B"
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "probe.json")
 MAX_TOKENS = 256
 DTYPE = DType.FP32 if os.environ.get("PROBE_FP32") else DType.BF16
 BACKENDS = ("torch",) if os.environ.get("PROBE_FP32") else ("flashinfer", "torch")
+REFERENCE_DEVICE = os.environ.get("PROBE_REFERENCE_DEVICE", "cuda")
+NUM_BLOCKS = int(os.environ.get("PROBE_NUM_BLOCKS", "4096"))
 
 PROMPTS = {
     "code_edit": "Add type annotations to this function and keep the logic identical:\n```python\n"
@@ -63,7 +72,7 @@ def engine_config(snap: Path, spec: SpeculativeConfig, *, graphs: bool, rows: in
         source=ModelSourceConfig(MODEL, offline=True),
         tokenizer=TokenizerConfig(tokenizer=str(snap), offline=True, skip_tokenizer_init=True),
         device=DeviceConfig(device="cuda", dtype=DTYPE, backends=BACKENDS, cuda_graph=graphs),
-        cache=CacheConfig(block_size=16, num_blocks=4096, kv_reserve_tokens=8192),
+        cache=CacheConfig(block_size=16, num_blocks=NUM_BLOCKS, kv_reserve_tokens=4096),
         scheduler=SchedulerConfig(max_running=rows, max_tokens_per_step=1024),
         speculative=spec,
     )
@@ -148,7 +157,7 @@ def main() -> None:
 
     hf = (
         AutoModelForCausalLM.from_pretrained(str(snap), dtype=torch.float32, local_files_only=True)
-        .cuda()
+        .to(REFERENCE_DEVICE)
         .eval()
     )
     for d in divergences:
@@ -156,7 +165,7 @@ def main() -> None:
             continue
         prefix = list(prompts[d["prompt"]]) + reference[d["prompt"]][: d["first_difference"]]
         with torch.no_grad():
-            logits = hf(torch.tensor([prefix], device="cuda")).logits[0, -1].float()
+            logits = hf(torch.tensor([prefix], device=REFERENCE_DEVICE)).logits[0, -1].float()
         top2 = torch.topk(logits, 2)
         d["fp32_reference_minus_arm"] = round(
             float(logits[d["reference_token"]] - logits[d["arm_token"]]), 5
@@ -164,7 +173,18 @@ def main() -> None:
         d["fp32_top2_margin"] = round(float(top2.values[0] - top2.values[1]), 5)
         d["fp32_argmax"] = int(top2.indices[0])
     OUT.write_text(
-        json.dumps({"model": MODEL, "max_tokens": MAX_TOKENS, "divergences": divergences}, indent=1)
+        json.dumps(
+            {
+                "machine": machine(),
+                "model": MODEL,
+                "dtype": DTYPE.label,
+                "backends": list(BACKENDS),
+                "reference_device": REFERENCE_DEVICE,
+                "max_tokens": MAX_TOKENS,
+                "divergences": divergences,
+            },
+            indent=1,
+        )
     )
     for d in divergences:
         print(d)
