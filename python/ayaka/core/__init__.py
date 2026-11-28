@@ -47,6 +47,14 @@ if TYPE_CHECKING:
         RequestTimeout,
         UnsupportedFeatureError,
     )
+    from .multimodal import (
+        MAX_IMAGE_BYTES,
+        MAX_IMAGE_PIXELS,
+        SUPPORTED_IMAGE_MEDIA_TYPES,
+        ImageInput,
+        ImageSpan,
+        VisionSpec,
+    )
     from .outputs import CompletionOutput, RequestMetrics, RequestOutput, TokenLogprob, Usage
     from .params import (
         LOGIT_BIAS_LIMIT,
@@ -70,8 +78,11 @@ if TYPE_CHECKING:
 __all__ = [
     "LOGIT_BIAS_LIMIT",
     "MAX_CACHE_SALT_LEN",
+    "MAX_IMAGE_BYTES",
+    "MAX_IMAGE_PIXELS",
     "MAX_LOGPROB_TOKEN_IDS",
     "MAX_SCHEMA_BYTES",
+    "SUPPORTED_IMAGE_MEDIA_TYPES",
     "TOP_K_DISABLED",
     "AyakaError",
     "BackendError",
@@ -88,6 +99,8 @@ __all__ = [
     "FinishReason",
     "ForwardMode",
     "GenerateRequest",
+    "ImageInput",
+    "ImageSpan",
     "InvalidRequestError",
     "Iteration",
     "KVLayoutKind",
@@ -112,6 +125,7 @@ __all__ = [
     "ToolSchema",
     "UnsupportedFeatureError",
     "Usage",
+    "VisionSpec",
     "as_schema",
 ]
 
@@ -145,6 +159,14 @@ _EXPORTS = {
         "UnsupportedFeatureError",
     ),
     "outputs": ("CompletionOutput", "RequestMetrics", "RequestOutput", "TokenLogprob", "Usage"),
+    "multimodal": (
+        "MAX_IMAGE_BYTES",
+        "MAX_IMAGE_PIXELS",
+        "SUPPORTED_IMAGE_MEDIA_TYPES",
+        "ImageInput",
+        "ImageSpan",
+        "VisionSpec",
+    ),
     "params": (
         "LOGIT_BIAS_LIMIT",
         "MAX_LOGPROB_TOKEN_IDS",

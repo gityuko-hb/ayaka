@@ -21,10 +21,14 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from ayaka.core.multimodal import ImageInput
+
 __all__ = [
+    "EXTRA_GROUPS",
     "GROUPS",
     "PROMPT_SET_VERSION",
     "BenchPrompt",
+    "build_image_prompt",
     "build_prompt",
     "material_ids",
     "material_text",
@@ -37,12 +41,16 @@ PROMPT_SET_VERSION: Final = 1
 #: The groups: edit existing code, write new code, prose.
 GROUPS: Final = ("edit", "write", "prose")
 
-_SEEDS: Final = {"edit": 11, "write": 23, "prose": 37}
+#: Additional long-context evaluation group sampled when model context holds it.
+EXTRA_GROUPS: Final = ("long",)
+
+_SEEDS: Final = {"edit": 11, "write": 23, "prose": 37, "long": 53}
 
 _HEADS: Final = {
     "edit": "Here is a Python module from the project, as it is now:\n\n",
     "write": "Here are the modules the new code has to fit with:\n\n",
     "prose": "Here is the report the team wrote last quarter:\n\n",
+    "long": "Here is a concatenated multi-service operational transcript and module log:\n\n",
 }
 
 _INSTRUCTIONS: Final = {
@@ -51,6 +59,7 @@ _INSTRUCTIONS: Final = {
     "write": "\n\nWrite a new function `merge_reports(left, right)` in the same style that "
     "combines two report dictionaries, with a docstring and two tests.",
     "prose": "\n\nSummarise the report in five sentences for a reader who has not seen it.",
+    "long": "\n\nIdentify any recurring billing or timeout anomalies across the full transcript.",
 }
 
 _NOUNS: Final = (
@@ -169,6 +178,10 @@ def _prose_unit(rng: random.Random, number: int) -> str:
 def material_text(group: str, units: int) -> str:
     """The first ``units`` units of a group's material (functions or report sections)."""
     rng = random.Random(_SEEDS[group])  # noqa: S311  # fixed text, not a secret
+    if group == "long":
+        return "".join(
+            _prose_unit(rng, n) if n % 2 == 0 else _code_unit(rng, n) for n in range(units)
+        )
     unit = _prose_unit if group == "prose" else _code_unit
     return "".join(unit(rng, number) for number in range(units))
 
@@ -193,14 +206,25 @@ def build_prompt(group: str, length: int, encode: Callable[[str], list[int]]) ->
     Raises:
         ValueError: If the group is unknown or the length cannot hold the head and instruction.
     """
-    if group not in GROUPS:
-        raise ValueError(f"unknown prompt group {group!r}; the groups are {GROUPS}")
+    if group not in GROUPS and group not in EXTRA_GROUPS:
+        raise ValueError(
+            f"unknown prompt group {group!r}; the groups are {(*GROUPS, *EXTRA_GROUPS)}"
+        )
     head = encode(_HEADS[group])
     tail = encode(_INSTRUCTIONS[group])
     room = length - len(head) - len(tail)
     if room < 1:
         raise ValueError(f"{length} tokens cannot hold the {group} prompt's head and instruction")
     return BenchPrompt(group, length, tuple(head + material_ids(group, room, encode) + tail))
+
+
+def build_image_prompt(width: int = 1024, height: int = 768) -> tuple[str, ImageInput]:
+    """Return the fixed multimodal benchmark prompt and synthetic PNG image."""
+    from ayaka.core.multimodal import ImageInput
+    from ayaka.multimodal.png import make_ide_screenshot_png
+
+    prompt = "Summarise the panels and diagnostics shown in this screenshot in one sentence."
+    return prompt, ImageInput(data=make_ide_screenshot_png(width, height), media_type="image/png")
 
 
 def material_ids(group: str, tokens: int, encode: Callable[[str], list[int]]) -> list[int]:

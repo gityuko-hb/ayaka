@@ -32,6 +32,11 @@
 
 ### Fixed
 
+- `tool_choice: "none"` (OpenAI Chat Completions and Responses) and `{"type": "none"}` (Anthropic Messages) dropped
+  the tool definitions from the prompt, so a session switching from `auto` to `none` lost its prefix cache from the
+  tool block on (12 of 168 prompt tokens cached instead of 168 in the tiny-model test). The tools now stay in the
+  prompt; no call is parsed, and with a one-token opening marker (`hermes`) the answer ends at that marker.
+
 - The torch backend's decode attention no longer runs out of GPU memory on long-context models (#122). It gathered
   every request's whole block table, sized for the model's full context, into float32 at once: for Llama-3.2-1B
   (131,072 tokens) with 4 requests, a decode step peaked at 3,201 MiB, which the memory plan does not count. It now

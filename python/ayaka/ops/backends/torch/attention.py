@@ -1,16 +1,4 @@
-"""Reference attention ops; implements :class:`ayaka.ops.attention.AttentionOps`.
-
-Written to be read, not to be fast. For a step with several rows per request,
-``attend`` loops over the requests, gathers each one's keys and values out of
-the paged cache through its block table and runs
-``scaled_dot_product_attention`` with a causal mask. For a decode step, planned
-or on graph metadata, it gathers every request's table at once, padded to the
-table's width, and masks the positions past each length: no Python value
-depends on the step, so it can be captured, and an eager decode step computes
-exactly what its replay does. Both gathers copy the
-context every call, so the cost grows with the context; do not measure speed
-with it.
-"""
+"""Reference attention ops; implements :class:`ayaka.ops.attention.AttentionOps`."""
 
 from __future__ import annotations
 
@@ -23,8 +11,13 @@ from torch.nn import functional
 from ayaka.core.errors import BackendError
 from ayaka.core.types import ForwardMode
 from ayaka.ops.attention import AttentionMetadata
-from ayaka.ops.backends.torch._checks import require_index_tensor, require_like
-from ayaka.ops.backends.torch.kvcache import nhd_view, require_buffers
+from ayaka.ops.backends.torch._checks import (
+    require_compute_dtype,
+    require_index_tensor,
+    require_like,
+)
+from ayaka.ops.backends.torch.kvcache import dequantize_kv, nhd_view, require_buffers
+from ayaka.ops.kvcache import RAW_CODEC
 
 if TYPE_CHECKING:
     from ayaka.ops.kvcache import KVBuffers
@@ -40,9 +33,7 @@ __all__ = [
     "update_graph_metadata",
 ]
 
-#: Bytes of float32 keys a decode step gathers at a time (as many again for the values). A
-#: decode step's table is sized for the longest context a request may reach, which for a
-#: 131,072-token model is gigabytes in float32; the memory plan does not count that scratch.
+#: Bytes of float32 keys a decode step gathers at a time.
 DECODE_CHUNK_BYTES: Final = 64 * 2**20
 
 
@@ -56,10 +47,7 @@ class TorchAttentionPlan:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class TorchGraphPlan:
-    """Host staging of the graph metadata: what :func:`update_graph_metadata` fills.
-
-    Pinned when the metadata lives on a GPU, so the copies to the device do not wait.
-    """
+    """Host staging of the graph metadata: what :func:`update_graph_metadata` fills."""
 
     positions: torch.Tensor
     slot_mapping: torch.Tensor
@@ -118,7 +106,6 @@ def plan(
 
 def _host_ints(tensor: torch.Tensor) -> tuple[int, ...]:
     """Read a 1-D integer tensor on the host; ``plan`` runs outside any graph."""
-    # torch types ``tolist`` as ``list[Unknown]``.
     return tuple(cast("list[int]", tensor.tolist()))  # pyright: ignore[reportUnknownMemberType]
 
 
@@ -177,6 +164,8 @@ def attend(
     out: torch.Tensor,
     *,
     scale: float,
+    window: int | None = None,
+    sinks: torch.Tensor | None = None,
 ) -> None:
     op = "attention.attend"
     require_buffers(op, buffers)
@@ -194,9 +183,13 @@ def attend(
             context={"op": op, "argument": "meta"},
         )
     heads = q.shape[1] if q.ndim == 3 else 0
-    require_like(
-        op, "q", q, (meta.request_of_row.shape[0], heads, buffers.head_dim), buffers.k.dtype
-    )
+    if buffers.codec == RAW_CODEC:
+        require_like(
+            op, "q", q, (meta.request_of_row.shape[0], heads, buffers.head_dim), buffers.k.dtype
+        )
+    else:
+        require_compute_dtype(op, "q", q)
+        require_like(op, "q", q, (meta.request_of_row.shape[0], heads, buffers.head_dim), q.dtype)
     require_like(op, "out", out, q.shape, q.dtype)
     if heads == 0 or heads % buffers.num_kv_heads:
         raise BackendError(
@@ -204,38 +197,60 @@ def attend(
             f"{buffers.num_kv_heads} key/value heads",
             context={"op": op, "argument": "q"},
         )
+    if window is not None and window < 1:
+        raise BackendError(
+            f"{op}: window must be positive when set, got {window}",
+            context={"op": op, "argument": "window"},
+        )
+    if sinks is not None:
+        require_like(op, "sinks", sinks, (heads,), sinks.dtype)
 
     keys, values = nhd_view(buffers.k, buffers), nhd_view(buffers.v, buffers)
-    group = heads // buffers.num_kv_heads
-    # Decode steps, planned or captured, take the one path a graph can replay, so a decode step
-    # computes the same thing eagerly and in a graph.
     if meta.mode is ForwardMode.DECODE:
-        _attend_decode(q, keys, values, meta.block_table, meta.kv_lengths, out, scale=scale)
+        _attend_decode(
+            q,
+            keys,
+            values,
+            buffers,
+            meta.block_table,
+            meta.kv_lengths,
+            out,
+            scale=scale,
+            window=window,
+            sinks=sinks,
+        )
         return
-    if not isinstance(meta.plan, TorchAttentionPlan):  # graph metadata is always DECODE
+    if not isinstance(meta.plan, TorchAttentionPlan):
         raise BackendError(f"{op}: graph metadata must be a DECODE step", context={"op": op})
-    out.zero_()  # the rows of padding requests stay zero
+    group = heads // buffers.num_kv_heads
+    out.zero_()
     first = 0
     for request, (count, length) in enumerate(
         zip(meta.plan.rows, meta.plan.kv_lengths, strict=True)
     ):
         if length and count:
             blocks = meta.block_table[request, : -(-length // buffers.block_size)].long()
-            # [length, kv_heads, head_dim] -> [heads, length, head_dim], repeating each kv head
-            # for the `group` query heads that share it.
-            context_k = keys[blocks].flatten(0, 1)[:length].float()
-            context_v = values[blocks].flatten(0, 1)[:length].float()
+            raw_k = keys[blocks].flatten(0, 1)[:length]
+            raw_v = values[blocks].flatten(0, 1)[:length]
+            context_k, context_v = dequantize_kv(raw_k, raw_v, buffers)
             context_k = context_k.repeat_interleave(group, dim=1).transpose(0, 1)
             context_v = context_v.repeat_interleave(group, dim=1).transpose(0, 1)
             query = q[first : first + count].float().transpose(0, 1)
-            # The rows are the last `count` positions: row j sees keys 0 .. length - count + j.
-            visible = (
-                torch.arange(length, device=q.device)[None, :]
-                <= (torch.arange(length - count, length, device=q.device)[:, None])
-            )
-            result = functional.scaled_dot_product_attention(
-                query, context_k, context_v, attn_mask=visible, scale=scale
-            )
+            k_pos = torch.arange(length, device=q.device)[None, :]
+            q_pos = torch.arange(length - count, length, device=q.device)[:, None]
+            visible = k_pos <= q_pos
+            if window is not None:
+                visible = visible & (k_pos >= (q_pos - window + 1))
+            if sinks is None:
+                result = functional.scaled_dot_product_attention(
+                    query, context_k, context_v, attn_mask=visible, scale=scale
+                )
+            else:
+                scores = torch.matmul(query, context_k.transpose(-2, -1)) * scale
+                scores = scores.masked_fill(~visible[None, :, :], float("-inf"))
+                sink_logits = sinks.float().view(heads, 1, 1).expand(heads, count, 1)
+                weights = torch.softmax(torch.cat([scores, sink_logits], dim=-1), dim=-1)[..., :-1]
+                result = torch.matmul(weights, context_v)
             out[first : first + count] = result.transpose(0, 1)
         first += count
 
@@ -244,22 +259,16 @@ def _attend_decode(
     q: torch.Tensor,
     keys: torch.Tensor,
     values: torch.Tensor,
+    buffers: KVBuffers,
     table: torch.Tensor,
     lengths: torch.Tensor,
     out: torch.Tensor,
     *,
     scale: float,
+    window: int | None = None,
+    sinks: torch.Tensor | None = None,
 ) -> None:
-    """One row per request, every request's whole table; nothing depends on the host.
-
-    ``keys`` and ``values`` are ``[blocks, block_size, kv_heads, head_dim]`` views. The table is
-    sized for the longest context a request may reach, not for this step's lengths, so it is
-    walked in chunks of at most :data:`DECODE_CHUNK_BYTES` of float32 keys per chunk, with an
-    online softmax. The number of chunks follows from the shapes alone, so an eager step and a
-    captured one run the same code. Positions at or past a request's length are masked, so the
-    unused tail of its table (block 0) is never read into the result; a padding request
-    (length 0) gets zeros.
-    """
+    """One row per request, every request's whole table; CUDA-graph safe."""
     requests, heads, head_dim = q.shape
     block_size, kv_heads = keys.shape[1], keys.shape[2]
     group = heads // kv_heads
@@ -274,28 +283,33 @@ def _attend_decode(
     acc = torch.zeros((*shape, head_dim), dtype=torch.float32, device=q.device)
     for first in range(0, width, step):
         blocks = table[:, first : first + step].long()
-        # [B, step, block_size, kv_heads, dim] -> [B, positions, kv_heads, dim]
-        context_k = keys[blocks].flatten(1, 2).float()
-        context_v = values[blocks].flatten(1, 2).float()
+        context_k, context_v = dequantize_kv(
+            keys[blocks].flatten(1, 2), values[blocks].flatten(1, 2), buffers
+        )
         start = first * block_size
         positions = torch.arange(start, start + context_k.shape[1], device=q.device)
-        visible = positions[None, :] < limit  # [B, positions]
+        visible = positions[None, :] < limit
+        if window is not None:
+            visible = visible & (positions[None, :] >= (limit - window))
         scores = torch.einsum("bkgd,blkd->bkgl", query, context_k) * scale
-        # A slot past the length may hold anything, NaN included: masked_fill replaces it.
         scores = scores.masked_fill(~visible[:, None, None, :], float("-inf"))
         new_max = torch.maximum(running_max, scores.amax(dim=-1))
-        # While every position so far is masked the maximum is -inf; shift by 0 instead, so
-        # that exp(-inf - shift) is 0 and never exp(nan).
         shift = torch.where(torch.isfinite(new_max), new_max, 0.0)
         correction = torch.exp(running_max - shift)
         weights = torch.exp(scores - shift[..., None])
-        # 0 * NaN is NaN, so a masked slot's value is zeroed, not only its weight.
         context_v = torch.where(visible[:, :, None, None], context_v, 0.0)
         acc = acc * correction[..., None] + torch.einsum("bkgl,blkd->bkgd", weights, context_v)
         total = total * correction + weights.sum(dim=-1)
         running_max = new_max
-    # A padding request masks every position: its total is 0 and it gets zeros.
-    seen = total > 0
+    if sinks is not None:
+        sink_logits = sinks.float().reshape(1, kv_heads, group)
+        final_max = torch.maximum(running_max, sink_logits)
+        shift = torch.where(torch.isfinite(final_max), final_max, 0.0)
+        correction = torch.exp(running_max - shift)
+        acc = acc * correction[..., None]
+        total = total * correction + torch.exp(sink_logits - shift)
+    real = (lengths > 0)[:, None, None]
+    seen = (total > 0) & real
     result = torch.where(seen[..., None], acc / torch.where(seen, total, 1.0)[..., None], 0.0)
     out.copy_(result.reshape(requests, heads, head_dim))
 
@@ -354,11 +368,7 @@ def stage_graph_step(
     kv_lengths: torch.Tensor,
     block_rows: torch.Tensor,
 ) -> None:
-    """Check a decode step given on the host and copy its positions, slots, lengths and table.
-
-    The device copies are asynchronous, from the pinned ``staging``. Shared with the backends whose
-    graph metadata keeps the same fields (flashinfer).
-    """
+    """Check a decode step given on the host and copy its positions, slots, lengths and table."""
     table = meta.block_table
     if not isinstance(table, torch.Tensor):
         raise BackendError(

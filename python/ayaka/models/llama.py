@@ -9,11 +9,10 @@ The block is pre-norm with the residual kept apart, so each norm also adds::
     ...
     hidden = norm(h + residual)                          # logits = hidden @ lm_head.T
 
-This is the arithmetic of Hugging Face's ``LlamaForCausalLM``. The config knobs
-it reads are ``rope_theta``, ``rope_scaling`` (``linear``, ``llama3``, ``yarn``),
+This is the arithmetic of Hugging Face's ``LlamaForCausalLM``. The config knobs it reads are
+``rope_theta``, ``rope_scaling`` (``linear``, ``llama3``, ``yarn``), ``partial_rotary_factor``,
 ``attention_bias``, ``mlp_bias``, ``head_dim`` and ``tie_word_embeddings``;
-``hidden_act`` must be ``silu``. A ``partial_rotary_factor`` below 1 is refused
-when the config is read (``ModelConfig.from_hf_config``).
+``hidden_act`` must be ``silu``.
 
 Checkpoint layout: Hugging Face stores ``q_proj``, ``k_proj`` and ``v_proj``
 separately, and ``gate_proj`` and ``up_proj``; this model fuses each group into
@@ -143,8 +142,9 @@ class LlamaForCausalLM(CausalLM):
         theta = config.rope_theta
         if theta is None:  # _check_supported refused this; the branch narrows the type
             raise ModelLoadError("Llama needs rope_theta")
+        rotary_dim = max(2, int(config.head_dim * config.partial_rotary_factor))
         self.rotary = RotaryEmbedding(
-            config.head_dim,
+            rotary_dim,
             max_positions=config.max_position_embeddings,
             theta=theta,
             scaling=config.rope_scaling,
@@ -283,8 +283,9 @@ def _check_supported(config: ModelConfig) -> None:
         problems.append("it has no rope_theta")
     if config.hidden_act != "silu":
         problems.append(f"hidden_act is {config.hidden_act!r}, not 'silu'")
-    if config.head_dim % 2:
-        problems.append(f"head_dim {config.head_dim} is odd, so it cannot be rotated in pairs")
+    rotary_dim = max(2, int(config.head_dim * config.partial_rotary_factor))
+    if rotary_dim % 2:
+        problems.append(f"rotary_dim {rotary_dim} is odd, so it cannot be rotated in pairs")
     if problems:
         raise ModelLoadError(
             f"cannot build {config.architecture} from this config: " + "; ".join(problems),

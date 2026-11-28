@@ -37,6 +37,7 @@ from ayaka.configs.scheduler import SchedulerConfig
 from ayaka.execution.runner import ModelRunner
 from ayaka.kvcache.manager import KVCacheManager
 from ayaka.kvcache.storage.pool import KVPool
+from ayaka.kvcache.storage.spec import KVGroup
 from ayaka.models.gpt2 import GPT2LMHeadModel
 from ayaka.ops.backend import load_backend
 from ayaka.scheduler.scheduler import Scheduler
@@ -195,6 +196,7 @@ def build_tiny_stack(
     load_hf_state(model, state)
     model.eval()
     [group] = model.kv_specs(block_size=block_size, layout=ops.kvcache.layout())
+    assert isinstance(group, KVGroup)
     kv = KVCacheManager(
         [group],
         [num_blocks],

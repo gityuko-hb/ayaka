@@ -456,7 +456,7 @@ class TestRefusals:
 
 class TestFailures:
     def test_a_step_error_ends_its_requests_and_the_engine_goes_on(self, llm: LLM) -> None:
-        runner = llm.engine._runner  # pyright: ignore[reportPrivateUsage]
+        runner = llm.engine.runner
         real = runner.execute
         calls = {"n": 0}
 
@@ -484,7 +484,7 @@ class TestFailures:
         llm.engine.kv.check_integrity()
 
     def test_an_unplanned_exception_kills_the_engine_for_good(self, llm: LLM) -> None:
-        runner = llm.engine._runner  # pyright: ignore[reportPrivateUsage]
+        runner = llm.engine.runner
 
         def explode(step: Any, drafts: Any = None) -> StepOutput:
             raise RuntimeError("kernel on fire")

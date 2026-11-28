@@ -62,9 +62,15 @@ def plan_report(plan: EnginePlan, model: str) -> dict[str, object]:
             "headroom_bytes": budget.headroom_bytes,
             "weights_bytes": plan.weights_bytes,
             "kv_bytes": plan.kv_bytes,
+            "state_bytes": plan.state_bytes,
+            "latent_kv_bytes": plan.latent_kv_bytes,
+            "vision_weights_bytes": plan.vision_weights_bytes,
+            "vision_activation_bytes": plan.vision_activation_bytes,
+            "vision_load": plan.vision_load,
             "graph_bytes": budget.graph_bytes,
         },
         "kv": {
+            "groups": plan.kv_groups,
             "blocks": plan.kv_blocks,
             "fit_blocks": budget.kv_blocks[0],
             "block_size": plan.block_size,
@@ -110,6 +116,19 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
         if plan.stored_types is not None
         else f"files      {plan.directory} (config.json read; no weight read, nothing downloaded)"
     )
+    kv_groups_note = f", {plan.kv_groups} groups" if plan.kv_groups > 1 else ""
+    extra_mem: list[str] = []
+    if plan.state_bytes > 0:
+        extra_mem.append(
+            f"  state    {_mib(plan.state_bytes)} ({plan.max_running + 1} recurrent state slots)"
+        )
+    if plan.latent_kv_bytes > 0:
+        extra_mem.append(f"  latent   {_mib(plan.latent_kv_bytes)} (compressed MLA KV pool)")
+    if plan.vision_weights_bytes > 0:
+        extra_mem.append(
+            f"  vision   {_mib(plan.vision_weights_bytes)} "
+            f"({plan.vision_load}; ~{_mib(plan.vision_activation_bytes)} workspace per image)"
+        )
     lines = [
         f"machine    {plan.capabilities.describe()}",
         f"model      {model}: {config.architecture}",
@@ -118,8 +137,9 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
         f", headroom {_mib(budget.headroom_bytes)}",
         weights,
         f"  KV       {_mib(plan.kv_bytes)} = {plan.kv_blocks - 1:,} blocks of {plan.block_size}"
-        f" tokens ({spec.dtype.label}, {spec.bytes_per_token():,} bytes per token;"
+        f" tokens ({spec.dtype.label}, {spec.bytes_per_token():,} bytes per token{kv_groups_note};"
         f" {budget.kv_blocks[0] - 1:,} would fit)",
+        *extra_mem,
         f"  rest     {_mib(max(reserve, 0))} of the usable memory left for the runtime",
         f"context    up to {plan.max_context_tokens:,} tokens per request "
         f"(the model allows {context:,}; the limit is {limit})",

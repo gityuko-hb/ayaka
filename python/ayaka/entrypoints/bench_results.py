@@ -68,6 +68,24 @@ def validate_results(data: Mapping[str, object]) -> list[str]:
         problems.append("no sanity item")
     if data["valid"] is not all(bool(item.get("passed")) for item in sanity):
         problems.append("valid does not equal all(sanity passed)")
+    long_ctx = data.get("long_context")
+    if isinstance(long_ctx, dict):
+        long_map = cast("dict[str, object]", long_ctx)
+        raw = cast("list[float]", long_map.get("tokens_per_s", []))
+        if not raw or not _close(long_map.get("median_tokens_per_s"), statistics.median(raw)):
+            problems.append("long_context read median does not match its raw values")
+        gen_raw = cast("list[float]", long_map.get("generation_tokens_per_s", []))
+        if gen_raw and not _close(
+            long_map.get("generation_median_tokens_per_s"), statistics.median(gen_raw)
+        ):
+            problems.append("long_context generation median does not match its raw values")
+    image_sec = data.get("image")
+    if isinstance(image_sec, dict):
+        img_map = cast("dict[str, object]", image_sec)
+        for name in ("cold", "warm"):
+            raw = cast("list[float]", img_map.get(f"{name}_s", []))
+            if raw and not _close(img_map.get(f"{name}_median_s"), statistics.median(raw)):
+                problems.append(f"image {name} median does not match its raw values")
     return problems
 
 
@@ -108,6 +126,23 @@ def summary_lines(results: Mapping[str, object]) -> list[str]:
     )
     for item in cast("list[dict[str, object]]", results["sanity"]):
         lines.append(f"sanity     {'pass' if item['passed'] else 'FAIL'}  {item['name']}")
+    long_ctx = results.get("long_context")
+    if isinstance(long_ctx, dict):
+        long_map = cast("dict[str, object]", long_ctx)
+        lines.append(
+            f"long ctx   {long_map['length']:>6} tokens: "
+            f"{cast('float', long_map['median_tokens_per_s']):,.0f} tok/s read, "
+            f"{cast('float', long_map['generation_median_tokens_per_s']):,.1f} tok/s gen (median)"
+        )
+    image_sec = results.get("image")
+    if isinstance(image_sec, dict):
+        img_map = cast("dict[str, object]", image_sec)
+        size = cast("list[int]", img_map["image_size"])
+        lines.append(
+            f"image      {size[0]}x{size[1]} ({img_map['prompt_tokens']} tok): "
+            f"cold {cast('float', img_map['cold_median_s']) * 1e3:,.0f} ms, "
+            f"warm {cast('float', img_map['warm_median_s']) * 1e3:,.0f} ms"
+        )
     memory = cast("dict[str, object]", results["memory"])
     vram = cast("int | None", memory["peak_vram_bytes"])
     rss = cast("int | None", memory["peak_rss_bytes"])

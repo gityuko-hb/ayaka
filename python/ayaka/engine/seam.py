@@ -36,6 +36,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from ayaka.core.multimodal import VisionSpec
     from ayaka.core.request import GenerateRequest
     from ayaka.core.types import RequestId
     from ayaka.engine.async_llm import RequestStream
@@ -52,11 +53,13 @@ class EngineInfo:
         max_context_tokens: The longest sequence one request can get on this machine: the
             model's limit or the KV cache's, whichever is smaller.
         prefix_caching: Whether identical prompt prefixes are read from the cache.
+        vision: Static multimodal vision spec if the loaded model accepts images, else ``None``.
     """
 
     max_model_len: int
     max_context_tokens: int
     prefix_caching: bool
+    vision: VisionSpec | None = None
 
 
 class EngineState(StrEnum):

@@ -22,7 +22,6 @@ This module imports aiohttp, from the ``serve`` extra; ``import ayaka`` does not
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -47,10 +46,9 @@ from ayaka.entrypoints.conversation import (
     ErrorEvent,
     FinishEvent,
     UsageEvent,
-    collect,
-    collect_choices,
 )
-from ayaka.entrypoints.failures import AnswerFailedError, NotReadyError
+from ayaka.entrypoints.delivery import ResponseDelivery
+from ayaka.entrypoints.failures import NotReadyError
 from ayaka.entrypoints.metrics import ServingMetrics
 from ayaka.entrypoints.normalize import Normalizer, identify_client
 from ayaka.entrypoints.parsers.formats import suggest_tool_call_parser
@@ -63,13 +61,7 @@ from ayaka.entrypoints.parsers.output_grammar import (
 from ayaka.entrypoints.parsers.parameters import ToolSchemas
 from ayaka.entrypoints.parsers.unified import OutputInterpretation
 from ayaka.entrypoints.render.selection import PromptRenderer
-from ayaka.entrypoints.stream import (
-    WRITE_BUFFER_HIGH,
-    SlowClientError,
-    StreamWatchdog,
-    collect_events,
-    pump,
-)
+from ayaka.multimodal.tokens import expand_image_placeholders
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput, TokenIdsInput
 from ayaka.utils.import_utils import has_module
 
@@ -78,6 +70,7 @@ if TYPE_CHECKING:
 
     from ayaka.configs.server import ServerConfig
     from ayaka.configs.tokenizer import EncodeResult
+    from ayaka.core.multimodal import ImageInput, ImageSpan, VisionSpec
     from ayaka.core.params import SamplingParams
     from ayaka.engine.async_llm import RequestStream
     from ayaka.engine.seam import EngineClient
@@ -171,19 +164,14 @@ class Serving:
         self.max_model_len = 0
         self.max_context_tokens = 0
         self.prefix_cache: bool | None = None
+        self.vision_spec: VisionSpec | None = None
         self.suggested_tool_call_parser: str | None = None
-        # Requests whose event stream is open, by id(): an aiohttp request is not hashable.
-        self._streaming: dict[int, web.Request] = {}
-        self._no_streams = asyncio.Event()
-        self._no_streams.set()
-        # One timer for every event stream; it ticks at least twice per keepalive interval.
         # Rendering and encoding run on this one thread, in arrival order: threads of their own
         # would only take turns at the GIL (and the tokenizer's lock) with each other and with
         # the event loop.
         self._preprocess = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ayaka-preprocess")
-        self.watchdog = StreamWatchdog(
-            tick=max(0.01, min(1.0, config.keepalive_seconds / 2, config.slow_client_seconds / 4))
-        )
+        self._delivery = ResponseDelivery(config, self.metrics)
+        self.watchdog = self._delivery.watchdog
         self.metrics.progress_age.set_function(self.progress_age)
 
     def normalized(
@@ -217,11 +205,14 @@ class Serving:
         """Start serving with a started engine and the tokenizer that makes its prompts."""
         self.llm = llm
         self.tokenizer = tokenizer
-        self.renderer = PromptRenderer(tokenizer, model_name=self.model_name)
         info = llm.info
         self.max_model_len = info.max_model_len
         self.max_context_tokens = info.max_context_tokens
         self.prefix_cache = info.prefix_caching
+        self.vision_spec: VisionSpec | None = info.vision
+        self.renderer = PromptRenderer(
+            tokenizer, model_name=self.model_name, vision_spec=self.vision_spec
+        )
         self.suggested_tool_call_parser = suggest_tool_call_parser(tokenizer.chat_template)
         if output_format is not None:
             self.output_format = output_format
@@ -262,21 +253,7 @@ class Serving:
         if self.llm is not None:
             await self.llm.shutdown(grace)
         self._preprocess.shutdown(wait=False, cancel_futures=True)
-        return await self._cut_stuck_streams(flush)
-
-    async def _cut_stuck_streams(self, within: float) -> int:
-        """Give open event streams ``within`` seconds to end, then abort the ones still writing.
-
-        Aborting a transport drops what it has buffered and fails the blocked write, so the
-        handler ends at once; closing it would wait for the buffer to drain, which never happens.
-        """
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(self._no_streams.wait(), within)
-        stuck = [request.transport for request in self._streaming.values()]
-        for transport in stuck:
-            if transport is not None:
-                transport.abort()
-        return len(stuck)
+        return await self._delivery.cut_stuck_streams(flush)
 
     def require_ready(self) -> EngineClient:
         """The engine, if the server accepts requests now.
@@ -306,6 +283,31 @@ class Serving:
 
     # -- the generation path ---------------------------------------------------------------
 
+    async def prepare_chat(
+        self, conversation: Conversation, *, max_tokens: int | None = None, vouch: bool = True
+    ) -> tuple[tuple[int, ...], tuple[ImageSpan, ...]]:
+        """Render and tokenize ``conversation``, expanding any attached image placeholders."""
+        if conversation.images and self.vision_spec is None:
+            raise UnsupportedFeatureError(
+                "image input requires a vision-capable model",
+                context={"features": ("image_url",)},
+            )
+        token_ids = await self._encode(conversation.template_data, max_tokens, vouch=vouch)
+        if not conversation.images:
+            return token_ids, ()
+        assert self.vision_spec is not None  # noqa: S101  # checked above
+        expanded, spans = expand_image_placeholders(
+            token_ids, conversation.images, self.vision_spec
+        )
+        wanted = max(max_tokens or 1, 1)
+        if len(expanded) + wanted > self.max_model_len:
+            raise ContextLengthError(
+                prompt_tokens=len(expanded),
+                output_tokens=wanted,
+                max_context_tokens=self.max_model_len,
+            )
+        return expanded, spans
+
     async def tokenize_chat(
         self, conversation: Conversation, *, max_tokens: int | None = None, vouch: bool = True
     ) -> tuple[int, ...]:
@@ -324,7 +326,8 @@ class Serving:
             InvalidRequestError: If it cannot be rendered.
             OverloadedError: If the tokenizer is busy.
         """
-        return await self._encode(conversation.template_data, max_tokens, vouch=vouch)
+        prompt, _ = await self.prepare_chat(conversation, max_tokens=max_tokens, vouch=vouch)
+        return prompt
 
     async def render_chat(
         self,
@@ -476,12 +479,19 @@ class Serving:
         *,
         public_id: str,
         tools: bool,
+        tools_in_prompt: bool = False,
         parallel_tool_calls: bool = True,
         structured: StructuredParams | None = None,
+        images: tuple[ImageInput, ...] = (),
+        image_spans: tuple[ImageSpan, ...] = (),
         rendered: RenderedChat | None = None,
         tool_schemas: ToolSchemas | None = None,
     ) -> Generation:
         """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
+
+        ``tools_in_prompt`` without ``tools`` is ``tool_choice: none``: the prompt shows the tools
+        but the model may not call them, so the answer ends where it opens a call (see
+        :meth:`_stop_at_tool_call`).
 
         Raises:
             UnsupportedFeatureError, InvalidRequestError, OverloadedError: As the engine's
@@ -495,9 +505,16 @@ class Serving:
                 "start it with --tool-call-parser",
                 context={"features": ("tools",), "param": "tools"},
             )
+        if tools_in_prompt and not tools:
+            sampling = self._stop_at_tool_call(sampling)
         request_id = RequestId(f"ayaka-{public_id}")
         request = GenerateRequest(
-            request_id=request_id, prompt=prompt, sampling=sampling, structured=structured
+            request_id=request_id,
+            prompt=prompt,
+            sampling=sampling,
+            structured=structured,
+            images=images,
+            image_spans=image_spans,
         )
         try:
             try:
@@ -537,6 +554,7 @@ class Serving:
                     call_id_prefix=f"call_{public_id[:24]}"
                     + (f"_{index}" if sampling.n > 1 else ""),
                     tool_schemas=resolved_schemas,
+                    withhold_call=tools_in_prompt and not tools,
                 )
                 for index in range(sampling.n)
             ]
@@ -554,6 +572,14 @@ class Serving:
         self.metrics.running.inc()
         return Generation(request_id, public_id, len(prompt), stream, parser)
 
+    def _stop_at_tool_call(self, sampling: SamplingParams) -> SamplingParams:
+        """Stop at the single-token opening call marker, keeping decode inside CUDA graphs."""
+        markers = self.output_format.tool_markers
+        opening = markers[0].token_id if markers is not None else None
+        if opening is None:
+            return sampling
+        return replace(sampling, stop_token_ids=sampling.stop_token_ids | {opening})
+
     async def stream(
         self, request: web.Request, generation: Generation, encoder: StreamEncoder
     ) -> web.StreamResponse:
@@ -562,57 +588,9 @@ class Serving:
         A client that stops taking what is written to it for ``slow_client_seconds``, or that went
         away, has its connection cut; :meth:`finish` then cancels the request in the engine.
         """
-        config = self.config
-        response = web.StreamResponse(
-            headers={
-                "Content-Type": "text/event-stream; charset=utf-8",
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-                "x-request-id": request[REQUEST_ID],
-            }
+        return await self._delivery.stream(
+            request, generation, encoder, request_id=request[REQUEST_ID]
         )
-        await response.prepare(request)
-        self._streaming[id(request)] = request  # until the end of the body: _cut_stuck_streams
-        self._no_streams.clear()
-        transport = request.transport
-        if transport is not None:
-            transport.set_write_buffer_limits(high=WRITE_BUFFER_HIGH)
-        watch = self.watchdog.watch(
-            generation.stream,
-            keepalive=config.keepalive_seconds,
-            slow_after=config.slow_client_seconds,
-            transport=transport,
-        )
-        answered = False
-        try:
-            await pump(
-                generation.stream,
-                generation.parser,
-                encoder,
-                response,
-                watch=watch,
-                coalesce=config.sse_coalesce_ms / 1000,
-                observe=self._observer(generation),
-            )
-            answered = True
-            await response.write_eof()
-        except SlowClientError as exc:
-            generation.outcome = "slow_client"
-            self.metrics.finished.labels("slow_client").inc()
-            _LOG.info("request %s: cancelled, %s", request[REQUEST_ID], exc)
-            if transport is not None:
-                transport.abort()  # what it holds would never drain: drop it and free the socket
-            return response
-        except ConnectionError:
-            if not answered:  # once every frame is written, a lost end of body changes nothing
-                generation.outcome = "client_gone"
-                self.metrics.finished.labels("client_gone").inc()
-        finally:
-            watch.close()
-            del self._streaming[id(request)]
-            if not self._streaming:
-                self._no_streams.set()
-        return response
 
     async def collect(self, generation: Generation) -> Collected:
         """The whole answer of a request answered in one response.
@@ -620,13 +598,7 @@ class Serving:
         Raises:
             AnswerFailedError: If the request ended with an error.
         """
-        events = await collect_events(
-            generation.stream, generation.parser, observe=self._observer(generation)
-        )
-        answer = collect(events)
-        if answer.error is not None:
-            raise AnswerFailedError(answer.error)
-        return answer
+        return await self._delivery.collect(generation)
 
     async def collect_choices(self, generation: Generation, count: int) -> list[Collected]:
         """Every choice of a request with ``n > 1``, answered in one response.
@@ -634,45 +606,14 @@ class Serving:
         Raises:
             AnswerFailedError: If the request ended with an error.
         """
-        events = await collect_events(
-            generation.stream, generation.parser, observe=self._observer(generation)
-        )
-        answers = collect_choices(events, count)
-        for answer in answers:
-            if answer.error is not None:
-                raise AnswerFailedError(answer.error)
-        return answers
-
-    def _observer(self, generation: Generation) -> Callable[[Sequence[OutputEvent]], None]:
-        def observe(events: Sequence[OutputEvent]) -> None:
-            generation.observe(events)
-            self.metrics.observe(events)
-
-        return observe
+        return await self._delivery.collect_choices(generation, count)
 
     def finish(self, generation: Generation) -> None:
         """Release a generation: cancel it in the engine if it has not ended, and log it.
 
         The log line carries the request id, how it ended and token counts, never text.
         """
-        if not generation.stream.finished and self.llm is not None:
-            self.llm.abort(generation.request_id)
-            if generation.outcome == "unfinished":
-                generation.outcome = "client_gone"
-        self.metrics.running.dec()
-        seconds = time.monotonic() - generation.started
-        self.metrics.duration.observe(seconds)
-        usage = generation.usage
-        _LOG.info(
-            "request %s: %s, %d prompt and %d generated tokens in %.2f s",
-            generation.public_id,
-            generation.outcome,
-            usage.prompt_tokens if usage is not None else generation.prompt_tokens,
-            # A request that ended early (a client gone or too slow) has no usage event: count
-            # what reached the parser. Tokens the engine made after that are not in it.
-            usage.completion_tokens if usage is not None else generation.parser.generated_tokens,
-            seconds,
-        )
+        self._delivery.finish(generation, self.llm)
 
 
 SERVING: Final = web.AppKey("ayaka.serving", Serving)

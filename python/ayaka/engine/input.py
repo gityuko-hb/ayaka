@@ -31,6 +31,7 @@ from ayaka.core.errors import (
 )
 from ayaka.core.params import SamplingParams
 from ayaka.core.request import TokenizedRequest
+from ayaka.multimodal.tokens import expand_image_placeholders
 from ayaka.sampling.structured.compiler import GrammarCompiler
 from ayaka.tokenizers.contracts import (
     ChatInput,
@@ -44,6 +45,7 @@ from ayaka.tokenizers.errors import TokenizerOverloaded
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from ayaka.core.multimodal import ImageInput, ImageSpan, VisionSpec
     from ayaka.core.request import GenerateRequest
     from ayaka.core.types import RequestId
     from ayaka.tokenizers.contracts import EncodeInput
@@ -101,10 +103,12 @@ class InputProcessor:
         vocab_size: int,
         compiler: GrammarCompiler | None = None,
         structured_backend: str = "llguidance",
+        vision: VisionSpec | None = None,
     ) -> None:
         self._service = service
         self._max_model_len = max_model_len
         self._vocab_size = vocab_size
+        self._vision = vision
         self._compiler = compiler or GrammarCompiler(
             service.tokenizer,
             vocab_size=vocab_size,
@@ -127,6 +131,11 @@ class InputProcessor:
             OverloadedError: If the tokenizer queue is full.
         """
         require_supported(request.sampling, can_decode_text=self._service.tokenizer is not None)
+        if request.images and self._vision is None:
+            raise UnsupportedFeatureError(
+                "image input requires a vision-capable model",
+                context={"features": ("image_url",)},
+            )
         prompt = request.prompt if isinstance(request.prompt, tuple) else TextInput(request.prompt)
         tokenized = self._tokenize(
             prompt,
@@ -136,6 +145,8 @@ class InputProcessor:
             priority=request.priority,
             cache_salt=request.cache_salt,
             prefix_cache=request.prefix_cache,
+            images=request.images,
+            image_spans=request.image_spans,
         )
         if request.structured is None:
             return tokenized
@@ -161,6 +172,12 @@ class InputProcessor:
         """
         params = sampling if sampling is not None else SamplingParams()
         require_supported(params, can_decode_text=self._service.tokenizer is not None)
+        images = tuple(img for msg in messages for img in msg.images)
+        if images and self._vision is None:
+            raise UnsupportedFeatureError(
+                "image input requires a vision-capable model",
+                context={"features": ("image_url",)},
+            )
         try:
             conversation = ChatInput(messages=tuple(messages))
         except (TypeError, ValueError) as exc:
@@ -173,6 +190,8 @@ class InputProcessor:
             priority=priority,
             cache_salt=None,
             prefix_cache=True,
+            images=images,
+            image_spans=(),
         )
 
     def _tokenize(
@@ -185,6 +204,8 @@ class InputProcessor:
         priority: int,
         cache_salt: str | None,
         prefix_cache: bool,
+        images: tuple[ImageInput, ...] = (),
+        image_spans: tuple[ImageSpan, ...] = (),
     ) -> TokenizedRequest:
         limit = self._max_model_len
         wanted = 1 if sampling.max_tokens is None else sampling.max_tokens
@@ -206,6 +227,15 @@ class InputProcessor:
             raise
         except ValueError as exc:
             raise InvalidRequestError(f"cannot use this prompt: {exc}") from exc
+        if images and not image_spans:
+            assert self._vision is not None  # noqa: S101  # checked by caller
+            token_ids, image_spans = expand_image_placeholders(token_ids, images, self._vision)
+            if len(token_ids) + wanted > limit:
+                raise ContextLengthError(
+                    prompt_tokens=len(token_ids),
+                    output_tokens=wanted,
+                    max_context_tokens=limit,
+                )
         sampling.validate_for_model(
             vocab_size=self._vocab_size,
             prompt_tokens=len(token_ids),
@@ -220,4 +250,6 @@ class InputProcessor:
             priority=priority,
             cache_salt=cache_salt,
             prefix_cache=prefix_cache,
+            images=images,
+            image_spans=image_spans,
         )

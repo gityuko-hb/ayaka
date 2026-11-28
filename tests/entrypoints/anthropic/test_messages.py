@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
+from ayaka.core.errors import InvalidRequestError
 from ayaka.core.types import FinishReason
 from ayaka.entrypoints.conversation import (
     ErrorEvent,
@@ -119,8 +119,8 @@ class TestReading:
             ({"max_tokens": None}, InvalidRequestError, "max_tokens: is required"),
             (
                 {"messages": [{"role": "user", "content": [{"type": "image", "source": {}}]}]},
-                UnsupportedFeatureError,
-                "vision",
+                InvalidRequestError,
+                r"source\.type",
             ),
             (
                 {"messages": [{"role": "user", "content": "x"}], "tool_choice": {"type": "any"}},

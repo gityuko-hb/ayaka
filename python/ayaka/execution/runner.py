@@ -38,14 +38,19 @@ This module imports torch. Import it through ``ayaka.execution``, which loads it
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import gc
+import hashlib
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Final, cast
 
 import torch
 
-from ayaka.core.errors import BackendError
+from ayaka.core.errors import BackendError, EngineError
+from ayaka.core.types import ForwardMode
 from ayaka.execution.graph import GraphRunner
 from ayaka.execution.inputs import InputBuilder
-from ayaka.layers.context import ForwardContext
+from ayaka.kvcache.storage.pool import KVPool, LatentKVPool
+from ayaka.layers.context import ForwardContext, StateCheckpointCapture
 from ayaka.sampling.logits import LogitRow, build_controls, needs_controls
 from ayaka.sampling.penalties import PenaltyStates
 from ayaka.sampling.sampler import Sampler
@@ -59,17 +64,22 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
+    from ayaka.core.multimodal import ImageInput
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import RequestId, TokenId
     from ayaka.execution.graph import CapturedBucket
     from ayaka.execution.inputs import ModelInputs
-    from ayaka.kvcache.storage.pool import KVPool
+    from ayaka.kvcache.state_slots import StateCheckpointStore
+    from ayaka.kvcache.storage.pool import RecurrentStatePool
     from ayaka.kvcache.table import BlockTable
     from ayaka.models.base import CausalLM
-    from ayaka.ops.kvcache import KVBuffers
+    from ayaka.ops.kvcache import KVBuffers, LatentKVBuffers
+    from ayaka.ops.linear_attention import RecurrentStateBuffers
     from ayaka.scheduler.step import StepInput
 
 __all__ = ["ModelRunner"]
+
+_MAX_VISION_CACHE: Final = 16
 
 
 class ModelRunner:
@@ -114,12 +124,14 @@ class ModelRunner:
     def __init__(
         self,
         model: CausalLM,
-        pools: Sequence[KVPool],
+        pools: Sequence[KVPool | LatentKVPool],
         table: BlockTable,
         *,
         max_rows: int,
         device: torch.device | str,
         eos_token_ids: Collection[TokenId] = (),
+        state_pool: RecurrentStatePool | None = None,
+        state_checkpoints: StateCheckpointStore | None = None,
     ) -> None:
         self._model = model
         self._sampler = Sampler(model.ops.sampling)
@@ -129,9 +141,23 @@ class ModelRunner:
         self._penalties = PenaltyStates(self._vocab, self._device)
         self._constraints = ConstraintRuntime()
         self._buffers: dict[int, KVBuffers] = {}
+        self._latent_buffers: dict[int, LatentKVBuffers] = {}
+        self._group_layers: tuple[tuple[int, ...], ...] = tuple(
+            pool.group.layer_ids for pool in pools
+        )
         for pool in pools:
-            for layer_id in pool.group.layer_ids:
-                self._buffers[layer_id] = pool.buffers(layer_id)
+            if isinstance(pool, LatentKVPool):
+                for layer_id in pool.group.layer_ids:
+                    self._latent_buffers[layer_id] = pool.buffers(layer_id)
+            else:
+                for layer_id in pool.group.layer_ids:
+                    self._buffers[layer_id] = pool.buffers(layer_id)
+        self._state_pool = state_pool
+        self._state_checkpoints = state_checkpoints
+        self._state_buffers: dict[int, RecurrentStateBuffers] = {}
+        if state_pool is not None:
+            for layer_id in state_pool.group.layer_ids:
+                self._state_buffers[layer_id] = state_pool.buffers(layer_id)
         spec = pools[0].group.spec
         self._builder = InputBuilder(
             attention=model.ops.attention,
@@ -139,8 +165,10 @@ class ModelRunner:
             block_size=spec.block_size,
             max_rows=max_rows,
             device=device,
+            has_linear_attention=state_pool is not None,
         )
         self._graph: GraphRunner | None = None
+        self._vision_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
 
     @property
     def builder(self) -> InputBuilder:
@@ -156,6 +184,21 @@ class ModelRunner:
     def kv_buffers(self) -> Mapping[int, KVBuffers]:
         """The cache tensors of each layer, by layer id."""
         return self._buffers
+
+    @property
+    def latent_kv_buffers(self) -> Mapping[int, LatentKVBuffers]:
+        """Compressed MLA latent KV cache tensors by layer id."""
+        return self._latent_buffers
+
+    @property
+    def state_buffers(self) -> Mapping[int, RecurrentStateBuffers]:
+        """Recurrent linear-attention state tensors by layer id."""
+        return self._state_buffers
+
+    @property
+    def group_layers(self) -> tuple[tuple[int, ...], ...]:
+        """Layer ids assigned to each KV or latent KV group."""
+        return self._group_layers
 
     @property
     def penalties(self) -> PenaltyStates:
@@ -181,10 +224,40 @@ class ModelRunner:
             ConfigError: If the ops are not graph-safe, the model is not on a GPU, or no bucket
                 fits the buffers.
         """
-        graph = GraphRunner(self._model, self._builder, self._buffers, buckets=buckets)
+        graph = GraphRunner(
+            self._model,
+            self._builder,
+            self._buffers,
+            buckets=buckets,
+            latent_kv_buffers=self._latent_buffers,
+            state_buffers=self._state_buffers,
+            group_layers=self._group_layers,
+            device=self._device,
+        )
         captured = graph.capture()
         self._graph = graph
         return captured
+
+    def release(self) -> None:
+        """Drop captured graphs, cache tensor views, and state pools."""
+        if self._graph is not None:
+            self._graph.release()
+            self._graph = None
+        self._buffers.clear()
+        self._latent_buffers.clear()
+        self._state_buffers.clear()
+        self._state_pool = None
+        self._state_checkpoints = None
+        self._vision_cache.clear()
+        self._model.release_vision()
+
+    @staticmethod
+    def clear_device_cache() -> None:
+        """Reclaim unreferenced host/device memory after dropping an engine runner."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
     def plan_lookahead(self) -> Mapping[RequestId, int]:
         """Ask for draft rows per request; none, because no draft proposer exists yet."""
@@ -211,6 +284,7 @@ class ModelRunner:
             with torch.inference_mode():
                 if (
                     drafts is None
+                    and not (step.images and self._model.uses_multimodal_decode_offsets())
                     and self._graph is not None
                     and self._graph.bucket_for(step)
                     and not self._needs_controls(step)
@@ -230,6 +304,60 @@ class ModelRunner:
             )
         return _answer(step, inputs, sampled, logprobs)
 
+    def _prepare_prefill_states(self, step: StepInput) -> None:
+        """Zero fresh state slots or restore checkpoints from prefix hits before prefill."""
+        if self._state_pool is None or step.mode is not ForwardMode.PREFILL:
+            return
+        restores = step.state_restore_digests
+        for idx, slot in enumerate(step.state_slots):
+            if slot == 0:
+                continue
+            digest = restores[idx] if restores else None
+            if digest is not None:
+                if self._state_checkpoints is None:
+                    raise EngineError("step requests a state restore with no checkpoint store")
+                payload = self._state_checkpoints.get(digest)
+                if payload is None:
+                    raise EngineError(
+                        f"missing recurrent state checkpoint for prefix digest {digest.hex()}"
+                    )
+                ssm, conv = cast("tuple[torch.Tensor, torch.Tensor]", payload)
+                self._state_pool.restore_slot(slot, (ssm, conv))
+            elif step.start_positions[idx] == 0:
+                self._state_pool.zero_slot(slot)
+
+    def _save_prefill_checkpoints(
+        self, step: StepInput, capture: StateCheckpointCapture | None
+    ) -> None:
+        """Persist captured per-layer recurrent states into the bounded checkpoint store."""
+        if (
+            capture is None
+            or self._state_pool is None
+            or self._state_checkpoints is None
+            or not capture.snapshots
+        ):
+            return
+        layer_ids = self._state_pool.group.layer_ids
+        seen: set[bytes] = set()
+        for targets in step.state_checkpoint_targets:
+            for _, digest in targets:
+                if digest in seen:
+                    continue
+                seen.add(digest)
+                if not all((layer_id, digest) in capture.snapshots for layer_id in layer_ids):
+                    continue
+                ssm_stack = torch.stack(
+                    [capture.snapshots[(layer_id, digest)][0] for layer_id in layer_ids], dim=0
+                )
+                conv_stack = torch.stack(
+                    [capture.snapshots[(layer_id, digest)][1] for layer_id in layer_ids], dim=0
+                )
+                nbytes = int(
+                    ssm_stack.numel() * ssm_stack.element_size()
+                    + conv_stack.numel() * conv_stack.element_size()
+                )
+                self._state_checkpoints.put(digest, (ssm_stack, conv_stack), nbytes)
+
     def _forward(
         self, step: StepInput, inputs: ModelInputs
     ) -> tuple[list[TokenId], list[TokenLogprob | None]]:
@@ -238,7 +366,31 @@ class ModelRunner:
         Returns:
             The drawn token ids, and per logit row its logprobs (empty if no row asked).
         """
-        hidden = self._model(inputs.token_ids, self._context(inputs))
+        self._prepare_prefill_states(step)
+        capture = (
+            StateCheckpointCapture(boundaries=step.state_checkpoint_targets, snapshots={})
+            if (
+                step.mode is ForwardMode.PREFILL
+                and self._state_pool is not None
+                and self._state_checkpoints is not None
+                and step.state_checkpoint_targets
+                and any(step.state_checkpoint_targets)
+            )
+            else None
+        )
+        embeds, mrope_pos, rope_offsets, bidir_spans = self._prepare_multimodal(step, inputs)
+        hidden = self._model(
+            inputs.token_ids,
+            self._context(
+                inputs,
+                capture,
+                input_embeds=embeds,
+                mrope_positions=mrope_pos,
+                rope_position_offsets=rope_offsets,
+                bidirectional_spans=bidir_spans,
+            ),
+        )
+        self._save_prefill_checkpoints(step, capture)
         count = int(inputs.logit_rows.shape[0])
         if count == 0:
             return [], []  # prefill chunks that all continue: the cache is written, none drawn
@@ -284,8 +436,109 @@ class ModelRunner:
                 masks[index] = mask
         return masks
 
-    def _context(self, inputs: ModelInputs) -> ForwardContext:
-        return ForwardContext(attention=inputs.attention, kv_buffers=self._buffers)
+    def _prepare_multimodal(
+        self, step: StepInput, inputs: ModelInputs
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        tuple[tuple[int, int], ...],
+    ]:
+        if not step.images:
+            return None, None, None, ()
+        mrope_pos, rope_offsets = self._model.multimodal_position_ids(
+            step.prompt_lengths,
+            step.image_spans,
+            step.start_positions,
+            step.rows_per_request,
+            is_prefill=(step.mode is ForwardMode.PREFILL),
+            device=self._device,
+        )
+        if step.mode is not ForwardMode.PREFILL:
+            return None, mrope_pos, rope_offsets, ()
+
+        missing: list[tuple[str, ImageInput]] = []
+        seen: set[str] = set()
+        for req_idx, (start, rows) in enumerate(
+            zip(step.start_positions, step.rows_per_request, strict=True)
+        ):
+            for span in step.image_spans[req_idx]:
+                if min(start + rows, span.token_offset + span.token_count) <= max(
+                    start, span.token_offset
+                ):
+                    continue
+                img = step.images[req_idx][span.image_index]
+                digest = hashlib.sha256(img.data).hexdigest()
+                if digest not in self._vision_cache and digest not in seen:
+                    seen.add(digest)
+                    missing.append((digest, img))
+
+        if missing:
+            encoded = self._model.encode_images([item[1] for item in missing])
+            for (digest, _), feat in zip(missing, encoded, strict=True):
+                self._vision_cache[digest] = feat
+                self._vision_cache.move_to_end(digest)
+                while len(self._vision_cache) > _MAX_VISION_CACHE:
+                    self._vision_cache.popitem(last=False)
+
+        embeds = self._model.embed_input_ids(inputs.token_ids).clone()
+        bidir_spans: list[tuple[int, int]] = []
+        use_bidir = self._model.uses_bidirectional_vision()
+        batch_offset = 0
+        for req_idx, (start, rows) in enumerate(
+            zip(step.start_positions, step.rows_per_request, strict=True)
+        ):
+            for span in step.image_spans[req_idx]:
+                lo = max(start, span.token_offset)
+                hi = min(start + rows, span.token_offset + span.token_count)
+                if hi <= lo:
+                    continue
+                img = step.images[req_idx][span.image_index]
+                digest = hashlib.sha256(img.data).hexdigest()
+                feat = self._vision_cache[digest]
+                self._vision_cache.move_to_end(digest)
+                if feat.shape[0] != span.token_count:
+                    raise EngineError(
+                        f"vision feature length {feat.shape[0]} != span {span.token_count}"
+                    )
+                row_lo = batch_offset + (lo - start)
+                row_hi = batch_offset + (hi - start)
+                feat_lo = lo - span.token_offset
+                feat_hi = hi - span.token_offset
+                embeds[row_lo:row_hi].copy_(feat[feat_lo:feat_hi].to(embeds.device, embeds.dtype))
+                if use_bidir:
+                    bidir_spans.append((row_lo, row_hi))
+            batch_offset += rows
+        return embeds, mrope_pos, rope_offsets, tuple(bidir_spans)
+
+    def _context(
+        self,
+        inputs: ModelInputs,
+        capture: StateCheckpointCapture | None = None,
+        *,
+        input_embeds: torch.Tensor | None = None,
+        mrope_positions: torch.Tensor | None = None,
+        rope_position_offsets: torch.Tensor | None = None,
+        bidirectional_spans: tuple[tuple[int, int], ...] = (),
+    ) -> ForwardContext:
+        layer_attention = {
+            layer_id: meta
+            for meta, layer_ids in zip(inputs.group_attentions, self._group_layers, strict=False)
+            for layer_id in layer_ids
+        }
+        return ForwardContext(
+            attention=inputs.attention,
+            kv_buffers=self._buffers,
+            layer_attention=layer_attention,
+            latent_kv_buffers=self._latent_buffers,
+            state_buffers=self._state_buffers,
+            linear_attention=inputs.linear_attention,
+            checkpoint_capture=capture,
+            input_embeds=input_embeds,
+            mrope_positions=mrope_positions,
+            rope_position_offsets=rope_position_offsets,
+            bidirectional_spans=bidirectional_spans,
+        )
 
 
 def _logit_rows(step: StepInput, logit_counts: Sequence[int]) -> list[LogitRow]:

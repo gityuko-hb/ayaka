@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sys
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, Final, TextIO
 
 from ayaka.configs.cache import CacheConfig
 from ayaka.configs.device import DeviceConfig
@@ -38,7 +38,7 @@ from ayaka.core.errors import (
 from ayaka.core.params import SamplingParams
 from ayaka.core.types import FinishReason
 from ayaka.engine.llm import LLM
-from ayaka.entrypoints.cli_parsers import DTYPES, build_cli_parser
+from ayaka.entrypoints._cli_parsers import build_parser
 from ayaka.entrypoints.console import (
     EXIT_BUG,
     EXIT_ENGINE,
@@ -58,6 +58,7 @@ from ayaka.entrypoints.settings import (
     server_config,
 )
 from ayaka.tokenizers.contracts import ChatMessage
+from ayaka.utils.dtypes import COMPUTE_DTYPES
 from ayaka.utils.logging import init_logger
 
 if TYPE_CHECKING:
@@ -68,12 +69,16 @@ if TYPE_CHECKING:
 
 __all__ = ["main"]
 
-_parser = build_cli_parser
+_DTYPES: Final = {dtype.label: dtype for dtype in COMPUTE_DTYPES}
+
+
+def _parser() -> argparse.ArgumentParser:
+    return build_parser()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command line and return its exit code."""
-    parser = build_cli_parser()
+    parser = _parser()
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_usage(sys.stderr)
@@ -142,7 +147,15 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> EngineConfig:
-    cache = CacheConfig(kv_reserve_tokens=args.kv_reserve_tokens, prefix_cache=args.prefix_cache)
+    """The engine configuration the flags describe; ``run`` runs one request at a time."""
+    cache = CacheConfig(
+        kv_reserve_tokens=args.kv_reserve_tokens,
+        prefix_cache=args.prefix_cache,
+        kv_dtype=args.kv_dtype,
+        kv_fp8_scale=args.kv_fp8_scale,
+        state_checkpoint_stride=args.state_checkpoint_stride,
+        state_checkpoint_max_bytes=args.state_checkpoint_max_mb * 1024 * 1024,
+    )
     if args.memory_ratio is not None:
         cache = dataclasses.replace(cache, memory_ratio=args.memory_ratio)
     return EngineConfig(
@@ -151,9 +164,10 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
         ),
         device=DeviceConfig(
             device=args.device,
-            dtype=DTYPES[args.dtype],
+            dtype=_DTYPES[args.dtype],
             backends=tuple(name.strip() for name in args.backends.split(",") if name.strip()),
             cuda_graph=args.cuda_graph,
+            vision_load=args.vision_load,
         ),
         cache=cache,
         scheduler=SchedulerConfig(max_running=max_running),

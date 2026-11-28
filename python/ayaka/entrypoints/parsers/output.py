@@ -173,7 +173,12 @@ class OutputFormat:
         )
 
     def parser(
-        self, *, call_id_prefix: str, tools: bool, parallel_tool_calls: bool = True
+        self,
+        *,
+        call_id_prefix: str,
+        tools: bool,
+        parallel_tool_calls: bool = True,
+        withhold_call: bool = False,
     ) -> OutputParser:
         """A parser for one request.
 
@@ -182,6 +187,8 @@ class OutputFormat:
             tools: Whether the request offered tools; without them no call is looked for.
             parallel_tool_calls: Whether the answer may hold several calls. When not, the answer
                 ends right after its first call (see :attr:`OutputParser.ended_early`).
+            withhold_call: The request shows tools it may not call (``tool_choice: none``) and
+                stops at a one-token opening marker; the marker's text is left out of the answer.
         """
         reasoning = (
             ReasoningParser(self.reasoning, self.reasoning_markers)
@@ -195,7 +202,15 @@ class OutputFormat:
             if self.tool_calls is not None and tools
             else None
         )
-        return OutputParser(reasoning, calls, single_call=not parallel_tool_calls)
+        opening = self.tool_markers[0] if self.tool_markers is not None else None
+        withheld = (
+            opening
+            if withhold_call and opening is not None and opening.token_id is not None
+            else None
+        )
+        return OutputParser(
+            reasoning, calls, single_call=not parallel_tool_calls, withheld_marker=withheld
+        )
 
     def processor(
         self,
@@ -203,6 +218,7 @@ class OutputFormat:
         *,
         call_id_prefix: str,
         tool_schemas: ToolSchemas | None = None,
+        withhold_call: bool = False,
     ) -> ChatResponseProcessor:
         """Build a request-scoped :class:`ChatResponseProcessor` from ``interpretation``."""
         reasoning = (
@@ -225,7 +241,15 @@ class OutputFormat:
             if self.tool_calls is not None and interpretation.tools
             else None
         )
-        return ChatResponseProcessor(reasoning, calls, interpretation=interpretation)
+        opening = self.tool_markers[0] if self.tool_markers is not None else None
+        withheld = (
+            opening
+            if withhold_call and opening is not None and opening.token_id is not None
+            else None
+        )
+        return ChatResponseProcessor(
+            reasoning, calls, interpretation=interpretation, withheld_marker=withheld
+        )
 
 
 class OutputParser:
@@ -237,6 +261,8 @@ class OutputParser:
         single_call: End the answer right after its first function call: the events stop there
             with a normal finish, and :attr:`ended_early` tells the caller to cancel the request
             in the engine. The usage then counts the tokens this parser was given.
+        withheld_marker: A one-token opening marker the request stops at (``tool_choice: none``):
+            when the answer ends on that token, its text is dropped, so no call markup shows.
     """
 
     def __init__(
@@ -245,10 +271,12 @@ class OutputParser:
         tool_calls: ToolCallParserLike | None,
         *,
         single_call: bool = False,
+        withheld_marker: Marker | None = None,
     ) -> None:
         self._reasoning = reasoning
         self._calls = tool_calls
         self._single_call = single_call
+        self._withheld = withheld_marker
         self._reasoning_tokens = 0
         self._tokens = 0
         self._done = False
@@ -292,6 +320,14 @@ class OutputParser:
         completion = output.outputs[0] if output.outputs else None
         token_ids = completion.token_ids if completion is not None else ()
         text = completion.text if completion is not None else ""
+        withheld = self._withheld
+        if (
+            withheld is not None
+            and completion is not None
+            and completion.stop_reason == withheld.token_id
+            and text.endswith(withheld.text)
+        ):
+            text = text[: len(text) - len(withheld.text)]
         self._tokens += len(token_ids)
         events: list[OutputEvent] = []
         reasoning = self._reasoning
