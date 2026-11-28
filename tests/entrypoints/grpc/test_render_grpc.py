@@ -6,16 +6,19 @@ import asyncio
 import json
 import subprocess
 import sys
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from ayaka.configs.tokenizer import TokenizerConfig
-from ayaka.core.errors import InvalidRequestError
+from ayaka.core.errors import InvalidRequestError, UnsupportedFeatureError
+from ayaka.core.multimodal import ImageInput, VisionSpec
 from ayaka.core.types import FinishReason
 from ayaka.entrypoints.conversation import (
     ConversationBuilder,
     FinishEvent,
     ReasoningDelta,
+    TextDelta,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallStart,
@@ -25,8 +28,12 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.grpc.render import RenderGrpcClient, RenderGrpcServer
 from ayaka.entrypoints.render.reasoning import ReasoningEffort, ThinkingRequest
 from ayaka.entrypoints.render.selection import PromptRenderer, RenderRequest
+from ayaka.multimodal.png import make_ide_screenshot_png
 from ayaka.tokenizers.service import TokenizerService
-from tokenizer_fakes import ToolTokenizer, loaded_for
+from tokenizer_fakes import BOS, ToolTokenizer, loaded_for
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 pytestmark = pytest.mark.unit
 
@@ -132,6 +139,168 @@ def test_render_server_parity_fingerprint_and_parse_output() -> None:
         finally:
             await client.close()
             await server.shutdown()
+            service.close()
+
+    asyncio.run(main())
+
+
+def test_render_server_multimodal_images_and_tool_choice_none() -> None:
+    pytest.importorskip("grpc")
+    pytest.importorskip("google.protobuf")
+
+    class _VisionToolTokenizer(ToolTokenizer):
+        _IMAGE_TOKEN = 262
+        _IMAGE_MARKER = "<image>"
+
+        @property
+        def vocab_size(self) -> int:
+            return 263
+
+        @property
+        def max_token_id(self) -> int:
+            return 262
+
+        @property
+        def valid_token_ids(self) -> frozenset[int]:
+            return frozenset(range(263))
+
+        def apply_chat_template(
+            self,
+            messages: Sequence[Mapping[str, Any]],
+            *,
+            tools: Sequence[Mapping[str, Any]] | None = None,
+            add_generation_prompt: bool = True,
+            chat_template: str | None = None,
+            **kwargs: Any,
+        ) -> str:
+            normalized = []
+            for m in messages:
+                content = m["content"]
+                if isinstance(content, list):
+                    text = "".join(
+                        self._IMAGE_MARKER
+                        if part.get("type") == "image"
+                        else str(part.get("text", ""))
+                        for part in content
+                    )
+                    normalized.append({**m, "content": text})
+                else:
+                    normalized.append(m)
+            return super().apply_chat_template(
+                normalized,
+                tools=tools,
+                add_generation_prompt=add_generation_prompt,
+                chat_template=chat_template,
+                **kwargs,
+            )
+
+        def encode(self, text: str, *, add_special_tokens: bool = True) -> list[int]:
+            self.encode_calls += 1
+            ids: list[int] = []
+            parts = text.split(self._IMAGE_MARKER)
+            for idx, part in enumerate(parts):
+                if part:
+                    ids.extend(super().encode(part, add_special_tokens=False))
+                if idx < len(parts) - 1:
+                    ids.append(self._IMAGE_TOKEN)
+            return [BOS, *ids] if add_special_tokens else ids
+
+    spec = VisionSpec(
+        family="qwen3_5",
+        image_token_id=262,
+        patch_size=16,
+        spatial_merge_size=2,
+        min_pixels=4096,
+        max_pixels=65536,
+    )
+
+    async def main() -> None:
+        tok = _VisionToolTokenizer(stream=False)
+        service = TokenizerService(
+            TokenizerConfig(tokenizer="tiny-vision-tool", skip_tokenizer_init=False),
+            max_model_len=1024,
+            model_vocab_size=tok.vocab_size,
+            loaded=loaded_for(tok, stream=False),
+        )
+        img = ImageInput(make_ide_screenshot_png(64, 64))
+        img_builder = ConversationBuilder()
+        img_builder.user("describe", images=(img,))
+        img_conv = img_builder.build()
+
+        non_vision = RenderGrpcServer(
+            service,
+            model_name="tiny-tool",
+            tool_call_parser="hermes",
+            target="127.0.0.1:0",
+        )
+        nv_addr = await non_vision.start()
+        nv_client = await RenderGrpcClient(nv_addr).connect()
+        try:
+            with pytest.raises(UnsupportedFeatureError, match="vision-capable"):
+                await nv_client.render_chat(img_conv)
+        finally:
+            await nv_client.close()
+            await non_vision.shutdown()
+
+        vision_srv = RenderGrpcServer(
+            service,
+            model_name="tiny-vision-tool",
+            tool_call_parser="hermes",
+            vision_spec=spec,
+            target="127.0.0.1:0",
+        )
+        assert vision_srv.fingerprint != non_vision.fingerprint
+        v_addr = await vision_srv.start()
+        v_client = await RenderGrpcClient(v_addr).connect()
+        try:
+            remote_img = await v_client.render_chat(img_conv)
+            local_img = PromptRenderer(
+                service, model_name="tiny-vision-tool", vision_spec=spec
+            ).render(RenderRequest(conversation=img_conv))
+            assert remote_img.input_ids == local_img.token_ids
+            assert remote_img.image_spans == local_img.image_spans
+            assert len(remote_img.image_spans) == 1
+
+            tool_builder = ConversationBuilder()
+            tool_builder.user("just text")
+            tool_builder.tool(
+                ToolSpec(
+                    name="get_weather",
+                    description="Weather",
+                    parameters={"type": "object", "properties": {}},
+                )
+            )
+            tool_conv = tool_builder.build()
+            remote_none = await v_client.render_chat(tool_conv, tool_choice="none")
+            assert remote_none.structured is None
+
+            chunks = [
+                {
+                    "call_id_prefix": "call_none",
+                    "gate": {
+                        "force_reasoning": remote_none.force_reasoning,
+                        "previous_content": remote_none.previous_content,
+                        "stream_reasoning": remote_none.stream_reasoning,
+                    },
+                    "tools": [],
+                    "withhold_call": True,
+                    "tools_allowed": False,
+                    "token_ids": [65, 260],
+                    "text": "A<tool_call>",
+                    "finished": True,
+                    "finish_reason": str(FinishReason.STOP),
+                    "stop_reason": 260,
+                    "usage": {"prompt_tokens": len(remote_none.input_ids), "completion_tokens": 2},
+                }
+            ]
+            events = [ev async for ev in v_client.parse_output(chunks)]
+            texts = "".join(ev.text for ev in events if isinstance(ev, TextDelta))
+            assert texts == "A"
+            assert not any(isinstance(ev, ToolCallStart) for ev in events)
+            assert any(isinstance(ev, FinishEvent) and not ev.tool_calls for ev in events)
+        finally:
+            await v_client.close()
+            await vision_srv.shutdown()
             service.close()
 
     asyncio.run(main())

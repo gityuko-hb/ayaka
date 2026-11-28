@@ -7,15 +7,17 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ayaka.core.errors import ContextLengthError, InvalidRequestError
+from ayaka.core.errors import ContextLengthError, InvalidRequestError, UnsupportedFeatureError
 from ayaka.entrypoints.render.models.hooks import select_render_hook
 from ayaka.entrypoints.render.reasoning import ThinkingRequest, resolve_thinking
 from ayaka.entrypoints.render.thinking import detect_thinking_policy
+from ayaka.multimodal.tokens import expand_image_placeholders
 from ayaka.tokenizers.contracts import EncodeOptions, RenderedInput, TemplateData
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from ayaka.core.multimodal import ImageInput, ImageSpan, VisionSpec
     from ayaka.entrypoints.conversation import Conversation
     from ayaka.entrypoints.render.models.hooks import ModelRenderHook
     from ayaka.entrypoints.render.thinking import ThinkingPolicy
@@ -48,6 +50,7 @@ class RenderedChat:
     previous_content: str
     stream_reasoning: bool
     render_fingerprint: str
+    image_spans: tuple[ImageSpan, ...] = ()
 
 
 def _apply_explicit_kwargs_override(
@@ -76,6 +79,8 @@ def _fingerprint(
     starts_inside_reasoning: bool,
     force_reasoning: bool | None,
     token_ids: tuple[int, ...],
+    images: tuple[ImageInput, ...] = (),
+    image_spans: tuple[ImageSpan, ...] = (),
 ) -> str:
     digest = hashlib.blake2b(digest_size=16)
     header = {
@@ -88,15 +93,31 @@ def _fingerprint(
     digest.update(b"\0")
     for token_id in token_ids:
         digest.update(token_id.to_bytes(4, "little", signed=True))
+    if images:
+        digest.update(b"\0images\0")
+        for image in images:
+            digest.update(image.media_type.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(hashlib.blake2b(image.data, digest_size=16).digest())
+        for span in image_spans:
+            for value in (span.image_index, span.token_offset, span.token_count, *span.grid_thw):
+                digest.update(value.to_bytes(4, "little", signed=False))
     return digest.hexdigest()
 
 
 class PromptRenderer:
     """Renders conversations into tokenized prompts and synchronized parser metadata."""
 
-    def __init__(self, service: TokenizerService, *, model_name: str = "") -> None:
+    def __init__(
+        self,
+        service: TokenizerService,
+        *,
+        model_name: str = "",
+        vision_spec: VisionSpec | None = None,
+    ) -> None:
         self._service = service
         self._model_name = model_name
+        self._vision_spec = vision_spec
         self._policy = detect_thinking_policy(service.chat_template, model_hint=model_name)
         self._hook = select_render_hook(model_name, service.chat_template)
         tokenizer = service.tokenizer
@@ -124,7 +145,15 @@ class PromptRenderer:
         Raises:
             ContextLengthError: If the prompt leaves no room for one output token.
             InvalidRequestError: If rendering or tokenization fails.
+            UnsupportedFeatureError: If images are sent to a non-vision model.
         """
+        conversation = request.conversation
+        if conversation.images and self._vision_spec is None:
+            raise UnsupportedFeatureError(
+                "image input requires a vision-capable model",
+                context={"features": ("image_url",)},
+            )
+
         resolved = resolve_thinking(
             self._policy,
             request.thinking,
@@ -139,7 +168,6 @@ class PromptRenderer:
             resolved.force_reasoning,
         )
 
-        conversation = request.conversation
         messages = self._hook.prepare_messages(
             conversation.messages(), thinking_enabled=thinking_enabled
         )
@@ -167,6 +195,21 @@ class PromptRenderer:
         except (TypeError, ValueError, RuntimeError) as exc:
             raise InvalidRequestError(f"cannot render this prompt: {exc}") from exc
 
+        token_ids = encoded.token_ids
+        image_spans: tuple[ImageSpan, ...] = ()
+        if conversation.images:
+            assert self._vision_spec is not None  # noqa: S101  # checked above
+            token_ids, image_spans = expand_image_placeholders(
+                token_ids, conversation.images, self._vision_spec
+            )
+            wanted = max(max_tokens or 1, 1)
+            if len(token_ids) + wanted > self._service.max_model_len:
+                raise ContextLengthError(
+                    prompt_tokens=len(token_ids),
+                    output_tokens=wanted,
+                    max_context_tokens=self._service.max_model_len,
+                )
+
         previous_content = ""
         if request.continue_final_message and conversation.turns:
             previous_content = conversation.turns[-1].text
@@ -191,15 +234,18 @@ class PromptRenderer:
             thinking_enabled=thinking_enabled,
             starts_inside_reasoning=starts_inside,
             force_reasoning=force_reasoning,
-            token_ids=encoded.token_ids,
+            token_ids=token_ids,
+            images=conversation.images,
+            image_spans=image_spans,
         )
         return RenderedChat(
             prompt_text=prompt_text,
-            token_ids=encoded.token_ids,
+            token_ids=token_ids,
             thinking_enabled=thinking_enabled,
             starts_inside_reasoning=starts_inside,
             force_reasoning=force_reasoning,
             previous_content=previous_content,
             stream_reasoning=resolved.stream_reasoning,
             render_fingerprint=fingerprint,
+            image_spans=image_spans,
         )

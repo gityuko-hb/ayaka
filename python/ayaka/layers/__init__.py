@@ -19,12 +19,14 @@ from ayaka.utils.lazy_exports import build_lazy_exports
 if TYPE_CHECKING:
     from ayaka.layers.activation import GELU, GELUAndMul, SiLUAndMul
     from ayaka.layers.attention.dense import Attention
-    from ayaka.layers.context import ForwardContext
+    from ayaka.layers.attention.linear import GatedDeltaNetAttention, KimiDeltaAttention
+    from ayaka.layers.attention.mla import MultiHeadLatentAttention
+    from ayaka.layers.context import ForwardContext, StateCheckpointCapture
     from ayaka.layers.embedding.token import LMHead, TokenEmbedding
     from ayaka.layers.ffn.dense import MLP, GatedMLP
     from ayaka.layers.ffn.moe import MoEBlock, StackedExperts
     from ayaka.layers.linear import Linear
-    from ayaka.layers.norm import LayerNorm, RMSNorm
+    from ayaka.layers.norm import LayerNorm, RMSNorm, RMSNormGated, ScalelessRMSNorm
     from ayaka.layers.rope import RotaryEmbedding, rope_inverse_frequencies
 
 __all__ = [
@@ -33,15 +35,21 @@ __all__ = [
     "Attention",
     "ForwardContext",
     "GELUAndMul",
+    "GatedDeltaNetAttention",
     "GatedMLP",
+    "KimiDeltaAttention",
     "LMHead",
     "LayerNorm",
     "Linear",
     "MoEBlock",
+    "MultiHeadLatentAttention",
     "RMSNorm",
+    "RMSNormGated",
     "RotaryEmbedding",
+    "ScalelessRMSNorm",
     "SiLUAndMul",
     "StackedExperts",
+    "StateCheckpointCapture",
     "TokenEmbedding",
     "rope_inverse_frequencies",
 ]
@@ -49,12 +57,14 @@ __all__ = [
 _EXPORTS = {
     "activation": ("GELU", "GELUAndMul", "SiLUAndMul"),
     "attention.dense": ("Attention",),
-    "context": ("ForwardContext",),
+    "attention.linear": ("GatedDeltaNetAttention", "KimiDeltaAttention"),
+    "attention.mla": ("MultiHeadLatentAttention",),
+    "context": ("ForwardContext", "StateCheckpointCapture"),
     "embedding.token": ("LMHead", "TokenEmbedding"),
     "ffn.dense": ("MLP", "GatedMLP"),
     "ffn.moe": ("MoEBlock", "StackedExperts"),
     "linear": ("Linear",),
-    "norm": ("LayerNorm", "RMSNorm"),
+    "norm": ("LayerNorm", "RMSNorm", "RMSNormGated", "ScalelessRMSNorm"),
     "rope": ("RotaryEmbedding", "rope_inverse_frequencies"),
 }
 

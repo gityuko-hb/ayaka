@@ -82,14 +82,14 @@ files keep their references.
 
 | Step | Status | Depends On | Hardware | Summary |
 | --- | --- | --- | --- | --- |
-| Hybrid 1 | `BLOCKED` | Fast quantized kernels 5 | CPU | Hybrid cache spec: recurrent state slots (GDN/KDA) & latent KV pool (MLA) |
-| Hybrid 2 | `BLOCKED` | Hybrid 1 | GPU-L4 | GDN/linear-attention & MLA op contracts + GPU kernels (MLA `≥ 50%` KV savings) |
-| Hybrid 3 | `BLOCKED` | Hybrid 2 | GPU-L4 | State checkpointing & suffix replay (1-chunk == N-chunk; state prefix hit exact) |
-| Hybrid 4 | `BLOCKED` | Hybrid 2, Hybrid 3 | GPU-L4 | Representative hybrid models (`Qwen3.5`/`3.8`, `Gemma 4` + UnifiedParser, `gpt-oss` class) parity |
-| Hybrid 5 | `BLOCKED` | Hybrid 1 | CPU | Image preprocessing (processor-exact), token expansion & OpenAI/Anthropic wire payloads |
-| Hybrid 6 | `BLOCKED` | Hybrid 4, Hybrid 5 | GPU-L4 | Vision encoder & projector + `1024×768` screenshot e2e through `ayaka serve` |
-| Hybrid 7 | `BLOCKED` | Hybrid 1 | GPU-L4 | Opt-in KV FP8 codec (`float8_e4m3fn`) capacity mode & pre-registered quality gate |
-| Hybrid 8 | `BLOCKED` | Hybrid 4, Hybrid 6, Hybrid 7 | GPU-L4 | `ayaka plan` (state/KV/vision) + `ayaka bench` (image & long-prompt), tag `v0.2.0-a5` |
+| Hybrid 1 | `DONE` (#148) | Fast quantized kernels 5 | CPU | Hybrid cache spec: recurrent state slots (GDN/KDA) & latent KV pool (MLA) |
+| Hybrid 2 | `DONE` (#148, #150, A100) | Hybrid 1 | GPU-L4 | GDN/linear-attention & MLA op contracts + GPU kernels (MLA `85.94%` KV savings vs GQA-16) |
+| Hybrid 3 | `DONE` (#148, #149, A100) | Hybrid 2 | GPU-L4 | State checkpointing & suffix replay (1-chunk == N-chunk; state prefix hit exact) |
+| Hybrid 4 | `DONE` (#149, #150, A100) | Hybrid 2, Hybrid 3 | GPU-L4 | Representative hybrid models (`Qwen3.5`, `Gemma 4`, `gpt-oss`, DeepSeek MLA) parity (L4 & full DeepSeek checkpoint untested) |
+| Hybrid 5 | `DONE` (#150) | Hybrid 1 | CPU | Image preprocessing (processor-exact), token expansion & OpenAI/Anthropic wire payloads |
+| Hybrid 6 | `DONE` (#150, A100) | Hybrid 4, Hybrid 5 | GPU-L4 | Vision encoder & projector + `1024×768` screenshot e2e through `ayaka serve` (L4 untested) |
+| Hybrid 7 | `DONE` (#148, A100) | Hybrid 1 | GPU-L4 | Opt-in KV FP8 codec (`float8_e4m3fn`) capacity mode & pre-registered quality gate (L4 untested) |
+| Hybrid 8 | `DONE` (#150, A100) | Hybrid 4, Hybrid 6, Hybrid 7 | GPU-L4 | `ayaka plan` (state/KV/vision) + `ayaka bench` (`1024×768` image & `32,768`-token long prompt) |
 
 ### MoE on Small Machines (`v0.2.0-a6`) · [M09-moe-small-machines.md](M09-moe-small-machines.md)
 

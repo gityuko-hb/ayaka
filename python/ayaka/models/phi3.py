@@ -7,8 +7,7 @@ in the order Ayaka keeps them (q, k, v; gate, up), so nothing is split when they
 
 What is not implemented is refused when ``config.json`` is read
 (:meth:`~ayaka.configs.model.ModelConfig.from_hf_config`): ``longrope`` scaling (Phi-3-mini-128k,
-Phi-3.5-mini, Phi-4-mini) and a rotary embedding over part of each head
-(``partial_rotary_factor``, Phi-4-mini). Phi-3-mini-4k declares a 2,047-token sliding window,
+Phi-3.5-mini, Phi-4-mini). Phi-3-mini-4k declares a 2,047-token sliding window,
 shorter than its 4,096-token context; it is served up to the window
 (:attr:`~ayaka.configs.model.ModelConfig.context_length`).
 """

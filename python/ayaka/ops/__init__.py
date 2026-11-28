@@ -1,24 +1,5 @@
 """The kernel boundary: op contracts owned by Ayaka, implemented by backends.
 
-Each op family is a :class:`typing.Protocol` in ``ayaka.ops.<family>``, written
-from what the layers need. A kernel library is an implementation under
-``ayaka.ops.backends.<name>``; only that directory imports the library.
-:func:`~ayaka.ops.backend.load_backend` assembles one
-:class:`~ayaka.ops.backend.OpsBackend` per engine, and layers receive it when
-they are built. There is no global backend.
-
-Rules every contract follows:
-
-* Arguments are ``torch.Tensor`` objects on one device. No type of a kernel
-  library crosses the boundary.
-* The caller allocates the output and passes it as ``out``. An op returns
-  nothing and never reallocates or resizes ``out``.
-* ``out`` must not overlap an input unless the op's docstring allows it.
-* Floating-point tensors use a compute dtype: fp16, bf16 or fp32.
-* A backend that cannot run a call as specified raises
-  :class:`~ayaka.core.errors.BackendError`. It never substitutes a different
-  computation.
-
 Importing this package does not import torch; a backend's library is imported
 when ``load_backend`` selects it.
 """
@@ -43,14 +24,31 @@ if TYPE_CHECKING:
         register_backend,
     )
     from ayaka.ops.embedding import EmbeddingOps
-    from ayaka.ops.kvcache import KVBuffers, KVCacheOps
+    from ayaka.ops.kvcache import (
+        FP8_E4M3_CODEC,
+        RAW_CODEC,
+        SUPPORTED_KV_CODECS,
+        KVBuffers,
+        KVCacheOps,
+        LatentKVBuffers,
+    )
     from ayaka.ops.linear import LinearOps
+    from ayaka.ops.linear_attention import (
+        LinearAttentionMetadata,
+        LinearAttentionOps,
+        RecurrentStateBuffers,
+    )
+    from ayaka.ops.mla import MLAOps
+    from ayaka.ops.moe import MoeOps
     from ayaka.ops.norm import NormOps
     from ayaka.ops.rope import RopeOps
     from ayaka.ops.sampling import DrawStream, SamplingOps
 
 __all__ = [
+    "FP8_E4M3_CODEC",
     "GRAPH_FAMILIES",
+    "RAW_CODEC",
+    "SUPPORTED_KV_CODECS",
     "ActivationOps",
     "AttentionMetadata",
     "AttentionOps",
@@ -61,9 +59,15 @@ __all__ = [
     "FamilyName",
     "KVBuffers",
     "KVCacheOps",
+    "LatentKVBuffers",
+    "LinearAttentionMetadata",
+    "LinearAttentionOps",
     "LinearOps",
+    "MLAOps",
+    "MoeOps",
     "NormOps",
     "OpsBackend",
+    "RecurrentStateBuffers",
     "RopeOps",
     "SamplingOps",
     "available_backends",
@@ -85,8 +89,22 @@ _EXPORTS = {
         "register_backend",
     ),
     "embedding": ("EmbeddingOps",),
-    "kvcache": ("KVBuffers", "KVCacheOps"),
+    "kvcache": (
+        "FP8_E4M3_CODEC",
+        "RAW_CODEC",
+        "SUPPORTED_KV_CODECS",
+        "KVBuffers",
+        "KVCacheOps",
+        "LatentKVBuffers",
+    ),
     "linear": ("LinearOps",),
+    "linear_attention": (
+        "LinearAttentionMetadata",
+        "LinearAttentionOps",
+        "RecurrentStateBuffers",
+    ),
+    "mla": ("MLAOps",),
+    "moe": ("MoeOps",),
     "norm": ("NormOps",),
     "rope": ("RopeOps",),
     "sampling": ("DrawStream", "SamplingOps"),

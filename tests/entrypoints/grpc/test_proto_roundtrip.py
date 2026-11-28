@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import sys
 
@@ -23,6 +24,7 @@ from ayaka.core.errors import (
     OverloadedError,
     UnsupportedFeatureError,
 )
+from ayaka.core.multimodal import ImageInput, ImageSpan, VisionSpec
 from ayaka.core.outputs import CompletionOutput, RequestMetrics, RequestOutput, TokenLogprob, Usage
 from ayaka.core.params import LogprobMode, SamplingParams
 from ayaka.core.request import GenerateRequest
@@ -54,6 +56,7 @@ from ayaka.entrypoints.grpc.messages import (
     grpc_options,
     serialize_proto,
 )
+from ayaka.multimodal.png import make_ide_screenshot_png
 
 pytestmark = pytest.mark.unit
 
@@ -99,6 +102,8 @@ def test_protobuf_roundtrip_for_requests_outputs_and_all_seven_constraints() -> 
         ),
     ]
 
+    sample_img = ImageInput(make_ide_screenshot_png(32, 32))
+    sample_span = ImageSpan(image_index=0, token_offset=1, token_count=4, grid_thw=(1, 2, 2))
     for idx, structured in enumerate(constraints):
         req = GenerateRequest(
             request_id=RequestId(f"req-{idx}"),
@@ -116,11 +121,15 @@ def test_protobuf_roundtrip_for_requests_outputs_and_all_seven_constraints() -> 
             client_request_id=f"client-{idx}",
             priority=idx,
             cache_salt="salt-a",
-            prefix_cache=True,
+            prefix_cache=False,
+            images=(sample_img,),
+            image_spans=(sample_span,),
         )
         wire = serialize_proto(encode_generate_request(req))
         decoded = decode_generate_request(deserialize_proto(wire))
         assert decoded == req
+        for field in dataclasses.fields(GenerateRequest):
+            assert getattr(decoded, field.name) == getattr(req, field.name)
 
     out = RequestOutput(
         request_id=RequestId("req-0"),
@@ -161,6 +170,19 @@ def test_protobuf_roundtrip_for_requests_outputs_and_all_seven_constraints() -> 
         dtype="bf16",
         backends=("flashinfer", "torch"),
         cuda_graph=True,
+        vision=VisionSpec(
+            family="qwen3_5",
+            image_token_id=260,
+            boi_token_id=261,
+            eoi_token_id=262,
+            patch_size=16,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            min_pixels=4096,
+            max_pixels=65536,
+            max_soft_tokens=280,
+            mrope_section=(24, 20, 20),
+        ),
     )
     assert decode_engine_info(deserialize_proto(serialize_proto(encode_engine_info(info)))) == info
 

@@ -1,0 +1,329 @@
+{
+  "schema": "ayaka.bench/1",
+  "valid": true,
+  "model": {
+    "name": "Qwen/Qwen3.5-9B",
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "dtype": "bf16",
+    "weights_bytes": 18819627524,
+    "quantization": null,
+    "max_position_embeddings": 262144
+  },
+  "engine": {
+    "source": {
+      "model": "Qwen/Qwen3.5-9B",
+      "revision": "",
+      "tokenizer": "",
+      "tokenizer_revision": "",
+      "format": "auto",
+      "trust": "strict",
+      "offline": true,
+      "reproducible": false,
+      "cache_dir": ""
+    },
+    "tokenizer": null,
+    "device": {
+      "device": "cuda",
+      "dtype": "bf16",
+      "backends": [
+        "flashinfer",
+        "torch"
+      ],
+      "cuda_graph": true,
+      "graph_buckets": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "vision_load": "eager"
+    },
+    "cache": {
+      "block_size": 16,
+      "num_blocks": null,
+      "memory_ratio": 0.9,
+      "kv_reserve_tokens": null,
+      "prefix_cache": true,
+      "kv_dtype": "auto",
+      "kv_fp8_scale": 1.0,
+      "state_checkpoint_stride": 1,
+      "state_checkpoint_max_bytes": 536870912
+    },
+    "scheduler": {
+      "max_running": null,
+      "max_tokens_per_step": 2048,
+      "max_waiting": 1024,
+      "policy": "fcfs",
+      "max_consecutive_prefills": 2
+    }
+  },
+  "backends": {
+    "norm": "torch",
+    "activation": "torch",
+    "embedding": "torch",
+    "linear": "torch",
+    "rope": "torch",
+    "kvcache": "torch",
+    "attention": "flashinfer",
+    "sampling": "torch",
+    "moe": "torch",
+    "linear_attention": "flashinfer",
+    "mla": "flashinfer"
+  },
+  "plan": {
+    "max_context_tokens": 262144,
+    "engine_context_tokens": 262144,
+    "max_running": 6,
+    "kv_blocks": 98305,
+    "block_size": 16,
+    "chunk_tokens": 2048,
+    "usable_bytes": 76585343385
+  },
+  "machine": {
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "capability": [
+      8,
+      0
+    ],
+    "vram_free_bytes": 83995983872,
+    "vram_total_bytes": 85094825984,
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "llguidance": "1.9.1",
+    "transformers": "5.22.2",
+    "ayaka": {
+      "version": "0.1.0",
+      "commit": "0f2ad2d3449eaa1f36c4521a62ba5bf7a812b7e3",
+      "dirty": true
+    }
+  },
+  "power": "unknown",
+  "thermal": {
+    "gpu_start_c": 36,
+    "gpu_end_c": 39
+  },
+  "options": {
+    "quick": true,
+    "seed": 0,
+    "repeats": 2
+  },
+  "started": "2026-11-27T16:14:59+00:00",
+  "finished": "2026-11-27T16:18:22+00:00",
+  "prompt_set": {
+    "version": 1,
+    "groups": [
+      "edit",
+      "write",
+      "prose"
+    ],
+    "lengths": [
+      1024,
+      4096
+    ],
+    "digests": {
+      "edit/1024": "89ed04489031e244",
+      "edit/4096": "bf2038d6da428e58",
+      "write/1024": "03f44e1ab343bf17",
+      "write/4096": "385c8a432822954c",
+      "prose/1024": "f160333ee316546d",
+      "prose/4096": "495c445b4b5d1ad2"
+    }
+  },
+  "prompt_read": [
+    {
+      "group": "edit",
+      "length": 1024,
+      "seconds": [
+        0.14698632700310554,
+        0.1406846179961576
+      ],
+      "tokens_per_s": [
+        6966.634386192703,
+        7278.691974896414
+      ],
+      "median_tokens_per_s": 7122.663180544558
+    },
+    {
+      "group": "edit",
+      "length": 4096,
+      "seconds": [
+        0.43802270900050644,
+        0.44047740299720317
+      ],
+      "tokens_per_s": [
+        9351.113346032624,
+        9299.001429197056
+      ],
+      "median_tokens_per_s": 9325.057387614841
+    },
+    {
+      "group": "write",
+      "length": 1024,
+      "seconds": [
+        0.12739551599952392,
+        0.126611010004126
+      ],
+      "tokens_per_s": [
+        8037.95951502584,
+        8087.764247095334
+      ],
+      "median_tokens_per_s": 8062.861881060588
+    },
+    {
+      "group": "write",
+      "length": 4096,
+      "seconds": [
+        0.4388628640008392,
+        0.43902571700164117
+      ],
+      "tokens_per_s": [
+        9333.211661290548,
+        9329.749582721342
+      ],
+      "median_tokens_per_s": 9331.480622005945
+    },
+    {
+      "group": "prose",
+      "length": 1024,
+      "seconds": [
+        0.12878860199998599,
+        0.12685756299470086
+      ],
+      "tokens_per_s": [
+        7951.014174376327,
+        8072.0453383041495
+      ],
+      "median_tokens_per_s": 8011.529756340238
+    },
+    {
+      "group": "prose",
+      "length": 4096,
+      "seconds": [
+        0.4370310430022073,
+        0.43892235399835045
+      ],
+      "tokens_per_s": [
+        9372.331932904162,
+        9331.946670493327
+      ],
+      "median_tokens_per_s": 9352.139301698746
+    }
+  ],
+  "generation": [
+    {
+      "context": 1024,
+      "output_tokens": 256,
+      "tokens_per_s": [
+        61.73933860228158,
+        61.88577269402165
+      ],
+      "median_tokens_per_s": 61.812555648151616
+    },
+    {
+      "context": 4096,
+      "output_tokens": 256,
+      "tokens_per_s": [
+        60.51406465839465,
+        60.81420500242984
+      ],
+      "median_tokens_per_s": 60.664134830412245
+    }
+  ],
+  "ttft": {
+    "system_tokens": 2048,
+    "cold_s": [
+      5.108177797003009,
+      5.241572337996331
+    ],
+    "warm_s": [
+      0.10095781899872236,
+      0.10024179199535865
+    ],
+    "cold_median_s": 5.17487506749967,
+    "warm_median_s": 0.1005998054970405
+  },
+  "agent": {
+    "turns": [
+      {
+        "prompt_tokens": 2079,
+        "cached_tokens": 0,
+        "cached_share": 0.0,
+        "seconds": 5.59378922200267
+      },
+      {
+        "prompt_tokens": 3139,
+        "cached_tokens": 2064,
+        "cached_share": 0.6575342465753424,
+        "seconds": 3.0702791240037186
+      },
+      {
+        "prompt_tokens": 3940,
+        "cached_tokens": 3136,
+        "cached_share": 0.7959390862944162,
+        "seconds": 2.4081953809945844
+      }
+    ],
+    "cached_share": 0.7267366664348793,
+    "total_s": 11.072263727000973
+  },
+  "long_context": {
+    "group": "long",
+    "length": 32768,
+    "digest": "5a09c27329d5f6ae",
+    "seconds": [
+      3.938371856995218,
+      3.9469777079939377
+    ],
+    "tokens_per_s": [
+      8320.189456411654,
+      8302.048408744226
+    ],
+    "median_tokens_per_s": 8311.11893257794,
+    "output_tokens": 256,
+    "generation_tokens_per_s": [
+      53.879052504520416,
+      54.23866823551189
+    ],
+    "generation_median_tokens_per_s": 54.05886037001615
+  },
+  "image": {
+    "image_size": [
+      1024,
+      768
+    ],
+    "prompt_tokens": 801,
+    "cold_s": [
+      0.3833896520009148,
+      0.37227547600195976
+    ],
+    "warm_s": [
+      0.29584798900032183,
+      0.2974536059991806
+    ],
+    "cold_median_s": 0.3778325640014373,
+    "warm_median_s": 0.2966507974997512
+  },
+  "sanity": [
+    {
+      "name": "tool call",
+      "passed": true,
+      "detail": "call: {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Hanoi\"}}"
+    },
+    {
+      "name": "structured output",
+      "passed": true,
+      "detail": "answer: {\"length\": 18, \"unit\": \"cm\"}"
+    }
+  ],
+  "memory": {
+    "peak_vram_bytes": 73791635456,
+    "peak_rss_bytes": 10153992192,
+    "samples": 1815,
+    "vram_scope": "the whole GPU (NVML)"
+  },
+  "notes": []
+}

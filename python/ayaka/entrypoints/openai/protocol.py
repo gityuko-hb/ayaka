@@ -32,10 +32,12 @@ from ayaka.entrypoints.conversation import (
 from ayaka.entrypoints.render.reasoning import ThinkingRequest, parse_reasoning_effort
 from ayaka.entrypoints.wire.policy import apply_policy
 from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
+from ayaka.multimodal.png import decode_data_url_image
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from ayaka.core.multimodal import ImageInput
     from ayaka.core.outputs import TokenLogprob
     from ayaka.entrypoints.conversation import (
         Collected,
@@ -391,21 +393,24 @@ def _parse_structural_tag(value: JsonObject | None, field: str) -> StructuralTag
     )
 
 
-def _text_parts(message: JsonObject, key: str, *, allow_null: bool) -> str:
-    """A message's content as text: a string, or an array of text parts."""
+def _content_parts(
+    message: JsonObject, key: str, *, allow_null: bool, allow_images: bool
+) -> tuple[str, tuple[ImageInput, ...]]:
+    """A message's content as text plus optional images: a string or an array of parts."""
     content = message.raw(key)
     where = message.where(key)
     if content is None:
         if allow_null:
-            return ""
+            return "", ()
         raise InvalidRequestError(f"{where}: is required", context={"param": where})
     if isinstance(content, str):
-        return content
+        return content, ()
     if not isinstance(content, list):
         raise InvalidRequestError(
             f"{where}: must be a string or an array of parts", context={"param": where}
         )
     texts: list[str] = []
+    images: list[ImageInput] = []
     for i, item in enumerate(cast("list[object]", content)):
         part = JsonObject.of(item, f"{where}[{i}]")
         kind = part.string("type")
@@ -414,10 +419,34 @@ def _text_parts(message: JsonObject, key: str, *, allow_null: bool) -> str:
         elif kind == "refusal":
             texts.append(part.text("refusal"))
         elif kind in ("image_url", "input_image"):
-            raise _unsupported(part.where("type"), "image input needs a vision model")
+            if not allow_images:
+                raise InvalidRequestError(
+                    f"{part.where('type')}: images are supported on user messages only",
+                    context={"param": part.where("type")},
+                )
+            raw_field = part.raw("image_url")
+            if isinstance(raw_field, dict):
+                child = part.child("image_url")
+                assert child is not None  # noqa: S101  # dict check above
+                url = child.text("url")
+                url_where = child.where("url")
+            elif isinstance(raw_field, str):
+                url = raw_field
+                url_where = part.where("image_url")
+            else:
+                raise InvalidRequestError(
+                    f"{part.where('image_url')}: must be {{url: ...}} or a data URL string",
+                    context={"param": part.where("image_url")},
+                )
+            images.append(decode_data_url_image(url, where=url_where))
         else:
             raise _unsupported(part.where("type"), f"content parts of type {kind!r}")
-    return PART_SEPARATOR.join(texts)
+    return PART_SEPARATOR.join(texts), tuple(images)
+
+
+def _text_parts(message: JsonObject, key: str, *, allow_null: bool) -> str:
+    text, _ = _content_parts(message, key, allow_null=allow_null, allow_images=False)
+    return text
 
 
 def _chat_message(message: JsonObject, builder: ConversationBuilder) -> None:
@@ -426,7 +455,8 @@ def _chat_message(message: JsonObject, builder: ConversationBuilder) -> None:
         case "system" | "developer":
             builder.system(_text_parts(message, "content", allow_null=False))
         case "user":
-            builder.user(_text_parts(message, "content", allow_null=False))
+            text, images = _content_parts(message, "content", allow_null=False, allow_images=True)
+            builder.user(text, images=images)
         case "assistant":
             calls = [_chat_tool_call(call) for call in message.objects("tool_calls")]
             reasoning = message.string("reasoning_content")
@@ -461,7 +491,10 @@ def _chat_tool_call(call: JsonObject) -> ToolCall:
 def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, str, bool]:
     """Add the request's tools; return whether the model may call them, the choice and strict.
 
-    The choice is ``"auto"``, ``"required"`` or the name of the one function to call.
+    The choice is ``"auto"``, ``"required"`` or the name of the one function to call. With
+    ``tool_choice: "none"`` the tools are still written into the prompt, so the prompt keeps the
+    bytes (and the prefix-cache blocks) of the same conversation with ``"auto"``; the model may
+    not call them.
     """
     tools = body.objects("tools")
     raw = body.raw("tool_choice")
@@ -479,13 +512,11 @@ def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, s
         choice = "required"
     elif raw not in (None, "auto", "none"):
         raise InvalidRequestError("tool_choice: must be auto, none, required or a function")
-    if not tools or raw == "none":
-        if choice != "auto":
-            raise InvalidRequestError(
-                "tool_choice: forces a call but the request has no tools",
-                context={"param": "tool_choice"},
-            )
-        return False, "auto", False
+    if not tools and choice != "auto":
+        raise InvalidRequestError(
+            "tool_choice: forces a call but the request has no tools",
+            context={"param": "tool_choice"},
+        )
     strict = False
     for tool in tools:
         if tool.string("type") != "function":
@@ -501,7 +532,9 @@ def _chat_tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, s
                 parameters=(function.child("parameters") or JsonObject({})).data,
             )
         )
-    return True, choice, strict
+    if raw == "none":
+        return False, "auto", False
+    return bool(tools), choice, strict
 
 
 # -- completions ------------------------------------------------------------------------------

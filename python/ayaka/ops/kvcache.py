@@ -49,10 +49,23 @@ if TYPE_CHECKING:
 
     from ayaka.ops.attention import AttentionMetadata
 
-__all__ = ["RAW_CODEC", "KVBuffers", "KVCacheOps"]
+__all__ = [
+    "FP8_E4M3_CODEC",
+    "RAW_CODEC",
+    "SUPPORTED_KV_CODECS",
+    "KVBuffers",
+    "KVCacheOps",
+    "LatentKVBuffers",
+]
 
-#: The only codec: keys and values stored in the compute dtype, unchanged.
+#: Keys and values stored in the compute dtype, unchanged.
 RAW_CODEC = "raw"
+
+#: Keys and values quantized to float8_e4m3fn with per-tensor static scales.
+FP8_E4M3_CODEC = "fp8_e4m3"
+
+#: All supported KV cache storage codecs.
+SUPPORTED_KV_CODECS = (RAW_CODEC, FP8_E4M3_CODEC)
 
 
 class KVBuffers(NamedTuple):
@@ -62,13 +75,17 @@ class KVBuffers(NamedTuple):
         k: Keys, laid out as described in this module's docstring.
         v: Values, with the same shape, dtype and layout as ``k``.
         layout: ``KVLayoutKind.NHD`` or ``KVLayoutKind.HND``.
-        codec: How the values are encoded; ``RAW_CODEC`` is the only one.
+        codec: How the values are encoded; ``RAW_CODEC`` or ``FP8_E4M3_CODEC``.
+        k_scale: Dequantization scale for ``k`` when ``codec`` is ``FP8_E4M3_CODEC``.
+        v_scale: Dequantization scale for ``v`` when ``codec`` is ``FP8_E4M3_CODEC``.
     """
 
     k: Tensor
     v: Tensor
     layout: KVLayoutKind
     codec: str
+    k_scale: float = 1.0
+    v_scale: float = 1.0
 
     @property
     def num_blocks(self) -> int:
@@ -89,6 +106,46 @@ class KVBuffers(NamedTuple):
     def head_dim(self) -> int:
         """Elements per head."""
         return int(self.k.shape[3])
+
+
+class LatentKVBuffers(NamedTuple):
+    """Compressed latent KV and decoupled RoPE key tensors of one MLA layer.
+
+    Attributes:
+        ckv: Compressed key-value latent tensor of shape
+            ``[num_blocks, block_size, kv_lora_rank]``.
+        kpe: Decoupled rotary key tensor of shape
+            ``[num_blocks, block_size, qk_rope_head_dim]``.
+        codec: Storage codec (``RAW_CODEC`` or ``FP8_E4M3_CODEC``).
+        ckv_scale: Dequantization scale for ``ckv``.
+        kpe_scale: Dequantization scale for ``kpe``.
+    """
+
+    ckv: Tensor
+    kpe: Tensor
+    codec: str = RAW_CODEC
+    ckv_scale: float = 1.0
+    kpe_scale: float = 1.0
+
+    @property
+    def num_blocks(self) -> int:
+        """Blocks in the pool, block 0 included."""
+        return int(self.ckv.shape[0])
+
+    @property
+    def block_size(self) -> int:
+        """Positions per block."""
+        return int(self.ckv.shape[1])
+
+    @property
+    def kv_lora_rank(self) -> int:
+        """Compressed KV latent dimension."""
+        return int(self.ckv.shape[2])
+
+    @property
+    def qk_rope_head_dim(self) -> int:
+        """Decoupled rotary key head dimension."""
+        return int(self.kpe.shape[2])
 
 
 class KVCacheOps(Protocol):

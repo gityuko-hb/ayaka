@@ -146,6 +146,27 @@ machine = "NVIDIA L4 24 GB, Linux"
 status = "runs"
 result = "benchmarks/results/2026-11-24-nvidia-l4/fp8-rounds/qwen3-8b-fp8-round1/results.json"
 
+[[row]]
+model = "Qwen/Qwen3.5-9B"
+precision = "bf16, full 262,144-token context (quick run)"
+machine = "NVIDIA A100-SXM4-80GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-qwen35-9b/results.json"
+
+[[row]]
+model = "google/gemma-4-E2B-it"
+precision = "bf16, full 131,072-token context (quick run)"
+machine = "NVIDIA A100-SXM4-80GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gemma4-e2b/results.json"
+
+[[row]]
+model = "openai/gpt-oss-20b"
+precision = "MXFP4 (fp4_e2m1/block-1x32) sliced dequant, bf16 compute (quick run)"
+machine = "NVIDIA A100-SXM4-80GB, Linux"
+status = "runs"
+result = "benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gpt-oss-20b/results.json"
+
 [[quality]]
 model = "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8"
 precision = "FP8 weights (one scale per tensor), bf16 compute"

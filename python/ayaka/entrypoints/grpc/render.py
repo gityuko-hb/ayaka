@@ -25,10 +25,15 @@ from ayaka.entrypoints.grpc.errors import abort_with_error, error_from_rpc, erro
 from ayaka.entrypoints.grpc.messages import (
     MAX_GRPC_MESSAGE_BYTES,
     decode_chat_event,
+    decode_image_input,
+    decode_image_span,
     decode_structured_params,
     deserialize_proto,
     encode_chat_event,
+    encode_image_input,
+    encode_image_span,
     encode_structured_params,
+    encode_vision_spec,
     grpc_options,
     serialize_proto,
 )
@@ -47,6 +52,7 @@ from ayaka.utils.import_utils import require_module
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
 
+    from ayaka.core.multimodal import ImageSpan, VisionSpec
     from ayaka.entrypoints.conversation import Conversation, OutputEvent
     from ayaka.tokenizers.service import TokenizerService
 
@@ -85,6 +91,7 @@ def compute_render_fingerprint(
     reasoning_parser: str | None,
     tool_call_parser: str | None,
     tool_strict_level: str,
+    vision_spec: VisionSpec | None = None,
 ) -> str:
     """Compute a deterministic fingerprint of rendering template and parser settings."""
     payload = json.dumps(
@@ -94,6 +101,7 @@ def compute_render_fingerprint(
             "reasoning_parser": reasoning_parser or "",
             "tool_call_parser": tool_call_parser or "",
             "tool_strict_level": tool_strict_level,
+            "vision_spec": encode_vision_spec(vision_spec) if vision_spec is not None else None,
         },
         separators=(",", ":"),
         ensure_ascii=False,
@@ -116,6 +124,7 @@ class RemoteRenderResult:
     stream_reasoning: bool
     render_fingerprint: str
     prefill_text: str
+    image_spans: tuple[ImageSpan, ...] = ()
 
 
 class RenderGrpcServer:
@@ -129,12 +138,13 @@ class RenderGrpcServer:
         reasoning_parser: str | None = None,
         tool_call_parser: str | None = None,
         tool_strict_level: str = "auto",
+        vision_spec: VisionSpec | None = None,
         target: str = "127.0.0.1:0",
         max_message_bytes: int = MAX_GRPC_MESSAGE_BYTES,
     ) -> None:
         self._tokenizer = tokenizer
         self._model_name = model_name
-        self._renderer = PromptRenderer(tokenizer, model_name=model_name)
+        self._renderer = PromptRenderer(tokenizer, model_name=model_name, vision_spec=vision_spec)
         self._output_format = OutputFormat.resolve(
             reasoning=reasoning_parser,
             tool_calls=tool_call_parser,
@@ -147,6 +157,7 @@ class RenderGrpcServer:
             reasoning_parser=reasoning_parser,
             tool_call_parser=tool_call_parser,
             tool_strict_level=tool_strict_level,
+            vision_spec=vision_spec,
         )
         self._target = target
         self._max_bytes = max_message_bytes
@@ -249,7 +260,7 @@ class RenderGrpcServer:
                 thinking=thinking,
                 chat_template_kwargs=template_kwargs,
                 continue_final_message=continue_final,
-                named_tool_choice=tool_choice not in ("auto", "required"),
+                named_tool_choice=tool_choice not in ("auto", "required", "none"),
             )
             rendered = self._renderer.render(render_req)
             start_after, reasoning_open = self._output_format.constraint_start(
@@ -270,6 +281,7 @@ class RenderGrpcServer:
         await context.send_initial_metadata(((FINGERPRINT_METADATA_KEY, self._fingerprint),))
         return {
             "input_ids": list(rendered.token_ids),
+            "image_spans": [encode_image_span(span) for span in rendered.image_spans],
             "structured_output": (
                 encode_structured_params(structured) if structured is not None else None
             ),
@@ -313,7 +325,7 @@ class RenderGrpcServer:
                 grammar=parsed.grammar,
                 structural_tag=parsed.structural_tag,
             )
-        if not tools or self._output_format.tool_calls is None:
+        if not tools or tool_choice == "none" or self._output_format.tool_calls is None:
             return None
         strict_tools = bool(payload.get("strict_tools", False))
         parallel = bool(payload.get("parallel_tool_calls", True))
@@ -351,22 +363,31 @@ class RenderGrpcServer:
                 gate_raw = cast("dict[str, object]", chunk.get("gate") or {})
                 force_raw = gate_raw.get("force_reasoning")
                 tools_raw = cast("list[dict[str, object]]", chunk.get("tools") or [])
-                schemas = ToolSchemas.from_tools(tools_raw) if tools_raw else None
+                withhold_call = bool(chunk.get("withhold_call", False))
+                tools_allowed_raw = chunk.get("tools_allowed")
+                tools_allowed = (
+                    bool(tools_allowed_raw)
+                    if isinstance(tools_allowed_raw, bool)
+                    else bool(tools_raw) and not withhold_call
+                )
+                schemas = ToolSchemas.from_tools(tools_raw) if tools_raw and tools_allowed else None
                 interp = OutputInterpretation(
                     force_reasoning=force_raw if isinstance(force_raw, bool) else None,
                     previous_content=str(gate_raw.get("previous_content", "")),
                     stream_reasoning=bool(gate_raw.get("stream_reasoning", True)),
-                    tools=bool(tools_raw),
+                    tools=tools_allowed,
                     parallel_tool_calls=bool(chunk.get("parallel_tool_calls", True)),
                 )
                 processor = self._output_format.processor(
                     interp,
                     call_id_prefix=str(chunk.get("call_id_prefix", "call_0")),
                     tool_schemas=schemas,
+                    withhold_call=withhold_call,
                 )
             finished = bool(chunk.get("finished", False))
             reason_raw = chunk.get("finish_reason")
             reason = FinishReason(str(reason_raw)) if isinstance(reason_raw, str) else None
+            stop_reason = cast("int | str | None", chunk.get("stop_reason"))
             usage_raw = chunk.get("usage")
             usage = (
                 Usage(
@@ -396,6 +417,7 @@ class RenderGrpcServer:
                             int(t) for t in cast("list[int]", chunk.get("token_ids") or [])
                         ),
                         finish_reason=reason,
+                        stop_reason=stop_reason,
                     ),
                 ),
                 finished=finished,
@@ -488,6 +510,10 @@ class RenderGrpcClient:
             stream_reasoning=bool(gate.get("stream_reasoning", True)),
             render_fingerprint=self._fingerprint,
             prefill_text=str(resp.get("prefill_text", "")),
+            image_spans=tuple(
+                decode_image_span(item)
+                for item in cast("list[dict[str, object]]", resp.get("image_spans") or [])
+            ),
         )
 
     async def parse_output(self, chunks: Iterable[dict[str, object]]) -> AsyncIterator[OutputEvent]:
@@ -518,6 +544,7 @@ def _conversation_to_wire(conversation: Conversation) -> dict[str, object]:
             {
                 "role": turn.role,
                 "content": turn.text,
+                "images": [encode_image_input(img) for img in turn.images],
                 "tool_calls": [
                     {"id": tc.id, "name": tc.name, "arguments": dict(tc.arguments)}
                     for tc in turn.tool_calls
@@ -542,10 +569,14 @@ def _conversation_from_wire(payload: dict[str, object]) -> Conversation:
     for msg in cast("list[dict[str, object]]", payload.get("messages") or []):
         role = str(msg.get("role", "user"))
         content = str(msg.get("content", ""))
+        images = tuple(
+            decode_image_input(item)
+            for item in cast("list[dict[str, object]]", msg.get("images") or [])
+        )
         if role in ("system", "developer"):
             builder.system(content)
         elif role == "user":
-            builder.user(content)
+            builder.user(content, images=images)
         elif role == "assistant":
             from ayaka.entrypoints.conversation import ToolCall
 

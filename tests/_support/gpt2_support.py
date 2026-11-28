@@ -20,6 +20,7 @@ from torch.nn import functional
 from ayaka.configs.model import ModelConfig
 from ayaka.core.types import ForwardMode
 from ayaka.kvcache.storage.pool import KVPool
+from ayaka.kvcache.storage.spec import KVGroup
 from ayaka.layers.context import ForwardContext
 from safetensors_files import write_safetensors
 
@@ -183,6 +184,7 @@ def run_paged(
     """
     ops = model.ops
     [group] = model.kv_specs(block_size=BLOCK_SIZE, layout=ops.kvcache.layout())
+    assert isinstance(group, KVGroup)
     blocks = [-(-len(sequence) // BLOCK_SIZE) for sequence in sequences]
     pool = KVPool(group, sum(blocks) + 1, device="cpu")
     buffers = {layer: pool.buffers(layer) for layer in group.layer_ids}

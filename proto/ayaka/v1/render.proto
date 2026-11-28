@@ -17,6 +17,7 @@ message RenderMessage {
   optional string tool_call_id = 4;
   optional string name = 5;
   optional string reasoning = 6;
+  repeated ImageInput images = 7;
 }
 
 message RenderChatRequest {
@@ -49,6 +50,7 @@ message RenderChatResponse {
   EngineReasoningGate engine_reasoning_gate = 3;
   string render_fingerprint = 4;
   string prefill_text = 5;
+  repeated ImageSpan image_spans = 6;
 }
 
 message ParseOutputChunk {
@@ -62,6 +64,9 @@ message ParseOutputChunk {
   bool finished = 8;
   optional Usage usage = 9;
   optional ErrorInfo error = 10;
+  optional string stop_reason = 11;
+  bool withhold_call = 12;
+  optional bool tools_allowed = 13;
 }
 
 message SemanticChatEvent {

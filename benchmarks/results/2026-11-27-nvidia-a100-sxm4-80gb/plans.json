@@ -1,0 +1,313 @@
+{
+  "plans": [
+    {
+      "model": "Qwen/Qwen3.5-9B",
+      "vision_load": "eager",
+      "returncode": 0,
+      "plan": {
+        "fits": true,
+        "model": "Qwen/Qwen3.5-9B",
+        "architecture": "Qwen3_5ForConditionalGeneration",
+        "directory": "/root/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+        "device": {
+          "name": "NVIDIA A100-SXM4-80GB",
+          "kind": "cuda",
+          "description": "cuda:0 NVIDIA A100-SXM4-80GB sm_80 80.0 GiB"
+        },
+        "memory": {
+          "free_bytes": 85094825984,
+          "usable_bytes": 76585343385,
+          "headroom_bytes": 8509482599,
+          "weights_bytes": 18819627524,
+          "kv_bytes": 51540131840,
+          "state_bytes": 363331584,
+          "latent_kv_bytes": 0,
+          "vision_weights_bytes": 912020996,
+          "vision_activation_bytes": 84934656,
+          "vision_load": "eager",
+          "graph_bytes": 132120576
+        },
+        "kv": {
+          "groups": 1,
+          "blocks": 98305,
+          "fit_blocks": 108442,
+          "block_size": 16,
+          "dtype": "bf16",
+          "bytes_per_token": 32768
+        },
+        "context": {
+          "max_tokens_per_request": 262144,
+          "model_context": 262144,
+          "reserve_tokens": 262144
+        },
+        "quantization": null,
+        "gguf_types": null,
+        "max_running": 6,
+        "chunk_tokens": 2048,
+        "ops": {
+          "norm": "torch",
+          "activation": "torch",
+          "embedding": "torch",
+          "linear": "torch",
+          "rope": "torch",
+          "kvcache": "torch",
+          "attention": "flashinfer",
+          "sampling": "torch",
+          "moe": "torch",
+          "linear_attention": "flashinfer",
+          "mla": "flashinfer"
+        },
+        "profiled": true,
+        "speed": null
+      }
+    },
+    {
+      "model": "Qwen/Qwen3.5-9B",
+      "vision_load": "lazy",
+      "returncode": 0,
+      "plan": {
+        "fits": true,
+        "model": "Qwen/Qwen3.5-9B",
+        "architecture": "Qwen3_5ForConditionalGeneration",
+        "directory": "/root/.cache/huggingface/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+        "device": {
+          "name": "NVIDIA A100-SXM4-80GB",
+          "kind": "cuda",
+          "description": "cuda:0 NVIDIA A100-SXM4-80GB sm_80 80.0 GiB"
+        },
+        "memory": {
+          "free_bytes": 85094825984,
+          "usable_bytes": 76585343385,
+          "headroom_bytes": 8509482599,
+          "weights_bytes": 17907606528,
+          "kv_bytes": 51540131840,
+          "state_bytes": 363331584,
+          "latent_kv_bytes": 0,
+          "vision_weights_bytes": 912020996,
+          "vision_activation_bytes": 84934656,
+          "vision_load": "lazy",
+          "graph_bytes": 111149056
+        },
+        "kv": {
+          "groups": 1,
+          "blocks": 98305,
+          "fit_blocks": 110370,
+          "block_size": 16,
+          "dtype": "bf16",
+          "bytes_per_token": 32768
+        },
+        "context": {
+          "max_tokens_per_request": 262144,
+          "model_context": 262144,
+          "reserve_tokens": 262144
+        },
+        "quantization": null,
+        "gguf_types": null,
+        "max_running": 6,
+        "chunk_tokens": 2048,
+        "ops": {
+          "norm": "torch",
+          "activation": "torch",
+          "embedding": "torch",
+          "linear": "torch",
+          "rope": "torch",
+          "kvcache": "torch",
+          "attention": "flashinfer",
+          "sampling": "torch",
+          "moe": "torch",
+          "linear_attention": "flashinfer",
+          "mla": "flashinfer"
+        },
+        "profiled": true,
+        "speed": null
+      },
+      "stderr": "saved startup profile measured 0 bytes of runtime memory, below the 448724992-byte NVML/CUDA gap observed now; planning with 448724992 bytes"
+    },
+    {
+      "model": "google/gemma-4-E2B-it",
+      "vision_load": "eager",
+      "returncode": 0,
+      "plan": {
+        "fits": true,
+        "model": "google/gemma-4-E2B-it",
+        "architecture": "Gemma4ForConditionalGeneration",
+        "directory": "/root/.cache/huggingface/hub/models--google--gemma-4-E2B-it/snapshots/4adf15748de9e1a0097b6274cee9c15836c41c37",
+        "device": {
+          "name": "NVIDIA A100-SXM4-80GB",
+          "kind": "cuda",
+          "description": "cuda:0 NVIDIA A100-SXM4-80GB sm_80 80.0 GiB"
+        },
+        "memory": {
+          "free_bytes": 85094825984,
+          "usable_bytes": 76585343385,
+          "headroom_bytes": 8509482599,
+          "weights_bytes": 9594228198,
+          "kv_bytes": 65230110720,
+          "state_bytes": 0,
+          "latent_kv_bytes": 0,
+          "vision_weights_bytes": 337089440,
+          "vision_activation_bytes": 46448640,
+          "vision_load": "eager",
+          "graph_bytes": 390070272
+        },
+        "kv": {
+          "groups": 2,
+          "blocks": 221185,
+          "fit_blocks": 225634,
+          "block_size": 16,
+          "dtype": "bf16",
+          "bytes_per_token": 12288
+        },
+        "context": {
+          "max_tokens_per_request": 131072,
+          "model_context": 131072,
+          "reserve_tokens": 131072
+        },
+        "quantization": null,
+        "gguf_types": null,
+        "max_running": 27,
+        "chunk_tokens": 2048,
+        "ops": {
+          "norm": "torch",
+          "activation": "torch",
+          "embedding": "torch",
+          "linear": "torch",
+          "rope": "torch",
+          "kvcache": "torch",
+          "attention": "flashinfer",
+          "sampling": "torch",
+          "moe": "torch",
+          "linear_attention": "flashinfer",
+          "mla": "flashinfer"
+        },
+        "profiled": true,
+        "speed": null
+      },
+      "stderr": "saved startup profile measured 0 bytes of runtime memory, below the 448724992-byte NVML/CUDA gap observed now; planning with 448724992 bytes"
+    },
+    {
+      "model": "google/gemma-4-E2B-it",
+      "vision_load": "lazy",
+      "returncode": 0,
+      "plan": {
+        "fits": true,
+        "model": "google/gemma-4-E2B-it",
+        "architecture": "Gemma4ForConditionalGeneration",
+        "directory": "/root/.cache/huggingface/hub/models--google--gemma-4-E2B-it/snapshots/4adf15748de9e1a0097b6274cee9c15836c41c37",
+        "device": {
+          "name": "NVIDIA A100-SXM4-80GB",
+          "kind": "cuda",
+          "description": "cuda:0 NVIDIA A100-SXM4-80GB sm_80 80.0 GiB"
+        },
+        "memory": {
+          "free_bytes": 85094825984,
+          "usable_bytes": 76585343385,
+          "headroom_bytes": 8509482599,
+          "weights_bytes": 9257138758,
+          "kv_bytes": 65230110720,
+          "state_bytes": 0,
+          "latent_kv_bytes": 0,
+          "vision_weights_bytes": 337089440,
+          "vision_activation_bytes": 46448640,
+          "vision_load": "lazy",
+          "graph_bytes": 390070272
+        },
+        "kv": {
+          "groups": 2,
+          "blocks": 221185,
+          "fit_blocks": 226777,
+          "block_size": 16,
+          "dtype": "bf16",
+          "bytes_per_token": 12288
+        },
+        "context": {
+          "max_tokens_per_request": 131072,
+          "model_context": 131072,
+          "reserve_tokens": 131072
+        },
+        "quantization": null,
+        "gguf_types": null,
+        "max_running": 27,
+        "chunk_tokens": 2048,
+        "ops": {
+          "norm": "torch",
+          "activation": "torch",
+          "embedding": "torch",
+          "linear": "torch",
+          "rope": "torch",
+          "kvcache": "torch",
+          "attention": "flashinfer",
+          "sampling": "torch",
+          "moe": "torch",
+          "linear_attention": "flashinfer",
+          "mla": "flashinfer"
+        },
+        "profiled": true,
+        "speed": null
+      },
+      "stderr": "saved startup profile measured 0 bytes of runtime memory, below the 448724992-byte NVML/CUDA gap observed now; planning with 448724992 bytes"
+    },
+    {
+      "model": "openai/gpt-oss-20b",
+      "vision_load": "eager",
+      "returncode": 0,
+      "plan": {
+        "fits": true,
+        "model": "openai/gpt-oss-20b",
+        "architecture": "GptOssForCausalLM",
+        "directory": "/root/.cache/huggingface/hub/models--openai--gpt-oss-20b/snapshots/6cee5e81ee83917806bbde320786a8fb61efebee",
+        "device": {
+          "name": "NVIDIA A100-SXM4-80GB",
+          "kind": "cuda",
+          "description": "cuda:0 NVIDIA A100-SXM4-80GB sm_80 80.0 GiB"
+        },
+        "memory": {
+          "free_bytes": 85094825984,
+          "usable_bytes": 76585343385,
+          "headroom_bytes": 8509482599,
+          "weights_bytes": 13761264768,
+          "kv_bytes": 57982844928,
+          "state_bytes": 0,
+          "latent_kv_bytes": 0,
+          "vision_weights_bytes": 0,
+          "vision_activation_bytes": 0,
+          "vision_load": "eager",
+          "graph_bytes": 0
+        },
+        "kv": {
+          "groups": 2,
+          "blocks": 73729,
+          "fit_blocks": 79314,
+          "block_size": 16,
+          "dtype": "bf16",
+          "bytes_per_token": 24576
+        },
+        "context": {
+          "max_tokens_per_request": 131072,
+          "model_context": 131072,
+          "reserve_tokens": 131072
+        },
+        "quantization": "fp4_e2m1/block-1x32",
+        "gguf_types": null,
+        "max_running": 9,
+        "chunk_tokens": 2048,
+        "ops": {
+          "norm": "torch",
+          "activation": "torch",
+          "embedding": "torch",
+          "linear": "torch",
+          "rope": "torch",
+          "kvcache": "torch",
+          "attention": "flashinfer",
+          "sampling": "torch",
+          "moe": "torch",
+          "linear_attention": "flashinfer",
+          "mla": "flashinfer"
+        },
+        "profiled": false,
+        "speed": null
+      },
+      "stderr": "fp4_e2m1/block-1x32 weights (mxfp4): kept 8 bit and dequantized in slices before each product, which is slower than 16-bit weights"
+    }
+  ]
+}

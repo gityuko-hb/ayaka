@@ -26,7 +26,11 @@ def test_the_public_names_are_the_ones_the_tree_lists() -> None:
 
     assert sorted(package.__all__) == [
         "CausalLM",
+        "DeepseekV2ForCausalLM",
+        "DeepseekV3ForCausalLM",
         "GPT2LMHeadModel",
+        "Gemma4ForConditionalGeneration",
+        "GptOssForCausalLM",
         "LlamaForCausalLM",
         "MiMoForCausalLM",
         "OlmoeForCausalLM",
@@ -34,6 +38,7 @@ def test_the_public_names_are_the_ones_the_tree_lists() -> None:
         "Qwen2ForCausalLM",
         "Qwen3ForCausalLM",
         "Qwen3MoeForCausalLM",
+        "Qwen3_5ForConditionalGeneration",
         "register_model",
         "resolve_model",
     ]

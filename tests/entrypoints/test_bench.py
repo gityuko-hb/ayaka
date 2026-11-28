@@ -12,7 +12,14 @@ import pytest
 from ayaka.entrypoints import bench
 from ayaka.entrypoints.bench import SCHEMA, BenchOptions
 from ayaka.entrypoints.bench_machine import machine_slug, power_source
-from ayaka.entrypoints.bench_prompts import GROUPS, build_prompt, material_text, prompt_digest
+from ayaka.entrypoints.bench_prompts import (
+    EXTRA_GROUPS,
+    GROUPS,
+    build_image_prompt,
+    build_prompt,
+    material_text,
+    prompt_digest,
+)
 from ayaka.entrypoints.bench_results import (
     summary_line,
     summary_lines,
@@ -55,6 +62,17 @@ class TestPromptSet:
             build_prompt("poetry", 1024, _bytes)
         with pytest.raises(ValueError, match="cannot hold"):
             build_prompt("prose", 10, _bytes)
+
+    def test_long_group_and_image_prompt_are_deterministic(self) -> None:
+        assert "long" in EXTRA_GROUPS
+        p1 = build_prompt("long", 2048, _bytes)
+        p2 = build_prompt("long", 2048, _bytes)
+        assert len(p1.token_ids) == 2048
+        assert prompt_digest(p1) == prompt_digest(p2)
+        text, shot = build_image_prompt(1024, 768)
+        assert text
+        assert shot.media_type == "image/png"
+        assert shot.data.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def _results(**changes: Any) -> dict[str, Any]:
@@ -140,6 +158,45 @@ class TestResults:
         assert row == summary_line(data)
         assert row["machine"] == "rtx-3050-laptop-gpu"
         assert row["read_tok_s"] == {"prose/1024": 110.0}
+
+    def test_optional_long_context_and_image_sections_validate_and_summarize(self) -> None:
+        data = _results(
+            long_context={
+                "group": "long",
+                "length": 8192,
+                "digest": "0123456789abcdef",
+                "seconds": [0.5, 0.5],
+                "tokens_per_s": [16384.0, 16384.0],
+                "median_tokens_per_s": 16384.0,
+                "output_tokens": 256,
+                "generation_tokens_per_s": [120.0, 120.0],
+                "generation_median_tokens_per_s": 120.0,
+            },
+            image={
+                "image_size": [1024, 768],
+                "prompt_tokens": 798,
+                "cold_s": [0.8, 0.8],
+                "warm_s": [0.2, 0.2],
+                "cold_median_s": 0.8,
+                "warm_median_s": 0.2,
+            },
+        )
+        assert validate_results(data) == []
+        text = "\n".join(summary_lines(data))
+        assert "long ctx" in text
+        assert "1024x768" in text
+
+        bad = _results(
+            image={
+                "image_size": [1024, 768],
+                "prompt_tokens": 798,
+                "cold_s": [0.8],
+                "warm_s": [0.2],
+                "cold_median_s": 99.0,
+                "warm_median_s": 0.2,
+            }
+        )
+        assert any("image cold median" in problem for problem in validate_results(bad))
 
 
 class TestMachine:

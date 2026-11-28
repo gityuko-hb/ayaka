@@ -18,7 +18,7 @@ from ayaka.core.params import SamplingParams
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import FinishReason, RequestId
 from ayaka.engine.seam import EngineClient, EngineInfo
-from ayaka.entrypoints.cli_parsers import build_cli_parser
+from ayaka.entrypoints._cli_parsers import build_parser
 from ayaka.entrypoints.grpc.client import GrpcEngineClient
 from ayaka.entrypoints.grpc.inference import InferenceGrpcServer
 from ayaka.entrypoints.parsers.output import OutputFormat
@@ -211,7 +211,7 @@ def test_grpc_cli_subcommands_and_config_flags() -> None:
     cfg = ServerConfig(engine_grpc="127.0.0.1:50051")
     assert cfg.engine_grpc == "127.0.0.1:50051"
 
-    parser = build_cli_parser()
+    parser = build_parser()
     a1 = parser.parse_args(["serve", "m", "--engine-grpc", "unix:/tmp/ayaka.sock"])
     assert a1.command == "serve"
     assert a1.engine_grpc == "unix:/tmp/ayaka.sock"

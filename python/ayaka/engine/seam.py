@@ -36,6 +36,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from ayaka.core.multimodal import VisionSpec
     from ayaka.core.request import GenerateRequest
     from ayaka.core.types import RequestId
     from ayaka.engine.async_llm import RequestStream
@@ -56,6 +57,7 @@ class EngineInfo:
         dtype: The compute dtype label (e.g. ``"bf16"``, ``"fp16"``), or ``""`` when unknown.
         backends: Configured ops backend names in preference order.
         cuda_graph: Whether decode CUDA graph replay is enabled on this engine.
+        vision: Static multimodal vision spec if the loaded model accepts images, else ``None``.
     """
 
     max_model_len: int
@@ -65,6 +67,7 @@ class EngineInfo:
     dtype: str = ""
     backends: tuple[str, ...] = ()
     cuda_graph: bool = False
+    vision: VisionSpec | None = None
 
 
 class EngineState(StrEnum):

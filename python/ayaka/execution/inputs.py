@@ -22,7 +22,7 @@ This module imports torch. Import it through ``ayaka.execution``, which loads it
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -30,6 +30,7 @@ import torch
 
 from ayaka.core.errors import EngineError
 from ayaka.core.types import ForwardMode
+from ayaka.ops.linear_attention import LinearAttentionMetadata
 from ayaka.sampling.batch import SamplingBatch
 from ayaka.sampling.rng import resolve_seed
 
@@ -77,8 +78,11 @@ class StagedDecode:
         bucket: Rows the graph runs: the step's requests, then padding requests.
         count: The step's own requests; their rows come first.
         kv_lengths: ``[bucket]`` int32 CPU tensor, 0 for padding requests.
-        block_rows: ``[bucket, max_blocks]`` int32 CPU tensor of the requests' block tables.
+        block_rows: ``[bucket, max_blocks]`` int32 CPU tensor of group 0's block tables.
         all_greedy: Whether every request samples greedily, which picks the graph variant.
+        group_block_rows: Per-group ``[bucket, max_blocks]`` int32 CPU tensors for all
+            KV/latent groups.
+        state_slots: Optional ``[bucket]`` int32 host/staged state slot ids.
     """
 
     bucket: int
@@ -86,6 +90,8 @@ class StagedDecode:
     kv_lengths: torch.Tensor
     block_rows: torch.Tensor
     all_greedy: bool
+    group_block_rows: tuple[torch.Tensor, ...] = ()
+    state_slots: torch.Tensor | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -94,7 +100,7 @@ class ModelInputs:
 
     Attributes:
         token_ids: ``[N]`` int64 input token of every row, requests in step order.
-        attention: The planned step, shared by every layer.
+        attention: The planned step for group 0 (backward-compatible default).
         logit_rows: ``[L]`` int64 indices of the rows whose hidden states are projected and
             sampled: the last row of a prefill chunk that ends its prompt, every row of a decode
             or verify request.
@@ -103,6 +109,8 @@ class ModelInputs:
         logit_counts: Per request, how many of the ``L`` rows are its own (0 for a prefill chunk
             that does not end the prompt).
         draft_tokens: Per request, the tokens the step used for its draft rows.
+        group_attentions: Planned attention metadata per KV/latent KV group.
+        linear_attention: Planned linear-attention step metadata, or ``None`` when unused.
     """
 
     token_ids: torch.Tensor
@@ -112,20 +120,24 @@ class ModelInputs:
     sampled: torch.Tensor
     logit_counts: tuple[int, ...]
     draft_tokens: tuple[tuple[TokenId, ...], ...]
+    group_attentions: tuple[AttentionMetadata, ...] = field(default=())
+    linear_attention: LinearAttentionMetadata | None = None
+
+    def __post_init__(self) -> None:
+        if not self.group_attentions:
+            object.__setattr__(self, "group_attentions", (self.attention,))
 
 
 class InputBuilder:
     """Builds :class:`ModelInputs` from steps without allocating per step.
 
     Args:
-        attention: The attention ops of the backend; ``plan`` runs once per step.
+        attention: The attention ops of the backend; ``plan`` runs once per KV group per step.
         table: The host block table the scheduler writes.
         block_size: Tokens per cache block.
         max_rows: Most rows (tokens) one step can have.
         device: The device the model runs on.
-
-    Raises:
-        EngineError: If the table has more than one KV group; a step is planned for one group.
+        has_linear_attention: Whether the model uses recurrent state slots.
     """
 
     def __init__(
@@ -136,30 +148,34 @@ class InputBuilder:
         block_size: int,
         max_rows: int,
         device: torch.device | str,
+        has_linear_attention: bool = False,
     ) -> None:
-        if table.num_groups != 1:
-            raise EngineError(
-                f"the input builder plans a step for one KV group, the block table has "
-                f"{table.num_groups}"
-            )
         target = torch.device(device)
         self._target = target
         self._attention = attention
         self._table = table
+        self._num_groups = table.num_groups
         self._block_size = block_size
         self._max_rows = max_rows
         self._max_requests = table.max_requests
+        self._has_linear_attention = has_linear_attention
         self._stale = False
 
         rows, requests = max_rows, table.max_requests
+        max_blocks = table.max_blocks_per_request
         self._tokens = _Mirrored((rows,), torch.int64, target)
         self._rows_per_request = _Mirrored((requests,), torch.int32, target)
         self._kv_lengths = _Mirrored((requests,), torch.int32, target)
         self._batch_rows = _Mirrored((requests,), torch.int64, target)
-        self._mirror = _Mirrored((requests, table.max_blocks_per_request), torch.int32, target)
-        self._block_rows = torch.zeros(
-            (requests, table.max_blocks_per_request), dtype=torch.int32, device=target
+        self._mirrors = tuple(
+            _Mirrored((requests, max_blocks), torch.int32, target) for _ in range(self._num_groups)
         )
+        self._group_block_rows = tuple(
+            torch.zeros((requests, max_blocks), dtype=torch.int32, device=target)
+            for _ in range(self._num_groups)
+        )
+        self._state_slots = _Mirrored((requests,), torch.int32, target)
+        self._cu_seqlens = _Mirrored((requests + 1,), torch.int32, target)
         self._logit_rows = _Mirrored((rows,), torch.int64, target)
         self._seeds = _Mirrored((rows,), torch.int64, target)
         self._positions = _Mirrored((rows,), torch.int64, target)
@@ -172,11 +188,17 @@ class InputBuilder:
         # Host staging of a graph step's lengths and block tables, handed to the backend.
         pinned = target.type != "cpu"
         self._graph_lengths = torch.zeros(requests, dtype=torch.int32, pin_memory=pinned)
-        self._graph_rows = torch.zeros(
-            (requests, table.max_blocks_per_request), dtype=torch.int32, pin_memory=pinned
+        self._graph_rows = tuple(
+            torch.zeros((requests, max_blocks), dtype=torch.int32, pin_memory=pinned)
+            for _ in range(self._num_groups)
         )
         # The token masks the masked graph variants read, made by `graph_mask` (it knows the width).
         self._masks: _Mirrored | None = None
+
+    @property
+    def num_groups(self) -> int:
+        """Number of paged KV or latent KV groups planned per step."""
+        return self._num_groups
 
     @property
     def max_rows(self) -> int:
@@ -191,8 +213,10 @@ class InputBuilder:
             "rows_per_request": self._rows_per_request.device,
             "kv_lengths": self._kv_lengths.device,
             "batch_rows": self._batch_rows.device,
-            "block_table": self._mirror.device,
-            "block_rows": self._block_rows,
+            "block_table": self._mirrors[0].device,
+            "block_rows": self._group_block_rows[0],
+            "state_slots": self._state_slots.device,
+            "cu_seqlens": self._cu_seqlens.device,
             "logit_rows": self._logit_rows.device,
             "seeds": self._seeds.device,
             "positions": self._positions.device,
@@ -208,9 +232,10 @@ class InputBuilder:
         return buffers
 
     def resync(self) -> None:
-        """Copy the whole host block table to the device mirror."""
-        self._mirror.array[:] = self._table.rows[0]
-        self._mirror.push(self._max_requests)
+        """Copy the whole host block table across every group to the device mirror."""
+        for group, mirror in enumerate(self._mirrors):
+            mirror.array[:] = self._table.rows[group]
+            mirror.push(self._max_requests)
         self._stale = False
 
     def build(
@@ -278,26 +303,51 @@ class InputBuilder:
         for buffer in (self._rows_per_request, self._kv_lengths, self._batch_rows):
             buffer.push(count)
 
-        block_rows = self._block_rows[:count]
-        torch.index_select(self._mirror.device, 0, self._batch_rows.device[:count], out=block_rows)
-        attention = self._attention.plan(
-            step.mode,
-            self._rows_per_request.device[:count],
-            self._kv_lengths.device[:count],
-            block_rows,
-            self._block_size,
-        )
+        group_attentions: list[AttentionMetadata] = []
+        rows_dev = self._rows_per_request.device[:count]
+        lens_dev = self._kv_lengths.device[:count]
+        batch_dev = self._batch_rows.device[:count]
+        for group in range(self._num_groups):
+            block_rows = self._group_block_rows[group][:count]
+            torch.index_select(self._mirrors[group].device, 0, batch_dev, out=block_rows)
+            group_attentions.append(
+                self._attention.plan(
+                    step.mode,
+                    rows_dev,
+                    lens_dev,
+                    block_rows,
+                    self._block_size,
+                )
+            )
+
+        linear_attention: LinearAttentionMetadata | None = None
+        if step.state_slots or self._has_linear_attention:
+            self._state_slots.array[:count] = step.state_slots or (0,) * count
+            self._state_slots.push(count)
+            self._cu_seqlens.array[0] = 0
+            np.cumsum(
+                step.rows_per_request, dtype=np.int32, out=self._cu_seqlens.array[1 : count + 1]
+            )
+            self._cu_seqlens.push(count + 1)
+            linear_attention = LinearAttentionMetadata(
+                is_prefill=step.mode is ForwardMode.PREFILL,
+                cu_seqlens=self._cu_seqlens.device[: count + 1],
+                state_slots=self._state_slots.device[:count],
+                rows_per_request=rows_dev,
+            )
 
         logit_counts = self._write_logit_rows(step)
         total = sum(logit_counts)
         return ModelInputs(
             token_ids=self._tokens.device[:offset],
-            attention=attention,
+            attention=group_attentions[0],
             logit_rows=self._logit_rows.device[:total],
             sampling=self._sampling_batch(step, logit_counts),
             sampled=self._sampled.device[:total],
             logit_counts=logit_counts,
             draft_tokens=tuple(used_drafts),
+            group_attentions=tuple(group_attentions),
+            linear_attention=linear_attention,
         )
 
     @property
@@ -309,6 +359,12 @@ class InputBuilder:
         """Fill the first ``bucket`` rows with a valid all-padding decode step, for a capture."""
         self._tokens.array[:bucket] = 0
         self._tokens.push(bucket)
+        self._state_slots.array[:bucket] = 0
+        self._state_slots.push(bucket)
+        self._rows_per_request.array[:bucket] = 1
+        self._rows_per_request.push(bucket)
+        self._cu_seqlens.array[: bucket + 1] = np.arange(bucket + 1, dtype=np.int32)
+        self._cu_seqlens.push(bucket + 1)
         for buffer, neutral in (
             (self._seeds, 0),
             (self._positions, 0),
@@ -321,10 +377,23 @@ class InputBuilder:
             buffer.array[:bucket] = neutral
             buffer.push(bucket)
 
+    def graph_linear_metadata(self, bucket: int) -> LinearAttentionMetadata:
+        """Return fixed device-buffer views for captured decode linear-attention steps."""
+        self._rows_per_request.array[:bucket] = 1
+        self._rows_per_request.push(bucket)
+        self._cu_seqlens.array[: bucket + 1] = np.arange(bucket + 1, dtype=np.int32)
+        self._cu_seqlens.push(bucket + 1)
+        return LinearAttentionMetadata(
+            is_prefill=False,
+            cu_seqlens=self._cu_seqlens.device[: bucket + 1],
+            state_slots=self._state_slots.device[:bucket],
+            rows_per_request=self._rows_per_request.device[:bucket],
+        )
+
     @property
     def max_blocks(self) -> int:
         """Entries of one request's block table."""
-        return int(self._graph_rows.shape[1])
+        return int(self._graph_rows[0].shape[1])
 
     @property
     def block_size(self) -> int:
@@ -431,9 +500,18 @@ class InputBuilder:
         lengths = self._graph_lengths.numpy()
         lengths[:count] = [start + 1 for start in step.start_positions]
         lengths[count:bucket] = 0
-        rows = self._graph_rows.numpy()
-        rows[:count] = self._table.rows[0, list(batch_rows)]
-        rows[count:bucket] = 0
+        group_rows: list[torch.Tensor] = []
+        batch_list = list(batch_rows)
+        for group in range(self._num_groups):
+            rows_arr = self._graph_rows[group].numpy()
+            rows_arr[:count] = self._table.rows[group, batch_list]
+            rows_arr[count:bucket] = 0
+            group_rows.append(self._graph_rows[group][:bucket])
+
+        if step.state_slots or self._has_linear_attention:
+            self._state_slots.array[:count] = step.state_slots or (0,) * count
+            self._state_slots.array[count:bucket] = 0
+            self._state_slots.push(bucket)
 
         logit_counts = (1,) * count
         greedy = self._sampling_batch(step, logit_counts).all_greedy
@@ -451,8 +529,12 @@ class InputBuilder:
             bucket=bucket,
             count=count,
             kv_lengths=self._graph_lengths[:bucket],
-            block_rows=self._graph_rows[:bucket],
+            block_rows=group_rows[0],
             all_greedy=greedy,
+            group_block_rows=tuple(group_rows),
+            state_slots=self._state_slots.device[:bucket]
+            if (step.state_slots or self._has_linear_attention)
+            else None,
         )
 
     def read_sampled(self, count: int) -> list[TokenId]:
@@ -466,12 +548,16 @@ class InputBuilder:
             return
         rows = self._table.rows
         for group, row, start, stop in step.table_updates:
-            if group != 0:
-                raise EngineError(f"the block table update names group {group}; only group 0 runs")
-            self._mirror.array[row, start:stop] = rows[0, row, start:stop]
-            if self._mirror.device is not self._mirror.host:
-                self._mirror.device[row, start:stop].copy_(
-                    self._mirror.host[row, start:stop], non_blocking=True
+            if not 0 <= group < self._num_groups:
+                raise EngineError(
+                    f"the block table update names group {group}; "
+                    f"the table has {self._num_groups} group(s)"
+                )
+            mirror = self._mirrors[group]
+            mirror.array[row, start:stop] = rows[group, row, start:stop]
+            if mirror.device is not mirror.host:
+                mirror.device[row, start:stop].copy_(
+                    mirror.host[row, start:stop], non_blocking=True
                 )
 
     def _write_logit_rows(self, step: StepInput) -> tuple[int, ...]:

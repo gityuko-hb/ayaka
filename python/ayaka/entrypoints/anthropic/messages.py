@@ -274,6 +274,7 @@ async def create_message(request: web.Request) -> web.StreamResponse:
         sampling,
         public_id=public_id,
         tools=message.tools,
+        tools_in_prompt=bool(conversation.tools),
         parallel_tool_calls=message.parallel_tool_calls,
         structured=serving.constraint(
             message.output,
@@ -282,6 +283,8 @@ async def create_message(request: web.Request) -> web.StreamResponse:
             parallel_tool_calls=message.parallel_tool_calls,
             rendered=rendered,
         ),
+        images=conversation.images,
+        image_spans=rendered.image_spans,
         rendered=rendered,
         tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
     )

@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from ayaka.core.constraints import (
-    ConstraintKind,
-    StructuralTagItem,
-    StructuralTagSpec,
-    StructuredParams,
-    ToolCallSyntax,
-    ToolSchema,
-)
 from ayaka.core.errors import CapabilityError, UnsupportedFeatureError
-from ayaka.core.outputs import CompletionOutput, RequestMetrics, RequestOutput, TokenLogprob, Usage
-from ayaka.core.params import LogprobMode, SamplingParams
+from ayaka.core.multimodal import ImageInput, ImageSpan, VisionSpec
+from ayaka.core.outputs import CompletionOutput, RequestMetrics, RequestOutput, Usage
 from ayaka.core.request import GenerateRequest
 from ayaka.core.types import FinishReason, RequestId
 from ayaka.engine.seam import EngineHealth, EngineInfo, EngineState
@@ -29,10 +22,24 @@ from ayaka.entrypoints.conversation import (
     ToolCallStart,
     UsageEvent,
 )
+from ayaka.entrypoints.grpc._codecs import (
+    as_float,
+    as_int,
+    as_opt_float,
+    as_opt_int,
+    decode_logprob,
+    decode_sampling,
+    decode_structured,
+    encode_logprob,
+    encode_sampling,
+    encode_structured,
+)
 from ayaka.entrypoints.grpc.errors import error_info_from_wire, error_info_to_wire
 from ayaka.utils.import_utils import require_module
 
 if TYPE_CHECKING:
+    from ayaka.core.constraints import StructuredParams
+    from ayaka.core.params import SamplingParams
     from ayaka.entrypoints.conversation import OutputEvent
 
 __all__ = [
@@ -41,15 +48,21 @@ __all__ = [
     "decode_engine_health",
     "decode_engine_info",
     "decode_generate_request",
+    "decode_image_input",
+    "decode_image_span",
     "decode_request_output",
     "decode_structured_params",
+    "decode_vision_spec",
     "deserialize_proto",
     "encode_chat_event",
     "encode_engine_health",
     "encode_engine_info",
     "encode_generate_request",
+    "encode_image_input",
+    "encode_image_span",
     "encode_request_output",
     "encode_structured_params",
+    "encode_vision_spec",
     "grpc_options",
     "serialize_proto",
 ]
@@ -101,221 +114,95 @@ def deserialize_proto(raw: bytes) -> dict[str, object]:
 
 def encode_sampling_params(params: SamplingParams) -> dict[str, object]:
     """Serialize :class:`~ayaka.core.params.SamplingParams`."""
-    bias_pairs: list[tuple[int, float]] = (
-        list(params.logit_bias.items())
-        if isinstance(params.logit_bias, dict)
-        else list(cast("tuple[tuple[int, float], ...]", params.logit_bias or ()))
-    )
-    return {
-        "n": params.n,
-        "temperature": params.temperature,
-        "top_p": params.top_p,
-        "top_k": params.top_k,
-        "min_p": params.min_p,
-        "repetition_penalty": params.repetition_penalty,
-        "frequency_penalty": params.frequency_penalty,
-        "presence_penalty": params.presence_penalty,
-        "max_tokens": params.max_tokens,
-        "min_tokens": params.min_tokens,
-        "ignore_eos": params.ignore_eos,
-        "stop": list(params.stop),
-        "stop_token_ids": sorted(params.stop_token_ids),
-        "include_stop_str_in_output": params.include_stop_str_in_output,
-        "seed": params.seed,
-        "allowed_token_ids": (
-            sorted(params.allowed_token_ids) if params.allowed_token_ids is not None else None
-        ),
-        "logit_bias": [[int(t), float(b)] for t, b in bias_pairs],
-        "logprobs": params.logprobs,
-        "prompt_logprobs": params.prompt_logprobs,
-        "logprob_token_ids": (
-            list(params.logprob_token_ids) if params.logprob_token_ids is not None else None
-        ),
-        "logprob_mode": str(params.logprob_mode),
-        "return_sampling_support": params.return_sampling_support,
-    }
+    return encode_sampling(params)
 
 
 def decode_sampling_params(data: dict[str, object]) -> SamplingParams:
     """Deserialize :class:`~ayaka.core.params.SamplingParams`."""
-    allowed_raw = data.get("allowed_token_ids")
-    logprob_raw = data.get("logprob_token_ids")
-    bias_raw = data.get("logit_bias")
-    logit_bias: tuple[tuple[int, float], ...] | None = None
-    if isinstance(bias_raw, list) and bias_raw:
-        logit_bias = tuple(
-            (int(pair[0]), float(pair[1])) for pair in cast("list[list[float]]", bias_raw)
-        )
-    return SamplingParams(
-        n=_as_int(data.get("n"), 1),
-        temperature=_as_float(data.get("temperature"), 1.0),
-        top_p=_as_float(data.get("top_p"), 1.0),
-        top_k=_as_int(data.get("top_k"), -1),
-        min_p=_as_float(data.get("min_p"), 0.0),
-        repetition_penalty=_as_float(data.get("repetition_penalty"), 1.0),
-        frequency_penalty=_as_float(data.get("frequency_penalty"), 0.0),
-        presence_penalty=_as_float(data.get("presence_penalty"), 0.0),
-        max_tokens=_as_opt_int(data.get("max_tokens")),
-        min_tokens=_as_int(data.get("min_tokens"), 0),
-        ignore_eos=bool(data.get("ignore_eos", False)),
-        stop=tuple(cast("list[str]", data.get("stop") or [])),
-        stop_token_ids=frozenset(
-            int(t) for t in cast("list[int]", data.get("stop_token_ids") or [])
-        ),
-        include_stop_str_in_output=bool(data.get("include_stop_str_in_output", False)),
-        seed=_as_opt_int(data.get("seed")),
-        allowed_token_ids=(
-            frozenset(int(t) for t in cast("list[int]", allowed_raw))
-            if isinstance(allowed_raw, list)
-            else None
-        ),
-        logit_bias=logit_bias,
-        logprobs=_as_opt_int(data.get("logprobs")),
-        prompt_logprobs=_as_opt_int(data.get("prompt_logprobs")),
-        logprob_token_ids=(
-            tuple(int(t) for t in cast("list[int]", logprob_raw))
-            if isinstance(logprob_raw, list)
-            else None
-        ),
-        logprob_mode=LogprobMode(str(data.get("logprob_mode", LogprobMode.RAW))),
-        return_sampling_support=bool(data.get("return_sampling_support", False)),
-    )
+    return decode_sampling(data)
 
 
 def encode_structured_params(params: StructuredParams) -> dict[str, object]:
     """Serialize all seven :class:`~ayaka.core.constraints.ConstraintKind` specs."""
-    syntax = (
-        {
-            "open": params.syntax.open,
-            "close": params.syntax.close,
-            "open_token": params.syntax.open_token,
-            "close_token": params.syntax.close_token,
-            "open_ids": list(params.syntax.open_ids),
-            "arguments_key": params.syntax.arguments_key,
-            "separator": params.syntax.separator,
-        }
-        if params.syntax is not None
-        else None
-    )
-    st = (
-        {
-            "triggers": list(params.structural_tag.triggers),
-            "at_least_one": params.structural_tag.at_least_one,
-            "stop_after_first": params.structural_tag.stop_after_first,
-            "tags": [
-                {
-                    "begin": item.begin,
-                    "end": item.end,
-                    "schema_json": (
-                        json.dumps(item.schema, separators=(",", ":"), ensure_ascii=False)
-                        if item.schema is not None
-                        else None
-                    ),
-                    "grammar": item.grammar,
-                }
-                for item in params.structural_tag.tags
-            ],
-        }
-        if params.structural_tag is not None
-        else None
-    )
-    return {
-        "kind": str(params.kind),
-        "schema_json": (
-            json.dumps(params.schema, separators=(",", ":"), ensure_ascii=False)
-            if params.schema is not None
-            else None
-        ),
-        "tools": [
-            {
-                "name": t.name,
-                "parameters_json": json.dumps(
-                    t.parameters, separators=(",", ":"), ensure_ascii=False
-                ),
-            }
-            for t in params.tools
-        ],
-        "syntax": syntax,
-        "tool_choice": params.tool_choice,
-        "strict": params.strict,
-        "parallel": params.parallel,
-        "start_after": params.start_after,
-        "reasoning_open": params.reasoning_open,
-        "pattern": params.pattern,
-        "choices": list(params.choices),
-        "grammar": params.grammar,
-        "structural_tag": st,
-    }
+    return encode_structured(params)
 
 
 def decode_structured_params(data: dict[str, object]) -> StructuredParams:
     """Deserialize :class:`~ayaka.core.constraints.StructuredParams` preserving JSON key order."""
-    kind = ConstraintKind(str(data["kind"]))
-    schema_raw = data.get("schema_json")
-    schema = (
-        cast("dict[str, object]", json.loads(schema_raw)) if isinstance(schema_raw, str) else None
+    return decode_structured(data)
+
+
+def encode_image_input(image: ImageInput) -> dict[str, object]:
+    """Serialize :class:`~ayaka.core.multimodal.ImageInput`."""
+    return {
+        "data": base64.b64encode(image.data).decode("ascii"),
+        "media_type": image.media_type,
+    }
+
+
+def decode_image_input(data: dict[str, object]) -> ImageInput:
+    """Deserialize :class:`~ayaka.core.multimodal.ImageInput`."""
+    raw_bytes = base64.b64decode(str(data["data"]).encode("ascii"))
+    return ImageInput(
+        data=raw_bytes,
+        media_type=str(data.get("media_type", "image/png")),
     )
-    tools = tuple(
-        ToolSchema(
-            name=str(item["name"]),
-            parameters=cast("dict[str, object]", json.loads(str(item["parameters_json"]))),
-        )
-        for item in cast("list[dict[str, object]]", data.get("tools") or [])
+
+
+def encode_image_span(span: ImageSpan) -> dict[str, object]:
+    """Serialize :class:`~ayaka.core.multimodal.ImageSpan`."""
+    return {
+        "image_index": span.image_index,
+        "token_offset": span.token_offset,
+        "token_count": span.token_count,
+        "grid_thw": list(span.grid_thw),
+    }
+
+
+def decode_image_span(data: dict[str, object]) -> ImageSpan:
+    """Deserialize :class:`~ayaka.core.multimodal.ImageSpan`."""
+    grid_raw = cast("list[int]", data.get("grid_thw") or [1, 1, 1])
+    if len(grid_raw) != 3:
+        raise ValueError(f"image span grid_thw must have 3 elements, got {len(grid_raw)}")
+    return ImageSpan(
+        image_index=as_int(data.get("image_index"), 0),
+        token_offset=as_int(data.get("token_offset"), 0),
+        token_count=as_int(data.get("token_count"), 1),
+        grid_thw=(int(grid_raw[0]), int(grid_raw[1]), int(grid_raw[2])),
     )
-    syn_raw = data.get("syntax")
-    syntax: ToolCallSyntax | None = None
-    if isinstance(syn_raw, dict):
-        smap = cast("dict[str, object]", syn_raw)
-        syntax = ToolCallSyntax(
-            open=str(smap.get("open", "")),
-            close=str(smap.get("close", "")),
-            open_token=_as_opt_int(smap.get("open_token")),
-            close_token=_as_opt_int(smap.get("close_token")),
-            open_ids=tuple(int(t) for t in cast("list[int]", smap.get("open_ids") or [])),
-            arguments_key=str(smap.get("arguments_key", "arguments")),
-            separator=str(smap.get("separator", "")),
-        )
-    st_raw = data.get("structural_tag")
-    structural_tag: StructuralTagSpec | None = None
-    if isinstance(st_raw, dict):
-        st_map = cast("dict[str, object]", st_raw)
-        items: list[StructuralTagItem] = []
-        for entry in cast("list[dict[str, object]]", st_map.get("tags") or []):
-            entry_schema = entry.get("schema_json")
-            items.append(
-                StructuralTagItem(
-                    begin=str(entry["begin"]),
-                    end=str(entry.get("end", "")),
-                    schema=(
-                        cast("dict[str, object]", json.loads(entry_schema))
-                        if isinstance(entry_schema, str)
-                        else None
-                    ),
-                    grammar=(
-                        str(entry["grammar"]) if isinstance(entry.get("grammar"), str) else None
-                    ),
-                )
-            )
-        structural_tag = StructuralTagSpec(
-            tags=tuple(items),
-            triggers=tuple(cast("list[str]", st_map.get("triggers") or [])),
-            at_least_one=bool(st_map.get("at_least_one", False)),
-            stop_after_first=bool(st_map.get("stop_after_first", False)),
-        )
-    return StructuredParams(
-        kind=kind,
-        schema=schema,
-        tools=tools,
-        syntax=syntax,
-        tool_choice=str(data.get("tool_choice", "auto")),
-        strict=bool(data.get("strict", False)),
-        parallel=bool(data.get("parallel", True)),
-        start_after=_as_opt_int(data.get("start_after")),
-        reasoning_open=_as_opt_int(data.get("reasoning_open")),
-        pattern=str(data["pattern"]) if isinstance(data.get("pattern"), str) else None,
-        choices=tuple(cast("list[str]", data.get("choices") or [])),
-        grammar=str(data["grammar"]) if isinstance(data.get("grammar"), str) else None,
-        structural_tag=structural_tag,
+
+
+def encode_vision_spec(spec: VisionSpec) -> dict[str, object]:
+    """Serialize :class:`~ayaka.core.multimodal.VisionSpec`."""
+    return {
+        "family": spec.family,
+        "image_token_id": spec.image_token_id,
+        "boi_token_id": spec.boi_token_id,
+        "eoi_token_id": spec.eoi_token_id,
+        "patch_size": spec.patch_size,
+        "temporal_patch_size": spec.temporal_patch_size,
+        "spatial_merge_size": spec.spatial_merge_size,
+        "min_pixels": spec.min_pixels,
+        "max_pixels": spec.max_pixels,
+        "max_soft_tokens": spec.max_soft_tokens,
+        "mrope_section": list(spec.mrope_section),
+    }
+
+
+def decode_vision_spec(data: dict[str, object]) -> VisionSpec:
+    """Deserialize :class:`~ayaka.core.multimodal.VisionSpec`."""
+    return VisionSpec(
+        family=str(data["family"]),
+        image_token_id=as_int(data.get("image_token_id"), 0),
+        boi_token_id=as_opt_int(data.get("boi_token_id")),
+        eoi_token_id=as_opt_int(data.get("eoi_token_id")),
+        patch_size=as_int(data.get("patch_size"), 16),
+        temporal_patch_size=as_int(data.get("temporal_patch_size"), 2),
+        spatial_merge_size=as_int(data.get("spatial_merge_size"), 2),
+        min_pixels=as_int(data.get("min_pixels"), 65536),
+        max_pixels=as_int(data.get("max_pixels"), 16777216),
+        max_soft_tokens=as_int(data.get("max_soft_tokens"), 280),
+        mrope_section=tuple(int(v) for v in cast("list[int]", data.get("mrope_section") or [])),
     )
 
 
@@ -334,6 +221,8 @@ def encode_generate_request(request: GenerateRequest) -> dict[str, object]:
         "priority": request.priority,
         "cache_salt": request.cache_salt,
         "prefix_cache": request.prefix_cache,
+        "images": [encode_image_input(img) for img in request.images],
+        "image_spans": [encode_image_span(span) for span in request.image_spans],
     }
 
 
@@ -351,6 +240,14 @@ def decode_generate_request(data: dict[str, object]) -> GenerateRequest:
         if isinstance(struct_raw, dict)
         else None
     )
+    images = tuple(
+        decode_image_input(item)
+        for item in cast("list[dict[str, object]]", data.get("images") or [])
+    )
+    image_spans = tuple(
+        decode_image_span(item)
+        for item in cast("list[dict[str, object]]", data.get("image_spans") or [])
+    )
     return GenerateRequest(
         request_id=RequestId(str(data["request_id"])),
         prompt=prompt,
@@ -361,33 +258,11 @@ def decode_generate_request(data: dict[str, object]) -> GenerateRequest:
             if isinstance(data.get("client_request_id"), str)
             else None
         ),
-        priority=_as_int(data.get("priority"), 0),
+        priority=as_int(data.get("priority"), 0),
         cache_salt=str(data["cache_salt"]) if isinstance(data.get("cache_salt"), str) else None,
         prefix_cache=bool(data.get("prefix_cache", True)),
-    )
-
-
-def _encode_logprob(lp: TokenLogprob) -> dict[str, object]:
-    return {
-        "token_id": lp.token_id,
-        "logprob": lp.logprob,
-        "rank": lp.rank,
-        "decoded": lp.decoded,
-        "top": [[tid, val] for tid, val in lp.top],
-        "top_decoded": list(lp.top_decoded),
-    }
-
-
-def _decode_logprob(data: dict[str, object]) -> TokenLogprob:
-    decoded_raw = data.get("decoded")
-    top_raw = cast("list[list[float]]", data.get("top") or [])
-    return TokenLogprob(
-        token_id=_as_int(data["token_id"], 0),
-        logprob=_as_float(data["logprob"], 0.0),
-        rank=_as_opt_int(data.get("rank")),
-        decoded=str(decoded_raw) if isinstance(decoded_raw, str) else None,
-        top=tuple((int(pair[0]), float(pair[1])) for pair in top_raw),
-        top_decoded=tuple(cast("list[str]", data.get("top_decoded") or [])),
+        images=images,
+        image_spans=image_spans,
     )
 
 
@@ -406,7 +281,7 @@ def encode_request_output(output: RequestOutput) -> dict[str, object]:
                 "finish_reason": str(c.finish_reason) if c.finish_reason is not None else None,
                 "stop_reason": c.stop_reason,
                 "cumulative_logprob": c.cumulative_logprob,
-                "logprobs": [_encode_logprob(lp) for lp in c.logprobs] if c.logprobs else None,
+                "logprobs": [encode_logprob(lp) for lp in c.logprobs] if c.logprobs else None,
             }
             for c in output.outputs
         ],
@@ -438,7 +313,7 @@ def decode_request_output(data: dict[str, object]) -> RequestOutput:
     prompt_raw = data.get("prompt_token_ids")
     outputs = tuple(
         CompletionOutput(
-            index=_as_int(item["index"], 0),
+            index=as_int(item["index"], 0),
             text=str(item.get("text", "")),
             token_ids=tuple(int(t) for t in cast("list[int]", item.get("token_ids") or [])),
             finish_reason=(
@@ -447,10 +322,10 @@ def decode_request_output(data: dict[str, object]) -> RequestOutput:
                 else None
             ),
             stop_reason=cast("int | str | None", item.get("stop_reason")),
-            cumulative_logprob=_as_opt_float(item.get("cumulative_logprob")),
+            cumulative_logprob=as_opt_float(item.get("cumulative_logprob")),
             logprobs=(
                 tuple(
-                    _decode_logprob(lp) for lp in cast("list[dict[str, object]]", item["logprobs"])
+                    decode_logprob(lp) for lp in cast("list[dict[str, object]]", item["logprobs"])
                 )
                 if isinstance(item.get("logprobs"), list)
                 else None
@@ -461,12 +336,12 @@ def decode_request_output(data: dict[str, object]) -> RequestOutput:
     usage_raw = data.get("usage")
     usage = (
         Usage(
-            prompt_tokens=_as_int(cast("dict[str, object]", usage_raw).get("prompt_tokens"), 0),
-            completion_tokens=_as_int(
+            prompt_tokens=as_int(cast("dict[str, object]", usage_raw).get("prompt_tokens"), 0),
+            completion_tokens=as_int(
                 cast("dict[str, object]", usage_raw).get("completion_tokens"), 0
             ),
-            cached_tokens=_as_int(cast("dict[str, object]", usage_raw).get("cached_tokens"), 0),
-            cache_written_tokens=_as_int(
+            cached_tokens=as_int(cast("dict[str, object]", usage_raw).get("cached_tokens"), 0),
+            cache_written_tokens=as_int(
                 cast("dict[str, object]", usage_raw).get("cache_written_tokens"), 0
             ),
         )
@@ -476,12 +351,12 @@ def decode_request_output(data: dict[str, object]) -> RequestOutput:
     metrics_raw = data.get("metrics")
     metrics = (
         RequestMetrics(
-            arrival_time=_as_float(cast("dict[str, object]", metrics_raw).get("arrival_time"), 0.0),
-            queued_time=_as_float(cast("dict[str, object]", metrics_raw).get("queued_time"), 0.0),
-            prefill_time=_as_float(cast("dict[str, object]", metrics_raw).get("prefill_time"), 0.0),
-            decode_time=_as_float(cast("dict[str, object]", metrics_raw).get("decode_time"), 0.0),
-            ttft=_as_float(cast("dict[str, object]", metrics_raw).get("ttft"), 0.0),
-            tpot=_as_float(cast("dict[str, object]", metrics_raw).get("tpot"), 0.0),
+            arrival_time=as_float(cast("dict[str, object]", metrics_raw).get("arrival_time"), 0.0),
+            queued_time=as_float(cast("dict[str, object]", metrics_raw).get("queued_time"), 0.0),
+            prefill_time=as_float(cast("dict[str, object]", metrics_raw).get("prefill_time"), 0.0),
+            decode_time=as_float(cast("dict[str, object]", metrics_raw).get("decode_time"), 0.0),
+            ttft=as_float(cast("dict[str, object]", metrics_raw).get("ttft"), 0.0),
+            tpot=as_float(cast("dict[str, object]", metrics_raw).get("tpot"), 0.0),
         )
         if isinstance(metrics_raw, dict)
         else None
@@ -514,7 +389,7 @@ def encode_engine_health(health: EngineHealth) -> dict[str, object]:
 def decode_engine_health(data: dict[str, object]) -> EngineHealth:
     return EngineHealth(
         state=EngineState(str(data["state"])),
-        progress_at=_as_float(data.get("progress_at"), 0.0),
+        progress_at=as_float(data.get("progress_at"), 0.0),
         busy=bool(data.get("busy", False)),
     )
 
@@ -528,6 +403,7 @@ def encode_engine_info(info: EngineInfo) -> dict[str, object]:
         "dtype": info.dtype,
         "backends": list(info.backends),
         "cuda_graph": info.cuda_graph,
+        "vision": encode_vision_spec(info.vision) if info.vision is not None else None,
     }
 
 
@@ -538,14 +414,21 @@ def decode_engine_info(data: dict[str, object]) -> EngineInfo:
         if isinstance(backends_raw, list)
         else ()
     )
+    vision_raw = data.get("vision")
+    vision = (
+        decode_vision_spec(cast("dict[str, object]", vision_raw))
+        if isinstance(vision_raw, dict)
+        else None
+    )
     return EngineInfo(
-        max_model_len=_as_int(data.get("max_model_len"), 0),
-        max_context_tokens=_as_int(data.get("max_context_tokens"), 0),
+        max_model_len=as_int(data.get("max_model_len"), 0),
+        max_context_tokens=as_int(data.get("max_context_tokens"), 0),
         prefix_caching=bool(data.get("prefix_caching", False)),
         device=str(data.get("device") or ""),
         dtype=str(data.get("dtype") or ""),
         backends=backends,
         cuda_graph=bool(data.get("cuda_graph", False)),
+        vision=vision,
     )
 
 
@@ -589,20 +472,20 @@ def decode_chat_event(data: dict[str, object]) -> OutputEvent | None:
         return ReasoningDelta(str(data["text"]))
     if kind == "tool_start":
         return ToolCallStart(
-            index=_as_int(data["index"], 0),
+            index=as_int(data["index"], 0),
             id=str(data["id"]),
             name=str(data["name"]),
         )
     if kind == "tool_delta":
-        return ToolCallDelta(index=_as_int(data["index"], 0), arguments=str(data["arguments"]))
+        return ToolCallDelta(index=as_int(data["index"], 0), arguments=str(data["arguments"]))
     if kind == "tool_end":
-        return ToolCallEnd(index=_as_int(data["index"], 0), valid=bool(data["valid"]))
+        return ToolCallEnd(index=as_int(data["index"], 0), valid=bool(data["valid"]))
     if kind == "usage":
         return UsageEvent(
-            prompt_tokens=_as_int(data["prompt_tokens"], 0),
-            completion_tokens=_as_int(data["completion_tokens"], 0),
-            reasoning_tokens=_as_int(data.get("reasoning_tokens"), 0),
-            cached_tokens=_as_int(data.get("cached_tokens"), 0),
+            prompt_tokens=as_int(data["prompt_tokens"], 0),
+            completion_tokens=as_int(data["completion_tokens"], 0),
+            reasoning_tokens=as_int(data.get("reasoning_tokens"), 0),
+            cached_tokens=as_int(data.get("cached_tokens"), 0),
         )
     if kind == "finish":
         return FinishEvent(
@@ -612,27 +495,3 @@ def decode_chat_event(data: dict[str, object]) -> OutputEvent | None:
     if kind == "error":
         return ErrorEvent(code=str(data["code"]), message=str(data["message"]))
     return None
-
-
-def _as_int(value: object, default: int) -> int:
-    return (
-        int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
-    )
-
-
-def _as_opt_int(value: object) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    return int(value) if isinstance(value, (int, float)) else None
-
-
-def _as_float(value: object, default: float) -> float:
-    return (
-        float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
-    )
-
-
-def _as_opt_float(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    return float(value) if isinstance(value, (int, float)) else None

@@ -108,6 +108,32 @@ message StructuredOutput {
   optional StructuralTagSpec structural_tag = 13;
 }
 
+message ImageInput {
+  bytes data = 1;
+  string media_type = 2;
+}
+
+message ImageSpan {
+  int32 image_index = 1;
+  int32 token_offset = 2;
+  int32 token_count = 3;
+  repeated int32 grid_thw = 4;
+}
+
+message VisionSpec {
+  string family = 1;
+  int32 image_token_id = 2;
+  optional int32 boi_token_id = 3;
+  optional int32 eoi_token_id = 4;
+  int32 patch_size = 5;
+  int32 temporal_patch_size = 6;
+  int32 spatial_merge_size = 7;
+  int32 min_pixels = 8;
+  int32 max_pixels = 9;
+  int32 max_soft_tokens = 10;
+  repeated int32 mrope_section = 11;
+}
+
 message GenerateRequest {
   string request_id = 1;
   repeated int32 prompt_token_ids = 2;
@@ -118,6 +144,8 @@ message GenerateRequest {
   int32 priority = 7;
   optional string cache_salt = 8;
   bool prefix_cache = 9;
+  repeated ImageInput images = 10;
+  repeated ImageSpan image_spans = 11;
 }
 
 message TokenLogprob {
@@ -193,6 +221,7 @@ message EngineInfo {
   string dtype = 5;
   repeated string backends = 6;
   bool cuda_graph = 7;
+  optional VisionSpec vision = 8;
 }
 
 message WatchEngineStateRequest {
