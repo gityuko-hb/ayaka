@@ -11,10 +11,12 @@ prompt, the shape of a coding agent's request; the default 0 sends the prompts a
 is the same for every request, so the prefix cache serves it after the first; ``--no-prefix-cache``
 turns the cache off in both engines of every pair, so every prompt is computed.
 
-The four prompt classes are rendered through the model's own chat template:
+The prompt classes are rendered through the model's own chat template (``--classes`` picks
+them; the default is the four of the roadmap's speculative decoding milestone):
 
 * ``code_edit``: rewrite a function with a small change, so most of the answer copies the prompt;
-* ``prose``: a short story, with nothing to copy;
+* ``rag_extract``: quote and extract facts from a retrieved document given in the prompt;
+* ``creative_chat`` (also ``prose``): a short story, with nothing to copy;
 * ``json_tools``: a JSON tool call whose keys and schema are in the prompt;
 * ``random``: a list of random words to answer about, which no drafter can predict.
 
@@ -83,6 +85,17 @@ search_code(query: string, path_glob: string, max_results: integer) -> list of m
 apply_patch(path: string, patch: string) -> result"""
 
 
+_DOCUMENT = """Incident report INC-2291, payments service, 14 March.
+At 09:12 UTC the refund worker began rejecting refunds for orders paid in a currency other than EUR.
+The rejection message was "rate missing for currency", logged 4,318 times between 09:12 and 10:47.
+The cause was a configuration change, deployed at 09:05, that removed the exchange-rate table from
+the worker's cache. Refunds in EUR were not affected. The on-call engineer restored the table at
+10:41 and the worker drained its queue by 10:47. Customers whose refund was rejected were refunded
+again automatically by 11:30; no customer was refunded twice. Follow-up actions: add a start-up
+check that the exchange-rate table is present, and alert when more than 50 refunds fail in five
+minutes. The report was reviewed by the payments team on 16 March and closed on 18 March."""
+
+
 def _random_words(seed: int) -> str:
     rng = random.Random(seed)  # noqa: S311  # reproducible prompt text, not a secret
     letters = "abcdefghijklmnopqrstuvwxyz"
@@ -98,7 +111,13 @@ def _messages(prompt_class: str, ticket: int, of: int) -> list[dict[str, str]]:
             f'status is "refunded" as well as "cancelled". Answer with the code only.\n'
             f"```python\n{_FUNCTION}```"
         )
-    elif prompt_class == "prose":
+    elif prompt_class == "rag_extract":
+        text = (
+            f"{head}Answer from the retrieved document only. First quote, word for word, every "
+            "sentence that gives a time of day. Then list the cause, the fix and the follow-up "
+            f"actions as bullet points.\n\nRetrieved document:\n{_DOCUMENT}"
+        )
+    elif prompt_class in ("creative_chat", "prose"):
         text = f"{head}Write a short story about a lighthouse keeper who finds a glass compass."
     elif prompt_class == "json_tools":
         text = (
@@ -227,7 +246,9 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--arm", action="append", required=True, help="name=field:value,...")
     parser.add_argument(
-        "--classes", default="code_edit,prose,json_tools,random", help="comma-separated"
+        "--classes",
+        default="code_edit,rag_extract,creative_chat,json_tools",
+        help="comma-separated: code_edit, rag_extract, creative_chat (prose), json_tools, random",
     )
     parser.add_argument("--concurrency", default="1,2,4,8")
     parser.add_argument("--pairs", type=int, default=5)

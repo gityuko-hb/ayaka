@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -40,8 +41,20 @@ def _commit() -> str | None:
     return result.stdout.strip() + ("-dirty" if dirty else "")
 
 
+def _cpu() -> str:
+    """The CPU's model name (``/proc/cpuinfo`` on Linux), else what ``platform`` reports."""
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("model name"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor()
+
+
 def machine() -> dict[str, Any]:
-    """The GPU, the driver, the libraries, the OS (and whether it is WSL2) and the commit."""
+    """The GPU and its memory, the driver, the libraries, the OS (and whether it is WSL2), the CPU
+    and the commit."""
     import torch
 
     from ayaka.device.capabilities import running_on_wsl
@@ -54,8 +67,11 @@ def machine() -> dict[str, Any]:
         "date": datetime.now(UTC).isoformat(timespec="seconds"),
         "gpu": gpu,
         "capability": list(torch.cuda.get_device_capability(0)) if gpu else None,
+        "vram_bytes": torch.cuda.get_device_properties(0).total_memory if gpu else None,
         "driver": driver,
         "os": platform.platform(),
+        "cpu": _cpu(),
+        "cpu_count": os.cpu_count(),
         "wsl2": running_on_wsl(),
         "python": platform.python_version(),
         "torch": torch.__version__,
