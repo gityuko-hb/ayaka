@@ -532,6 +532,10 @@ def build_engine(
             loggers=(LoggingStatLogger(), *stat_loggers), log_interval=STATS_LOG_INTERVAL
         ),
         recorder=recorder,
+        device=device.device,
+        dtype=device.dtype.label,
+        backends=device.backends,
+        cuda_graph=device.cuda_graph,
     )
 
 

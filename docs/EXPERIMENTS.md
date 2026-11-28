@@ -1071,6 +1071,49 @@ FP8 buffer fix; its code under `python/` differs from `40fbf48` only in that fix
 MoE models do not use. A first Phi-4 FP8 run, at `ca93917` before the fix, gave the same 0.9 tok/s
 and is replaced by the one above.
 
+## Serving Core v2: gRPC seam overhead on NVIDIA A100-SXM4-80GB (2026-11-27) (#136, #139)
+
+### Setup and thresholds
+
+Measured after rejecting an initial concurrent two-engine run (where running in-process `ayaka serve` and
+`ayaka engine-server` together on the same GPU slowed both ~8× to ~6 tok/s per stream). To isolate transport
+and serialization overhead, each arm ran alone on the GPU, stopping completely (`nvidia-smi` reporting no active
+compute processes) before the next arm started.
+
+- **Hardware / software:** native Linux (kernel `6.6.159+`), **NVIDIA A100-SXM4-80GB** (`sm_80`, 80.0 GiB),
+  driver `580.82.07`, CUDA `13.0`, Python `3.13.16`, `torch 2.14.1+cu130`, `flashinfer-python 0.7.4`,
+  `grpcio 1.85.4`, `protobuf 7.36.2`, 12 vCPUs (`Intel(R) Xeon(R) CPU @ 2.20GHz`).
+- **Model & flags:** `Qwen/Qwen3-8B` (revision `b968826d`), `bf16`, `--backends flashinfer,torch --cuda-graph
+  --reasoning-parser think --tool-call-parser hermes --offline`.
+- **Workload:** `benchmarks/e2e/grpc_seam_bench.py --arm {in-process,grpc} --tokens 256 --rounds 5 --concurrency 1 8`
+  after a 2-request × 16-token warm-up (excluded from medians).
+- **Pre-registered gate (written for NVIDIA L4 in `docs/ROADMAP/decisions.md`):** `<= 0.3 ms` added p50
+  inter-token latency and `>= 0.98×` (`<= 2%` delta) throughput vs in-process `ayaka serve`.
+
+### Result
+
+| Concurrency | Transport | p50 gap | Added p50/tok | p90 gap | p50 TTFT | Throughput | Ratio vs in-process |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | In-process baseline | 17.0531 ms | — | 17.2774 ms | 73.991 ms | 57.6661 tok/s | 1.0000× |
+| 1 | gRPC UDS (`unix:/tmp/ayaka-seam.sock`) | 17.2205 ms | +0.1674 ms | 17.4738 ms | 75.318 ms | 57.1251 tok/s | 0.9906× (-0.94%) |
+| 1 | gRPC loopback TCP (`127.0.0.1:50051`) | 17.2480 ms | +0.1949 ms | 17.5081 ms | 74.7337 ms | 56.9911 tok/s | 0.9883× (-1.17%) |
+| 8 | In-process baseline | 19.2243 ms | — | 19.6266 ms | 152.4904 ms | 403.5043 tok/s | 1.0000× |
+| 8 | gRPC UDS (`unix:/tmp/ayaka-seam.sock`) | 19.7344 ms | +0.5101 ms | 20.1999 ms | 157.5186 ms | 393.8713 tok/s | 0.9761× (-2.39%) |
+| 8 | gRPC loopback TCP (`127.0.0.1:50051`) | 19.7962 ms | +0.5719 ms | 20.2941 ms | 152.0205 ms | 392.4421 tok/s | 0.9726× (-2.74%) |
+
+- **Concurrency 1 meets both thresholds on A100:** UDS adds `+0.1674 ms` (`0.9906×`, `-0.94%`) and loopback TCP
+  adds `+0.1949 ms` (`0.9883×`, `-1.17%`), both within `<= 0.3 ms` and `>= 0.98×`.
+- **Concurrency 8 exceeds the single-stream threshold on A100:** fanning 8 simultaneous gRPC chunk streams +
+  HTTP SSE writers over one gateway/engine step (`19.22 ms` baseline step) adds `+0.5101 ms` (`0.9761×`,
+  `-2.39%`) over UDS and `+0.5719 ms` (`0.9726×`, `-2.74%`) over loopback TCP.
+- **Remote start-up banner and compatibility check:** `ayaka serve --engine-grpc` now queries `GetEngineInfo`
+  and logs `connected to Qwen/Qwen3-8B at <target> on cuda in bf16 (ops backends: flashinfer, torch, decode in CUDA graphs)`
+  instead of local defaults. `ayaka connect claude-code --check` matched across in-process and `--engine-grpc unix:...`
+  (6/7 steps passed identically including `read_file` tool call and `208/220` = `95%` prefix cache hit; step 3 failed
+  identically on both because `connect --check` caps its non-streaming text probe at `max_tokens: 16` without disabling
+  thinking on `Qwen/Qwen3-8B`).
+- **Remaining baseline:** NVIDIA L4 (`sm_89`) remains unverified on this hardware setup.
+
 ## Hybrid architectures, opt-in FP8 KV cache, and native multimodal vision on NVIDIA A100 80 GB (2026-11-27) (#147)
 
 ### Machine and setup

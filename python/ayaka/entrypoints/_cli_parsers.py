@@ -26,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     _config_parser(commands)
     _connect_parser(commands)
     _bench_parser(commands)
+    _engine_server_parser(commands)
+    _render_server_parser(commands)
     return parser
 
 
@@ -380,6 +382,11 @@ def _server_flags(command: argparse.ArgumentParser) -> None:
         default=None,
         help="tool schema enforcement level: auto, function or parameter (auto)",
     )
+    server.add_argument(
+        "--engine-grpc",
+        metavar="ADDR",
+        help="connect HTTP gateway to a remote InferenceService target (host:port or unix:PATH)",
+    )
     server.add_argument("--max-body-bytes", type=int, metavar="N", help="largest request body")
     server.add_argument(
         "--shutdown-timeout",
@@ -412,3 +419,40 @@ def _server_flags(command: argparse.ArgumentParser) -> None:
         default=None,
         help="send every prompt to the tokenizer unchanged, with no client churn rules",
     )
+
+
+def _engine_server_parser(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],  # pyright: ignore[reportPrivateUsage]
+) -> None:
+    srv = commands.add_parser(
+        "engine-server",
+        help="run the gRPC inference engine server for remote HTTP gateways",
+        description="Load a model and expose InferenceService over gRPC or Unix Domain Sockets.",
+    )
+    srv.add_argument("model", help="a local model directory or a Hugging Face repo id")
+    srv.add_argument(
+        "--listen", default="127.0.0.1:50051", metavar="ADDR", help="gRPC bind address or unix:PATH"
+    )
+    srv.add_argument("--max-running", type=int, metavar="N", help="requests run at once")
+    _engine_flags(srv)
+    srv.add_argument("-v", "--verbose", action="count", default=0, help="log more")
+
+
+def _render_server_parser(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],  # pyright: ignore[reportPrivateUsage]
+) -> None:
+    srv = commands.add_parser(
+        "render-server",
+        help="run the engine-free gRPC prompt rendering and output parsing server",
+        description="Serve RenderService without loading PyTorch or a GPU.",
+    )
+    srv.add_argument("model", help="a local tokenizer directory or a Hugging Face repo id")
+    srv.add_argument(
+        "--listen", default="127.0.0.1:50052", metavar="ADDR", help="gRPC bind address or unix:PATH"
+    )
+    srv.add_argument("--max-model-len", type=int, default=32768, metavar="N", help="context limit")
+    srv.add_argument("--revision", default="", help="repo branch, tag or commit")
+    srv.add_argument("--tokenizer", default="", help="tokenizer directory or repo id")
+    srv.add_argument("--offline", action="store_true", help="never use the network")
+    _server_flags(srv)
+    srv.add_argument("-v", "--verbose", action="count", default=0, help="log more")

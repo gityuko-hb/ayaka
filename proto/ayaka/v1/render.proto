@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package ayaka.v1;
+
+import "ayaka/v1/inference.proto";
+
+// Engine-free prompt rendering and incremental output parsing service (`ayaka render-server`).
+service RenderService {
+  rpc RenderChat(RenderChatRequest) returns (RenderChatResponse);
+  rpc ParseOutput(stream ParseOutputChunk) returns (stream SemanticChatEvent);
+}
+
+message RenderMessage {
+  string role = 1;
+  string content = 2;
+  repeated string tool_calls_json = 3;
+  optional string tool_call_id = 4;
+  optional string name = 5;
+  optional string reasoning = 6;
+  repeated ImageInput images = 7;
+}
+
+message RenderChatRequest {
+  repeated RenderMessage messages = 1;
+  optional string system = 2;
+  repeated ToolSchema tools = 3;
+  string reasoning_effort = 4;
+  optional bool thinking_enabled = 5;
+  string chat_template_kwargs_json = 6;
+  bool continue_final_message = 7;
+  string tool_choice = 8;
+  bool strict_tools = 9;
+  bool parallel_tool_calls = 10;
+  optional StructuredOutput requested_output = 11;
+}
+
+message EngineReasoningGate {
+  optional int32 start_after = 1;
+  optional int32 reasoning_open = 2;
+  bool thinking_enabled = 3;
+  optional bool force_reasoning = 4;
+  bool starts_inside_reasoning = 5;
+  string previous_content = 6;
+  bool stream_reasoning = 7;
+}
+
+message RenderChatResponse {
+  repeated int32 input_ids = 1;
+  optional StructuredOutput structured_output = 2;
+  EngineReasoningGate engine_reasoning_gate = 3;
+  string render_fingerprint = 4;
+  string prefill_text = 5;
+  repeated ImageSpan image_spans = 6;
+}
+
+message ParseOutputChunk {
+  string call_id_prefix = 1;
+  EngineReasoningGate gate = 2;
+  repeated ToolSchema tools = 3;
+  bool parallel_tool_calls = 4;
+  repeated int32 token_ids = 5;
+  string text = 6;
+  optional string finish_reason = 7;
+  bool finished = 8;
+  optional Usage usage = 9;
+  optional ErrorInfo error = 10;
+  optional string stop_reason = 11;
+  bool withhold_call = 12;
+  optional bool tools_allowed = 13;
+}
+
+message SemanticChatEvent {
+  string kind = 1;
+  string text = 2;
+  int32 index = 3;
+  string id = 4;
+  string name = 5;
+  string arguments = 6;
+  bool valid = 7;
+  optional string finish_reason = 8;
+  bool tool_calls = 9;
+  optional Usage usage = 10;
+  optional ErrorInfo error = 11;
+}

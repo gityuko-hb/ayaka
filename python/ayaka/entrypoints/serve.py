@@ -39,6 +39,7 @@ from ayaka.engine.recorder import SessionRecorder
 from ayaka.entrypoints.http import create_app
 from ayaka.entrypoints.parsers.output import OutputFormat
 from ayaka.entrypoints.serving import Serving
+from ayaka.entrypoints.settings import describe_remote_engine
 from ayaka.tokenizers.contracts import EncodeOptions, TextInput
 from ayaka.utils.gc_control import freeze_startup_objects
 
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from ayaka.configs.engine import EngineConfig
     from ayaka.configs.server import ServerConfig
     from ayaka.engine.core import EngineCore
+    from ayaka.engine.seam import EngineClient
     from ayaka.tokenizers.service import TokenizerService
 
 __all__ = ["EXIT_SECOND_SIGNAL", "serve"]
@@ -88,7 +90,7 @@ class _Signals:
             signal.signal(number, previous)  # type: ignore[arg-type]  # what signal.signal returned
 
 
-async def _warm_up(llm: AsyncLLM, service: TokenizerService) -> None:
+async def _warm_up(llm: EngineClient, service: TokenizerService) -> None:
     """Generate one token, so the first client does not pay for the first step."""
     encoded = await asyncio.to_thread(
         partial(service.encode, vouch=True), TextInput("Hello"), EncodeOptions(max_output_tokens=1)
@@ -99,12 +101,34 @@ async def _warm_up(llm: AsyncLLM, service: TokenizerService) -> None:
         sampling=SamplingParams(temperature=0.0, max_tokens=1),
     )
     last = None
-    async for output in llm.generate(request):
+    stream = await llm.add(request)
+    async for output in stream:
         last = output
     reason = last.outputs[0].finish_reason if last is not None and last.outputs else None
     if reason not in (FinishReason.STOP, FinishReason.LENGTH):
         detail = last.error.message if last is not None and last.error else str(reason)
         raise EngineError(f"the warm-up request failed: {detail}")
+
+
+def _remote_tokenizer(config: EngineConfig, max_model_len: int) -> TokenizerService:
+    from ayaka.tokenizers.factory import DefaultTokenizerFactory
+    from ayaka.tokenizers.service import TokenizerService
+
+    tok_cfg = config.tokenizer_config
+    loaded = DefaultTokenizerFactory.from_config(tok_cfg)
+    vocab_size = 1
+    if loaded.tokenizer is not None:
+        valid = loaded.tokenizer.valid_token_ids
+        vocab_size = max(
+            loaded.tokenizer.vocab_size,
+            (max(valid) + 1) if valid else 1,
+        )
+    return TokenizerService(
+        tok_cfg,
+        max_model_len=max(1, max_model_len),
+        model_vocab_size=vocab_size,
+        loaded=loaded,
+    )
 
 
 async def serve(
@@ -147,39 +171,59 @@ async def serve(
     )
     await runner.setup()
     signals = _Signals(loop, stop) if handle_signals else None
-    llm: AsyncLLM | None = None
+    llm: EngineClient | None = None
+    tokenizer: TokenizerService | None = None
     recorder: SessionRecorder | None = None
     frozen = False
     try:
         site = web.TCPSite(runner, config.host, config.port)
         await site.start()
         host, port = runner.addresses[0][:2]
-        say(f"listening on http://{_format_host(host)}:{port}; loading {model_name}")
-        if record is not None:
-            recorder = SessionRecorder(record)
-            recorder.recording = False  # the warm-up is not a request of the session
-        build = engine if callable(engine) else _builder(engine, serving.metrics.registry)
-        core = await asyncio.to_thread(build, recorder)
-        llm = AsyncLLM(core, registry=serving.metrics.registry)
-        llm.start()
+        if config.engine_grpc is not None:
+            if callable(engine):
+                raise EngineError("--engine-grpc requires an EngineConfig, not a local builder")
+            say(
+                f"listening on http://{_format_host(host)}:{port}; "
+                f"connecting to {config.engine_grpc}"
+            )
+            from ayaka.entrypoints.grpc.client import GrpcEngineClient
+
+            remote = await GrpcEngineClient(config.engine_grpc).connect()
+            llm = remote
+            say(describe_remote_engine(config.engine_grpc, remote.info, model_name))
+            tokenizer = await asyncio.to_thread(
+                _remote_tokenizer, engine, remote.info.max_model_len
+            )
+        else:
+            say(f"listening on http://{_format_host(host)}:{port}; loading {model_name}")
+            if record is not None:
+                recorder = SessionRecorder(record)
+                recorder.recording = False  # the warm-up is not a request of the session
+            build = engine if callable(engine) else _builder(engine, serving.metrics.registry)
+            core = await asyncio.to_thread(build, recorder)
+            local_llm = AsyncLLM(core, registry=serving.metrics.registry)
+            local_llm.start()
+            llm = local_llm
+            tokenizer = core.tokenizer
         output_format = OutputFormat.resolve(
             reasoning=config.reasoning_parser,
             tool_calls=config.tool_call_parser,
-            tokenizer=core.tokenizer.tokenizer,
+            tokenizer=tokenizer.tokenizer,
         )
-        await _warm_up(llm, core.tokenizer)
+        await _warm_up(llm, tokenizer)
         if stop.is_set():
             return
-        count = freeze_startup_objects()
-        frozen = True
-        say(f"froze {count} start-up objects out of the garbage collector's view")
+        if config.engine_grpc is None:
+            count = freeze_startup_objects()
+            frozen = True
+            say(f"froze {count} start-up objects out of the garbage collector's view")
         if recorder is not None:
             recorder.recording = True
             say(
                 f"recording every request to {recorder.path}: prompts and answers as token "
                 "ids, readable by anyone who has the model's tokenizer"
             )
-        serving.attach(llm, core.tokenizer, output_format=output_format)
+        serving.attach(llm, tokenizer, output_format=output_format)
         say(f"ready: {', '.join(serving.model_names)} on http://{_format_host(host)}:{port}")
         if on_ready is not None:
             on_ready(host, port)
