@@ -102,7 +102,7 @@ class TestReading:
         assert chat.max_tokens == 9
         assert chat.parallel_tool_calls
 
-    def test_tool_choice_none_drops_the_tools(self) -> None:
+    def test_tool_choice_none_keeps_the_tools_in_the_prompt_and_offers_no_call(self) -> None:
         chat = _parse(
             {
                 "messages": [{"role": "user", "content": "x"}],
@@ -112,7 +112,7 @@ class TestReading:
         )
 
         assert not chat.tools
-        assert chat.conversation.tools == ()
+        assert [tool.name for tool in chat.conversation.tools] == ["get_weather"]
 
     @pytest.mark.parametrize(
         ("body", "error", "match"),

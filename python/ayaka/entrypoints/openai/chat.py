@@ -332,6 +332,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         sampling,
         public_id=public_id,
         tools=chat.tools,
+        tools_in_prompt=bool(conversation.tools),
         parallel_tool_calls=chat.parallel_tool_calls,
         structured=structured,
         images=conversation.images,

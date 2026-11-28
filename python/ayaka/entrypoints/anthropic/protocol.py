@@ -304,7 +304,9 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
 def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, str, bool]:
     """Add the tools; return ``(offered, parallel, choice, strict)``.
 
-    The choice is ``"auto"``, ``"required"`` (``any``) or the one tool's name (``tool``).
+    The choice is ``"auto"``, ``"required"`` (``any``) or the one tool's name (``tool``). With
+    ``tool_choice: {type: none}`` the tools are still written into the prompt, so it keeps the
+    prefix-cache blocks of the same conversation with ``auto``; the model may not call them.
     """
     choice = body.child("tool_choice")
     kind = choice.string("type") if choice is not None else "auto"
@@ -318,10 +320,8 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, 
         assert choice is not None  # noqa: S101  # kind came from it
         constrained = choice.text("name")
     tools = body.objects("tools")
-    if kind == "none" or not tools:
-        if constrained != "auto":
-            raise _invalid("tool_choice", "forces a tool call but the request has no tools")
-        return False, parallel, "auto", False
+    if not tools and constrained != "auto":
+        raise _invalid("tool_choice", "forces a tool call but the request has no tools")
     offered = False
     strict = False
     for tool in tools:
@@ -332,6 +332,8 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, bool, 
         builder.tool(ToolSpec(tool.text("name"), tool.string("description"), schema.data))
         offered = True
         strict = strict or tool.flag("strict")
+    if kind == "none":
+        return False, parallel, "auto", False
     return offered, parallel, constrained, strict
 
 

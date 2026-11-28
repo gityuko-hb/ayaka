@@ -247,6 +247,11 @@ ignored with a debug log line. The tables below are generated from the table the
 - With the `structured` extra: JSON answers (`response_format`, `text.format`, `output_format`), forced tool calls
   (`tool_choice`) and strict arguments are enforced by a grammar; a request that offers tools gets its calls checked
   while the rest of the answer stays free. Without the extra, a request that needs a grammar is refused.
+- `tool_choice: "none"` (OpenAI) and `{"type": "none"}` (Anthropic) keep the tools in the prompt, so a session that
+  switches from `auto` to `none` reads the same prompt from the prefix cache; no call is parsed from the answer. With
+  a parser whose opening marker is one token (`hermes`, as Qwen's `<tool_call>`), the answer ends at that token, with
+  `finish_reason` `stop`, if the model starts a call anyway. With `llama3_json`, whose call has no marker, a call the
+  model writes anyway is returned as text.
 
 ## Commands
 
