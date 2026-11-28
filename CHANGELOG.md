@@ -51,6 +51,10 @@
   below plain. These are not the five alternating pairs the gates ask for, so nothing is on by
   default; `docs/EXPERIMENTS.md` has every number, the greedy outputs that differed from plain
   (one traced to an exact tie, three unexplained) and what was not measured.
+- Speculative decoding on requests with structured output (#127, #136): each row of a verify window is
+  masked by the request's grammar after the drafts before it, a draft is cut before the first token the
+  grammar refuses, and only accepted tokens advance the grammar. Requests with a repetition, frequency
+  or presence penalty still do not speculate.
 
 ### Fixed
 

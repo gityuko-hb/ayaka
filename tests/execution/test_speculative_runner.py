@@ -112,6 +112,8 @@ def _run_stack(
             if ev.finished:
                 stack.runner.release_speculative(ev.request_id)
             elif ev.token_ids:
+                # As the engine does: only committed tokens advance a grammar and the proposer.
+                stack.runner.constraints.accept(ev.request_id, ev.token_ids)
                 stack.runner.commit_speculative(ev.request_id, ev.token_ids)
         stack.kv.check_integrity()
     raise AssertionError("loop did not finish")
@@ -249,40 +251,124 @@ def test_ragged_batch_and_all_adversarial_proposers_preserve_exact_tokens() -> N
         assert spec_out["b"] == plain_out["b"], f"mismatch on proposer {prop.name}"
 
 
-def test_penalty_and_grammar_requests_disable_speculation_with_reason_and_keep_ragged_batch() -> (
-    None
-):
+def test_penalty_requests_disable_speculation_with_reason_and_keep_ragged_batch() -> None:
     p_a = _prompt(41, 10) * 2
     p_b = _prompt(42, 10) * 2
-    p_c = _prompt(43, 10) * 2
     plain = _build_spec_stack(None, max_k=0, fixed_k=0, max_running=4)
-    plain_out, _, _ = _run_stack(
-        plain,
-        [
-            _req("free", p_a, max_tokens=10),
-            _req("pen", p_b, max_tokens=10, presence_penalty=0.5),
-            _req("gram", p_c, max_tokens=10),
-        ],
-    )
+    requests = [
+        _req("free", p_a, max_tokens=10),
+        _req("pen", p_b, max_tokens=10, presence_penalty=0.5),
+    ]
+    plain_out, _, _ = _run_stack(plain, requests)
 
     spec = _build_spec_stack(
         RandomProposer(plain.config.vocab_size, seed=3), max_k=3, fixed_k=3, max_running=4
     )
-    spec_out, verify_rows, disabled = _run_stack(
-        spec,
-        [
-            _req("free", p_a, max_tokens=10),
-            _req("pen", p_b, max_tokens=10, presence_penalty=0.5),
-            _req("gram", p_c, max_tokens=10),
-        ],
-        has_constraint={RequestId("gram")},
-    )
+    spec_out, verify_rows, disabled = _run_stack(spec, requests)
     assert spec_out == plain_out
     assert 1 in verify_rows
     assert any(r > 1 for r in verify_rows)
     reasons = {r for r, c in disabled if c > 0}
     assert "penalty" in reasons
-    assert "grammar" in reasons
+
+
+_GRAMMAR_PATTERN = "[abc]{18}"
+
+
+def _admit_grammar(stack: TinyStack, request_id: str) -> Any:
+    """Compile ``_GRAMMAR_PATTERN`` for the byte tokenizer and admit it for ``request_id``."""
+    from ayaka.core.constraints import ConstraintKind, StructuredParams
+    from ayaka.sampling.structured.compiler import GrammarCompiler
+    from tokenizer_fakes import EOS, FakeTokenizer
+
+    tok = FakeTokenizer(stream=False)
+    compiler = GrammarCompiler(tok, vocab_size=stack.config.vocab_size, eos_token_ids=(EOS,))
+    params = StructuredParams(kind=ConstraintKind.REGEX, pattern=_GRAMMAR_PATTERN)
+    matcher = compiler.matcher(compiler.compile(params), params)
+    stack.runner.constraints.admit(RequestId(request_id), matcher)
+    return compiler
+
+
+@pytest.mark.parametrize("drafter", ["lookup", "always_wrong"])
+def test_grammar_requests_speculate_and_emit_what_plain_constrained_decoding_emits(
+    drafter: str,
+) -> None:
+    pytest.importorskip("llguidance")
+    prompt = [ord(ch) for ch in "abcabcabcabcabcabcabc"]
+    request = [_req("gram", prompt, max_tokens=12)]
+    plain = _build_spec_stack(None, max_k=0, fixed_k=0)
+    plain_compiler = _admit_grammar(plain, "gram")
+    try:
+        plain_out, _, _ = _run_stack(plain, request, has_constraint={RequestId("gram")})
+    finally:
+        plain_compiler.close()
+
+    proposer: Proposer = (
+        LookupProposer(min_match=3) if drafter == "lookup" else AlwaysWrongProposer(bad_token=1)
+    )
+    spec = _build_spec_stack(proposer, max_k=4, fixed_k=4)
+    spec_compiler = _admit_grammar(spec, "gram")
+    try:
+        spec_out, verify_rows, disabled = _run_stack(
+            spec, request, has_constraint={RequestId("gram")}
+        )
+    finally:
+        spec_compiler.close()
+
+    assert spec_out == plain_out
+    assert all(chr(token) in "abc" for token in spec_out["gram"])
+    reasons = {r for r, c in disabled if c > 0}
+    if drafter == "lookup":
+        # The lookup copies the prompt's "abc" pattern, which the grammar allows: it drafts.
+        assert any(r > 1 for r in verify_rows)
+    else:
+        # Every draft is a token the grammar refuses: it is cut before verification.
+        assert "grammar" in reasons
+        assert all(r == 1 for r in verify_rows)
+
+
+def test_a_grammar_cuts_a_proposal_before_its_first_refused_token() -> None:
+    pytest.importorskip("llguidance")
+    from ayaka.execution.speculation import SpeculationState
+    from ayaka.speculative.proposer import Proposal
+
+    stack = _build_spec_stack(None, max_k=0, fixed_k=0)
+    compiler = _admit_grammar(stack, "gram")
+    try:
+        state = SpeculationState(stack.runner.constraints)
+        a, b, z = ord("a"), ord("b"), ord("z")
+        cut = state._grammar_prefix(  # pyright: ignore[reportPrivateUsage]
+            RequestId("gram"), Proposal(tokens=(a, b, a, z, a), probs=(0.9,) * 5)
+        )
+        assert cut.tokens == (a, b, a)
+        assert cut.probs == (0.9,) * 3
+        whole = Proposal(tokens=(a, b, b))
+        assert state._grammar_prefix(RequestId("gram"), whole) is whole  # pyright: ignore[reportPrivateUsage]
+        # The committed grammar state is unchanged: "z" is still refused, "a" still allowed.
+        assert stack.runner.constraints.validate_tokens(RequestId("gram"), (a,))
+        assert not stack.runner.constraints.validate_tokens(RequestId("gram"), (z,))
+    finally:
+        compiler.close()
+
+
+def test_a_verify_window_counts_as_masked_when_any_request_has_a_grammar() -> None:
+    pytest.importorskip("llguidance")
+    from types import SimpleNamespace
+
+    from ayaka.execution.speculation import SpeculationState
+
+    stack = _build_spec_stack(None, max_k=0, fixed_k=0)
+    state = SpeculationState(stack.runner.constraints)
+    step: Any = SimpleNamespace(request_ids=(RequestId("free"), RequestId("gram")))
+    drafts = ((ord("a"),), (ord("a"), ord("b")))
+    # No request has a grammar: a captured verify graph may replay the window.
+    assert not state.window_masked(step, drafts)
+    compiler = _admit_grammar(stack, "gram")
+    try:
+        # One request's rows are masked: the window must run eagerly, where rows get masks.
+        assert state.window_masked(step, drafts)
+    finally:
+        compiler.close()
 
 
 def test_kv_and_prefix_cache_contain_only_committed_tokens_after_rejections() -> None:

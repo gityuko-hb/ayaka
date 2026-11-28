@@ -406,7 +406,7 @@ class ModelRunner:
                     and self._graph is not None
                     and self._graph.bucket_for(step)
                     and not self._needs_controls(step)
-                    and not self._structural_masks(step)
+                    and not self._spec.window_masked(step, resolved_drafts)
                 ):
                     staged, sampled = self._graph.run_verify(step, resolved_drafts)
                     elapsed = time.perf_counter() - started

@@ -6,14 +6,17 @@ nothing, and the hooks a drafter with weights reads (the last hidden states, the
 some layers). The runner delegates its ``admit_speculative``, ``commit_speculative``,
 ``release_speculative`` and ``plan_lookahead`` to it, and hands it each step's features.
 
-A request with a penalty or a grammar does not speculate in this version; the step output says
-why (``spec_disabled``).
+A request with a grammar speculates: each row of its verify window is masked by the grammar after
+the drafts before it (``ConstraintRuntime.window_masks``), a proposal is cut before the first token
+the grammar refuses (``ConstraintRuntime.validate_tokens``), and only accepted tokens ever advance
+the committed grammar state (``ConstraintRuntime.accept``, from the engine). A request with a
+penalty does not speculate, because a penalty counts every earlier token, drafts included.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import torch
@@ -32,7 +35,7 @@ if TYPE_CHECKING:
     from ayaka.sampling.structured.runtime import ConstraintRuntime
     from ayaka.scheduler.step import StepInput, StepOutput
     from ayaka.speculative.policy import DraftController
-    from ayaka.speculative.proposer import Proposer
+    from ayaka.speculative.proposer import Proposal, Proposer
 
 __all__ = ["SpeculationState"]
 
@@ -47,6 +50,7 @@ class _RequestState:
     context_len: int
     disable_reason: str | None = None
     has_prediction: bool = False
+    constrained: bool = False
 
 
 class SpeculationState:
@@ -133,15 +137,12 @@ class SpeculationState:
         proposer = self.proposer
         if proposer is None:
             return
-        reason: str | None = None
-        if uses_penalties(sampling):
-            reason = "penalty"
-        elif has_constraint:
-            reason = "grammar"
+        reason = "penalty" if uses_penalties(sampling) else None
         state = _RequestState(
             context_len=len(prompt),
             disable_reason=reason,
             has_prediction=bool(prediction),
+            constrained=has_constraint,
         )
         self._requests[request_id] = state
         if reason is not None:
@@ -210,6 +211,11 @@ class SpeculationState:
                 self.fail("propose", exc)
                 self._disabled("proposer_error")
                 break
+            if proposal.tokens and state.constrained:
+                proposal = self._grammar_prefix(request_id, proposal)
+                if not proposal.tokens:
+                    self._disabled("grammar")
+                    continue
             if not proposal.tokens:
                 self._disabled("no_proposal")
                 continue
@@ -226,6 +232,25 @@ class SpeculationState:
             self.planned[request_id] = PlannedDraft(proposal=proposal, requested_k=k)
             plan[request_id] = k
         return plan
+
+    def window_masked(self, step: StepInput, drafts: Sequence[Sequence[TokenId]]) -> bool:
+        """Whether any row of a verify window has a grammar mask.
+
+        A lazy grammar may be free at the first row and start inside the drafts (its trigger is
+        a draft), so every row is checked, not only the first. A captured verify graph applies no
+        mask, so such a window runs eagerly, where each row gets its mask.
+        """
+        constraints = self._constraints
+        if not len(constraints):
+            return False
+        for index, request_id in enumerate(step.request_ids):
+            if request_id not in constraints:
+                continue
+            given = drafts[index] if index < len(drafts) else ()
+            window = constraints.window_masks(request_id, given)
+            if window is not None and any(mask is not None for mask in window):
+                return True
+        return False
 
     def notify(
         self,
@@ -268,6 +293,27 @@ class SpeculationState:
         finally:
             if sink is not None:
                 sink.clear()
+
+    def _grammar_prefix(self, request_id: RequestId, proposal: Proposal) -> Proposal:
+        """``proposal`` cut before its first token the request's grammar refuses.
+
+        A refused draft would be rejected by verification anyway (its row's mask excludes it);
+        cutting it here saves the rows. ``validate_tokens`` leaves the committed grammar state as
+        it was, and a prefix of a valid continuation is valid, so a binary search finds the
+        longest valid prefix.
+        """
+        constraints = self._constraints
+        tokens = proposal.tokens
+        if constraints.validate_tokens(request_id, tokens):
+            return proposal
+        valid, invalid = 0, len(tokens)
+        while invalid - valid > 1:
+            middle = (valid + invalid) // 2
+            if constraints.validate_tokens(request_id, tokens[:middle]):
+                valid = middle
+            else:
+                invalid = middle
+        return replace(proposal, tokens=tokens[:valid], probs=proposal.probs[:valid])
 
     def _disabled(self, reason: str) -> None:
         self.pending_disabled[reason] = self.pending_disabled.get(reason, 0) + 1
