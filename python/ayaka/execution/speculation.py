@@ -21,9 +21,11 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from ayaka.core.types import ForwardMode
 from ayaka.execution.drafts import PlannedDraft
 from ayaka.layers.context import FeatureSink
 from ayaka.sampling.penalties import uses_penalties
+from ayaka.speculative.mtp import MTPProposer
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
     from ayaka.core.params import SamplingParams
     from ayaka.core.types import RequestId, TokenId
     from ayaka.execution.graph import GraphRunner
+    from ayaka.execution.inputs import InputBuilder
     from ayaka.sampling.structured.runtime import ConstraintRuntime
     from ayaka.scheduler.step import StepInput, StepOutput
     from ayaka.speculative.policy import DraftController
@@ -79,7 +82,9 @@ class SpeculationState:
 
     def _configure_hooks(self) -> None:
         proposer = self._proposer
-        self.needs_hidden = bool(getattr(proposer, "needs_hidden", False))
+        self.needs_hidden = isinstance(proposer, MTPProposer) or bool(
+            getattr(proposer, "needs_hidden", False)
+        )
         order = tuple(getattr(proposer, "target_layer_ids", ()))
         self.feature_order = order
         self.feature_sink = FeatureSink(layer_ids=frozenset(order)) if order else None
@@ -252,22 +257,50 @@ class SpeculationState:
                 return True
         return False
 
+    def capture_draft_graphs(self, builder: InputBuilder, pool: object) -> int:
+        """Capture a drafter's own draft step in CUDA graphs; the bytes they took (0 for none)."""
+        proposer = self.proposer
+        if not isinstance(proposer, MTPProposer):
+            return 0
+        return proposer.capture_graphs(
+            max_requests=builder.max_requests, max_blocks=builder.max_blocks, pool=pool
+        )
+
     def notify(
         self,
         step: StepInput,
         output: StepOutput,
         hidden: torch.Tensor | None,
         graph: GraphRunner | None,
+        *,
+        builder: InputBuilder,
     ) -> None:
-        """Hand a step's layer features to a drafter that reads them, then forget them.
+        """Hand a step's hidden states and layer features to a drafter that reads them.
 
-        ``graph`` is the graph runner when the step replayed a graph (its features are in the
-        graph's buffers), ``None`` when it ran eagerly (they are in :attr:`feature_sink`).
+        ``hidden`` is the final hidden state of every row (the multi-token-prediction drafter
+        predicts from it). ``graph`` is the graph runner when the step replayed a graph (the
+        features are in the graph's buffers), ``None`` when it ran eagerly (they are in
+        :attr:`feature_sink`). The features are forgotten after the call.
         """
-        del hidden  # read by drafters that predict from the last hidden state
         proposer = self.proposer
         sink = self.feature_sink
         try:
+            if isinstance(proposer, MTPProposer) and hidden is not None:
+                block_tables = builder.active_block_tables(step)
+                emitted = output.tokens if output.tokens else ((),) * step.num_requests
+                observe = (
+                    proposer.observe_prefill
+                    if step.mode is ForwardMode.PREFILL
+                    else proposer.observe_decode_like
+                )
+                observe(
+                    step.request_ids,
+                    step.start_positions,
+                    step.rows_per_request,
+                    emitted,
+                    hidden,
+                    block_tables,
+                )
             if (
                 proposer is not None
                 and self.feature_order

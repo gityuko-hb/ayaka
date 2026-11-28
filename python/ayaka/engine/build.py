@@ -31,7 +31,7 @@ package stays cheap and a command line that only prints help never loads it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal
 
 from ayaka.core.errors import CapacityError, ConfigError, ModelLoadError
@@ -59,6 +59,7 @@ from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
 from ayaka.kvcache.prefix.hashing import ChainRoot
 from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool
 from ayaka.kvcache.storage.spec import KVGroup, KVSpec, LatentKVGroup, RecurrentStateGroup
+from ayaka.memory.budget import DraftCost
 from ayaka.metrics.loggers import LoggingStatLogger
 from ayaka.metrics.manager import StatLoggerManager
 from ayaka.ops.kvcache import RAW_CODEC
@@ -75,11 +76,9 @@ if TYPE_CHECKING:
     from ayaka.device.info import DeviceInfo
     from ayaka.engine.recorder import SessionRecorder
     from ayaka.kvcache.storage.pool import KVPool, LatentKVPool, RecurrentStatePool
-    from ayaka.memory.budget import BudgetPlan, DraftCost
+    from ayaka.memory.budget import BudgetPlan
     from ayaka.metrics.loggers import StatLogger
     from ayaka.ops.backend import OpsBackend
-    from ayaka.speculative.policy import DraftController
-    from ayaka.speculative.proposer import Proposer
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
 __all__ = ["STATS_LOG_INTERVAL", "EnginePlan", "build_engine", "plan_engine"]
@@ -240,8 +239,26 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             context={"groups": 0},
         )
     group = groups[0]
+    plain_groups = groups
     state_group = model.state_spec()
     draft_costs: tuple[DraftCost, ...] = ()
+    if (
+        config.speculative.enabled
+        and config.speculative.method == "mtp"
+        and model_config.num_nextn_predict_layers >= 1
+        and len(groups) == 1
+        and isinstance(group, KVGroup)
+    ):
+        from ayaka.models.mimo import describe_mimo_mtp_bytes
+
+        # The prediction layer keeps its KV as one more layer of the model's single KV group.
+        mtp_bytes = describe_mimo_mtp_bytes(model_config, dtype=device.dtype)
+        draft_costs = (DraftCost(name="mtp", fixed_bytes=mtp_bytes, bytes_per_kv_token=0),)
+        group = KVGroup(
+            layer_ids=(*group.layer_ids, model_config.num_layers),
+            spec=replace(group.spec, num_layers=group.spec.num_layers + 1),
+        )
+        groups = (group,)
     block_size = group.spec.block_size
     context = model_config.context_length
     if (
@@ -328,12 +345,26 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             },
         ) from exc
 
+    if any(name == "mtp" for name, _ in budget.skipped) and groups is not plain_groups:
+        groups = plain_groups
+        group = groups[0]
+        budget = compute_budget(
+            config,
+            groups,
+            state_group,
+            weights,
+            baseline,
+            reserve_tokens,
+            previous,
+            initial_runtime_bytes=initial_runtime_bytes,
+            drafts=(),
+        )
     displaced_blocks = 0
     if budget.loaded_drafts:
         try:
             plain_budget = compute_budget(
                 config,
-                groups,
+                plain_groups,
                 state_group,
                 weights,
                 baseline,
@@ -425,12 +456,10 @@ def build_engine(
         CapacityError: If the weights and a context of KV do not fit the memory the config allows;
             raised by the plan, before a weight is read.
     """
+    from ayaka.engine.speculation import build_speculation
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.storage.pool import KVPool, LatentKVPool, RecurrentStatePool
     from ayaka.model_loader.loader import load_model
-    from ayaka.speculative.ngram import LookupProposer
-    from ayaka.speculative.policy import CostAwareController, FixedController
-    from ayaka.speculative.token_recycling import TokenRecyclingProposer
 
     device = config.device
     engine_plan, ops, baseline_reserved = _plan(config)
@@ -458,6 +487,12 @@ def build_engine(
     )
 
     spec_cfg = config.speculative
+    mtp_active = (
+        spec_cfg.enabled
+        and spec_cfg.method == "mtp"
+        and model_config.num_nextn_predict_layers >= 1
+        and "mtp" in plan.loaded_drafts
+    )
     prefix = None
     if config.cache.prefix_cache:
         prefix = HashPrefixCache(
@@ -466,6 +501,7 @@ def build_engine(
                 dtype=group.spec.dtype.label,
                 codec=group.spec.codec,
                 block_size=block_size,
+                lookahead=1 if mtp_active else 0,
             )
         )
     state_slots: StateSlotPool | None = None
@@ -498,42 +534,22 @@ def build_engine(
     ]
 
     service = tokenizer_service(config, model_config.vocab_size, context, tokenizer)
-    proposer: Proposer | None = None
-    controller: DraftController | None = None
-    lookahead = 0
-    draft_bytes = 0
-    if spec_cfg.enabled:
-        if spec_cfg.method == "lookup":
-            proposer = LookupProposer(
-                min_match=spec_cfg.lookup_min_match,
-                max_match=spec_cfg.lookup_max_match,
-                candidates=spec_cfg.lookup_candidates,
-                accept_prediction=spec_cfg.accept_prediction,
-            )
-        elif spec_cfg.method == "token_recycling":
-            proposer = TokenRecyclingProposer()
-        if proposer is not None:
-            reason = proposer.supports(model_config)
-            if reason is None and state_group is not None:
-                # A verify window advances a recurrent state through every draft row, and a
-                # rejected draft would leave it there: there is no rollback of the state.
-                reason = "the model has recurrent-state layers, which a draft window cannot undo"
-            if reason is not None:
-                logger.warning("speculative %s disabled: %s", spec_cfg.method, reason)
-                proposer = None
-                lookahead = 0
-            else:
-                if lookahead == 0:
-                    lookahead = spec_cfg.max_draft_tokens
-                controller = (
-                    FixedController(min(spec_cfg.fixed_k, lookahead))
-                    if spec_cfg.controller == "fixed"
-                    else CostAwareController(
-                        max_k=lookahead,
-                        min_gain=spec_cfg.min_gain,
-                        ema=spec_cfg.ema,
-                    )
-                )
+    speculation = build_speculation(
+        spec_cfg,
+        device=device,
+        model=model,
+        ops=ops,
+        engine_plan=engine_plan,
+        pool=pools[0],
+        group=group,
+        mtp_active=mtp_active,
+        has_recurrent_state=state_group is not None,
+    )
+    proposer, controller, lookahead = (
+        speculation.proposer,
+        speculation.controller,
+        speculation.lookahead,
+    )
     scheduler = Scheduler(
         config.scheduler,
         kv,
@@ -571,7 +587,7 @@ def build_engine(
             baseline_reserved=baseline_reserved,
             chunk_tokens=scheduler.token_budget,
             running=scheduler.max_running,
-            draft_bytes=draft_bytes,
+            draft_bytes=speculation.draft_bytes,
         )
     return EngineCore(
         scheduler=scheduler,

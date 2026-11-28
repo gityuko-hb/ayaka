@@ -1,0 +1,328 @@
+{
+ "machine": {
+  "date": "2026-11-25T20:33:30+00:00",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "capability": [
+   8,
+   0
+  ],
+  "driver": "580.82.07",
+  "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+  "wsl2": false,
+  "python": "3.13.16",
+  "torch": "2.14.1+cu130",
+  "torch_cuda": "13.0",
+  "flashinfer": "0.7.4",
+  "ayaka": "0.1.0",
+  "commit": "d5af22c42bb4710e46e53a6218dff3c53d53835a"
+ },
+ "model": "XiaomiMiMo/MiMo-7B-RL",
+ "protocol": {
+  "pairs": 3,
+  "order": "pair p: fresh engines, plain first when p is even, the arm first when odd",
+  "context_tokens": 1000,
+  "max_tokens": 256,
+  "greedy": true,
+  "dtype": "bf16",
+  "backends": [
+   "flashinfer",
+   "torch"
+  ],
+  "cuda_graph": true,
+  "num_blocks": 1024,
+  "prompt_tokens": {
+   "code_edit": [
+    1248
+   ],
+   "prose": [
+    1088
+   ],
+   "json_tools": [
+    1200
+   ],
+   "random": [
+    1302
+   ]
+  }
+ },
+ "arms": {
+  "mtp": {
+   "enabled": true,
+   "method": "mtp",
+   "max_draft_tokens": 1,
+   "controller": "fixed",
+   "fixed_k": 1,
+   "min_gain": 0.05,
+   "ema": 0.05,
+   "lookup_min_match": 3,
+   "lookup_max_match": 32,
+   "lookup_candidates": 4,
+   "accept_prediction": true,
+   "mtp_depth": 1,
+   "mtp_vocab_limit": 0,
+   "lookup_override_match": 0
+  }
+ },
+ "results": {
+  "mtp": {
+   "code_edit/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.33,
+      "arm_tok_per_sec": 83.79,
+      "ratio": 1.2826,
+      "drafted": 156,
+      "accepted": 98,
+      "rounds": 156,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 253
+       }
+      ]
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 65.27,
+      "arm_tok_per_sec": 82.78,
+      "ratio": 1.2683,
+      "drafted": 156,
+      "accepted": 98,
+      "rounds": 156,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 253
+       }
+      ]
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.25,
+      "arm_tok_per_sec": 83.4,
+      "ratio": 1.2782,
+      "drafted": 156,
+      "accepted": 98,
+      "rounds": 156,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 253
+       }
+      ]
+     }
+    ],
+    "ratio": 1.2778,
+    "worst_pair": 1.2683,
+    "best_pair": 1.2826,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.27,
+    "median_arm_tok_per_sec": 83.4,
+    "acceptance_rate": 0.6282,
+    "accepted_per_round": 0.628,
+    "requests_differing_from_plain": 3,
+    "requests_compared": 3
+   },
+   "prose/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.42,
+      "arm_tok_per_sec": 78.53,
+      "ratio": 1.2004,
+      "drafted": 165,
+      "accepted": 90,
+      "rounds": 165,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 150
+       }
+      ]
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 65.37,
+      "arm_tok_per_sec": 78.68,
+      "ratio": 1.2036,
+      "drafted": 165,
+      "accepted": 90,
+      "rounds": 165,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 150
+       }
+      ]
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.22,
+      "arm_tok_per_sec": 79.13,
+      "ratio": 1.2133,
+      "drafted": 165,
+      "accepted": 90,
+      "rounds": 165,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 150
+       }
+      ]
+     }
+    ],
+    "ratio": 1.2036,
+    "worst_pair": 1.2004,
+    "best_pair": 1.2133,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.37,
+    "median_arm_tok_per_sec": 78.68,
+    "acceptance_rate": 0.5455,
+    "accepted_per_round": 0.545,
+    "requests_differing_from_plain": 3,
+    "requests_compared": 3
+   },
+   "json_tools/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.28,
+      "arm_tok_per_sec": 83.14,
+      "ratio": 1.2736,
+      "drafted": 157,
+      "accepted": 97,
+      "rounds": 157,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 199
+       }
+      ]
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 65.12,
+      "arm_tok_per_sec": 83.24,
+      "ratio": 1.2783,
+      "drafted": 157,
+      "accepted": 97,
+      "rounds": 157,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 199
+       }
+      ]
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.32,
+      "arm_tok_per_sec": 82.87,
+      "ratio": 1.2687,
+      "drafted": 157,
+      "accepted": 97,
+      "rounds": 157,
+      "requests_differing_from_plain": [
+       {
+        "request": 0,
+        "first_difference": 199
+       }
+      ]
+     }
+    ],
+    "ratio": 1.2736,
+    "worst_pair": 1.2687,
+    "best_pair": 1.2783,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.28,
+    "median_arm_tok_per_sec": 83.14,
+    "acceptance_rate": 0.6178,
+    "accepted_per_round": 0.618,
+    "requests_differing_from_plain": 3,
+    "requests_compared": 3
+   },
+   "random/c1": {
+    "pairs": [
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.13,
+      "arm_tok_per_sec": 88.96,
+      "ratio": 1.3659,
+      "drafted": 148,
+      "accepted": 106,
+      "rounds": 148,
+      "requests_differing_from_plain": []
+     },
+     {
+      "order": [
+       "arm",
+       "plain"
+      ],
+      "plain_tok_per_sec": 65.13,
+      "arm_tok_per_sec": 89.12,
+      "ratio": 1.3683,
+      "drafted": 148,
+      "accepted": 106,
+      "rounds": 148,
+      "requests_differing_from_plain": []
+     },
+     {
+      "order": [
+       "plain",
+       "arm"
+      ],
+      "plain_tok_per_sec": 65.34,
+      "arm_tok_per_sec": 88.41,
+      "ratio": 1.3531,
+      "drafted": 148,
+      "accepted": 106,
+      "rounds": 148,
+      "requests_differing_from_plain": []
+     }
+    ],
+    "ratio": 1.3659,
+    "worst_pair": 1.3531,
+    "best_pair": 1.3683,
+    "noise": 0.02,
+    "median_plain_tok_per_sec": 65.13,
+    "median_arm_tok_per_sec": 88.96,
+    "acceptance_rate": 0.7162,
+    "accepted_per_round": 0.716,
+    "requests_differing_from_plain": 0,
+    "requests_compared": 3
+   }
+  }
+ },
+ "variant": "the code of this branch: the prediction layer reads the output of the final norm"
+}

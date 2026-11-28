@@ -1339,3 +1339,70 @@ Five alternating pairs per arm on fresh engines; concurrency 2, 4 and 8 with a m
 the controller sweep over k; the verify-window graph gate on a real model; the three unexplained
 differing rows above; a reserve in the memory plan for the widest verify window; an agent session
 class.
+
+## Speculative decoding with MiMo's multi-token-prediction layer, on NVIDIA L4 24 GB (2026-11-24) (#128)
+
+Same machine, settings and caveats as the section above: one run per variant, so no `noise` band. Raw results: `mtp_bench.json`, `kv_plan.json`, `exactness_diagnostic.jsonl`.
+
+### Result
+
+Plain: 16.66 tok/s (16.69, 16.63, 16.67 on `code`, `math`, `chat`). One run per variant.
+
+| Variant | tok/s | Ratio | Accepted per draft (code / math / chat) | Draft weights |
+| --- | ---: | ---: | --- | ---: |
+| MTP, depth 1, fixed k=1 | 23.80 | 1.43× | 0.74 / 0.74 / 0.64 | 0.42 GB |
+| MTP, depth 1, cost controller | 23.78 | 1.43× | 0.74 / 0.74 / 0.64 | 0.42 GB |
+| MTP, depth 2 (experiment) | 21.38 | 1.28× | 0.39 / 0.37 / 0.33 | 0.42 GB |
+| MTP, depth 1, 16,384-row draft head (experiment) | 24.78 | 1.49× | 0.74 / 0.74 / 0.50 | 0.42 GB |
+| MTP with lookup override at a match of 6 | 23.82 | 1.43× | 0.72 / 0.74 / 0.64 | 0.42 GB |
+
+- **Gate 2 (the alignment) is not passed.** Acceptance on the prose class (`chat`) is 0.64, below
+  the 0.70 that #128 defines as an implementation defect, and on `code` and `math` it is 0.74, below
+  0.85, which requires the named ablations (hidden state before and after the final norm, position
+  `i` against `i + 1`). **No ablation was run**, so the cause is unknown; the model card's figure of
+  about 0.90 is not reproduced. The speed ratio above is therefore not a result to rely on for a
+  default.
+- **Depth 2 loses** (1.28× against 1.43×) with acceptance at the second step far below the 0.6 the
+  experiment needs: dropped.
+- **The reduced draft head (16,384 rows)** is faster on `code` and `math` (26.2 and 26.1 tok/s
+  against 24.4 and 24.3) and loses acceptance on `chat` (0.50 against 0.64). One run: not enough to
+  adopt it, enough to say the full head's cost is visible.
+- **Memory.** Both start-ups reconciled. The plan's capacity (`kv_plan.json`, `kv_reserve_tokens`
+  2,048): 36,864 tokens plain, 34,720 with MTP, **5.8% fewer**. The running engine of the benchmark
+  allocated 2,400 blocks plain and 1,948 with MTP, **18.8% fewer** (7,232 tokens): the plan
+  understates what the drafter takes by more than three times.
+
+### Exactness (`exactness_diagnostic.jsonl`)
+
+`exact_match_plain` is false for every MTP variant in `mtp_bench.json`. The script only compares
+whole sequences, so I re-ran the fixed-k variant and read the plain run's two best logprobs at the
+first differing token:
+
+| Prompt | First difference | Plain's top-2 margin there | Speculative token |
+| --- | ---: | ---: | --- |
+| `chat` | token 2 | 0.0 nats (an exact tie) | plain's second choice |
+| `code` | token 27 | 0.125 nats (one bf16 step) | plain's second choice |
+| `math` | token 5 | **not determined** | not determined |
+
+Two of the three sit on an exact tie or a one-step margin, which is the near-tie case Gate 1 sets
+apart. On `math` the plain run with `logprobs` and the plain run without differ from each other
+before the point of comparison, so the margin could not be read, and I have not shown that case is
+a tie. **This is not "zero differing token ids".** The GPU gate test of this pull request
+(`tests/speculative/test_mtp.py`, two short prompts of 48 tokens) does find MTP bit-identical to
+plain on MiMo-7B-RL, with a pooled acceptance of at least 0.70, a matching start-up reconciliation
+and replayed graphs; it uses other prompts than the benchmark.
+
+### Decisions
+
+- **The default stays off for MTP.** The alignment gate is not passed (0.64 on prose, no ablation
+  run) and the speed gates cannot be (one run per variant, no concurrency 2, 4 or 8). At one request
+  the single-run ratio is 1.43× over plain on MiMo-7B-RL.
+- **Depth 2** is dropped. The **reduced draft head** is not adopted on one run. **Lookup override**
+  (prefer lookup's draft at a match of 6) did not change the ratio (1.43×).
+
+### Open before a default can be considered
+
+The ablations #128 names (hidden state before and after the final norm, position `i` against
+`i + 1`) to find why acceptance is 0.64 to 0.74 against the card's 0.90; the MiMo `math`
+divergence; five alternating pairs; concurrency 2, 4 and 8; the draft head's share of a round; the
+plan's memory figure, which understates the running engine's loss.

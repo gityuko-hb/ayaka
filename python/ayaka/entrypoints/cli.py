@@ -170,6 +170,9 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
         max_draft_tokens=args.spec_max_draft_tokens,
         controller=args.spec_controller,
         fixed_k=args.spec_fixed_k,
+        mtp_depth=args.spec_mtp_depth,
+        mtp_vocab_limit=args.spec_mtp_vocab_limit,
+        lookup_override_match=args.spec_lookup_override,
     )
     return EngineConfig(
         source=ModelSourceConfig(

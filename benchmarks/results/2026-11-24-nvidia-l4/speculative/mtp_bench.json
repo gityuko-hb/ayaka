@@ -1,0 +1,274 @@
+{
+  "machine": {
+    "date": "2026-11-24T19:24:10+00:00",
+    "gpu": "NVIDIA L4",
+    "capability": [
+      8,
+      9
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "6543176a80876e5ba7dce746335a52d22d593734-dirty"
+  },
+  "model": "XiaomiMiMo/MiMo-7B-RL",
+  "variants": [
+    {
+      "label": "plain",
+      "draft_bytes": 0,
+      "kv_blocks": 2400,
+      "displaced_kv_blocks": 0,
+      "displaced_kv_tokens": 0,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 7.6699,
+          "tok_per_sec": 16.69,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "acceptance_rate": 0.0
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 7.6979,
+          "tok_per_sec": 16.63,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "acceptance_rate": 0.0
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 7.6789,
+          "tok_per_sec": 16.67,
+          "rounds": 0,
+          "drafted": 0,
+          "accepted": 0,
+          "acceptance_rate": 0.0
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 16.66,
+      "peak_vram_bytes": 21175710208,
+      "mtp_graph_replays": 0,
+      "speedup_vs_plain": 1.0,
+      "exact_match_plain": true
+    },
+    {
+      "label": "mtp_d1_fixed",
+      "draft_bytes": 421580800,
+      "kv_blocks": 1948,
+      "displaced_kv_blocks": 233,
+      "displaced_kv_tokens": 3728,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.2495,
+          "tok_per_sec": 24.38,
+          "rounds": 73,
+          "drafted": 73,
+          "accepted": 54,
+          "acceptance_rate": 0.74
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 5.2704,
+          "tok_per_sec": 24.29,
+          "rounds": 73,
+          "drafted": 73,
+          "accepted": 54,
+          "acceptance_rate": 0.74
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 5.6128,
+          "tok_per_sec": 22.81,
+          "rounds": 77,
+          "drafted": 77,
+          "accepted": 49,
+          "acceptance_rate": 0.636
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 23.8,
+      "peak_vram_bytes": 20808518144,
+      "mtp_graph_replays": 233,
+      "speedup_vs_plain": 1.429,
+      "exact_match_plain": false
+    },
+    {
+      "label": "mtp_d1_cost",
+      "draft_bytes": 421580800,
+      "kv_blocks": 1726,
+      "displaced_kv_blocks": 227,
+      "displaced_kv_tokens": 3632,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.2316,
+          "tok_per_sec": 24.47,
+          "rounds": 73,
+          "drafted": 73,
+          "accepted": 54,
+          "acceptance_rate": 0.74
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 5.2973,
+          "tok_per_sec": 24.16,
+          "rounds": 73,
+          "drafted": 73,
+          "accepted": 54,
+          "acceptance_rate": 0.74
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 5.6176,
+          "tok_per_sec": 22.79,
+          "rounds": 77,
+          "drafted": 77,
+          "accepted": 49,
+          "acceptance_rate": 0.636
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 23.78,
+      "peak_vram_bytes": 20277710336,
+      "mtp_graph_replays": 233,
+      "speedup_vs_plain": 1.427,
+      "exact_match_plain": false
+    },
+    {
+      "label": "mtp_d2_exp",
+      "draft_bytes": 421580800,
+      "kv_blocks": 1717,
+      "displaced_kv_blocks": 226,
+      "displaced_kv_tokens": 3616,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.8133,
+          "tok_per_sec": 22.02,
+          "rounds": 72,
+          "drafted": 143,
+          "accepted": 55,
+          "acceptance_rate": 0.385
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 5.9337,
+          "tok_per_sec": 21.57,
+          "rounds": 73,
+          "drafted": 145,
+          "accepted": 54,
+          "acceptance_rate": 0.372
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 6.2167,
+          "tok_per_sec": 20.59,
+          "rounds": 76,
+          "drafted": 152,
+          "accepted": 50,
+          "acceptance_rate": 0.329
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 21.38,
+      "peak_vram_bytes": 20265258496,
+      "mtp_graph_replays": 0,
+      "speedup_vs_plain": 1.283,
+      "exact_match_plain": false
+    },
+    {
+      "label": "mtp_vocab16k_exp",
+      "draft_bytes": 421580800,
+      "kv_blocks": 1710,
+      "displaced_kv_blocks": 226,
+      "displaced_kv_tokens": 3616,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 4.8846,
+          "tok_per_sec": 26.21,
+          "rounds": 73,
+          "drafted": 73,
+          "accepted": 54,
+          "acceptance_rate": 0.74
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 4.9043,
+          "tok_per_sec": 26.1,
+          "rounds": 73,
+          "drafted": 73,
+          "accepted": 54,
+          "acceptance_rate": 0.74
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 5.709,
+          "tok_per_sec": 22.42,
+          "rounds": 84,
+          "drafted": 84,
+          "accepted": 42,
+          "acceptance_rate": 0.5
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 24.78,
+      "peak_vram_bytes": 20257000960,
+      "mtp_graph_replays": 240,
+      "speedup_vs_plain": 1.487,
+      "exact_match_plain": false
+    },
+    {
+      "label": "mtp_hybrid_lookup6",
+      "draft_bytes": 421580800,
+      "kv_blocks": 1702,
+      "displaced_kv_blocks": 226,
+      "displaced_kv_tokens": 3616,
+      "prompts": {
+        "code": {
+          "tokens": 128,
+          "seconds": 5.289,
+          "tok_per_sec": 24.2,
+          "rounds": 74,
+          "drafted": 74,
+          "accepted": 53,
+          "acceptance_rate": 0.716
+        },
+        "math": {
+          "tokens": 128,
+          "seconds": 5.2414,
+          "tok_per_sec": 24.42,
+          "rounds": 73,
+          "drafted": 73,
+          "accepted": 54,
+          "acceptance_rate": 0.74
+        },
+        "chat": {
+          "tokens": 128,
+          "seconds": 5.5938,
+          "tok_per_sec": 22.88,
+          "rounds": 77,
+          "drafted": 77,
+          "accepted": 49,
+          "acceptance_rate": 0.636
+        }
+      },
+      "reconciled": true,
+      "mean_tok_per_sec": 23.82,
+      "peak_vram_bytes": 20253392896,
+      "mtp_graph_replays": 234,
+      "speedup_vs_plain": 1.43,
+      "exact_match_plain": false
+    }
+  ]
+}

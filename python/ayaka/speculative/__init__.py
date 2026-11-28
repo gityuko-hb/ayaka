@@ -1,4 +1,4 @@
-"""Lossless speculative decoding: acceptance, proposers, lookup and controllers.
+"""Lossless speculative decoding: acceptance, proposers, lookup, controllers and MTP.
 
 Every public name resolves lazily from its defining submodule so importing ``ayaka.speculative``
 loads no torch or heavy dependencies.
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         accept_one_point_batch,
         sanitize_drafts,
     )
+    from ayaka.speculative.mtp import MTPEmbedProtocol, MTPLayerProtocol, MTPProposer
     from ayaka.speculative.ngram import LookupProposer, NgramIndex, naive_ngram_match
     from ayaka.speculative.policy import (
         CostAwareController,
@@ -34,6 +35,9 @@ __all__ = [
     "DraftController",
     "FixedController",
     "LookupProposer",
+    "MTPEmbedProtocol",
+    "MTPLayerProtocol",
+    "MTPProposer",
     "NgramIndex",
     "Proposal",
     "Proposer",
@@ -52,6 +56,7 @@ _EXPORTS = {
         "accept_one_point_batch",
         "sanitize_drafts",
     ),
+    "mtp": ("MTPEmbedProtocol", "MTPLayerProtocol", "MTPProposer"),
     "ngram": ("LookupProposer", "NgramIndex", "naive_ngram_match"),
     "policy": ("CostAwareController", "DraftController", "FixedController", "match_bucket"),
     "proposer": ("EMPTY_PROPOSAL", "Proposal", "Proposer"),

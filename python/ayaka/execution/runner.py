@@ -192,7 +192,7 @@ class ModelRunner:
 
     @property
     def extra_graph_bytes(self) -> int:
-        """CUDA graph bytes captured by auxiliary proposers (a proposer's own draft graphs)."""
+        """CUDA graph bytes a drafter captured for itself (the MTP draft step's graphs)."""
         return self._extra_graph_bytes
 
     @property
@@ -270,7 +270,7 @@ class ModelRunner:
         )
         captured = graph.capture()
         self._graph = graph
-        self._extra_graph_bytes = 0
+        self._extra_graph_bytes = self._spec.capture_draft_graphs(self._builder, graph.pool)
         if verify_buckets:
             self._spec.verify_graphs_captured(graph.max_verify_rows)
         return captured
@@ -564,7 +564,9 @@ class ModelRunner:
         *,
         from_graph: bool,
     ) -> None:
-        self._spec.notify(step, output, hidden, self._graph if from_graph else None)
+        self._spec.notify(
+            step, output, hidden, self._graph if from_graph else None, builder=self._builder
+        )
 
     def _needs_controls(self, step: StepInput) -> bool:
         """Whether a request of the step needs more than a structural mask: allowed ids, bias,
