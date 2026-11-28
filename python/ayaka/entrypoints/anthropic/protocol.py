@@ -39,6 +39,7 @@ from ayaka.entrypoints.conversation import (
     ToolCall,
     ToolSpec,
 )
+from ayaka.entrypoints.render.reasoning import ThinkingRequest
 from ayaka.entrypoints.wire.policy import apply_policy
 from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
 from ayaka.multimodal.png import decode_base64_image, decode_data_url_image
@@ -105,6 +106,9 @@ class MessagesRequest:
     tools: bool
     parallel_tool_calls: bool
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
+    thinking: ThinkingRequest = dataclasses.field(default_factory=ThinkingRequest)
+    continue_final_message: bool = False
+    named_tool_choice: bool = False
 
 
 def _output_format(body: JsonObject) -> tuple[ConstraintKind | None, Mapping[str, object] | None]:
@@ -125,8 +129,8 @@ def _output_format(body: JsonObject) -> tuple[ConstraintKind | None, Mapping[str
     return ConstraintKind.JSON_SCHEMA, schema.data
 
 
-def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
-    """The conversation, whether the model may call tools, and whether several at once."""
+def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool, bool]:
+    """The conversation, whether the model may call tools, parallel flag, and prefill flag."""
     if body.has("n") and body.raw("n") != 1:
         raise _unsupported("n", "Messages returns one answer per request")
     builder = ConversationBuilder()
@@ -140,12 +144,9 @@ def _conversation(body: JsonObject) -> tuple[Conversation, bool, bool]:
         raise _invalid("messages", "must be a non-empty array")
     for message in messages:
         _message(message, builder)
-    if messages[-1].string("role") == "assistant":
-        raise _unsupported(
-            "messages", "continuing a final assistant message (prefill) is not available"
-        )
+    continue_final = messages[-1].string("role") == "assistant"
     tools, parallel, _, _ = _tools(body, builder)
-    return builder.build(), tools, parallel
+    return builder.build(), tools, parallel, continue_final
 
 
 def parse_messages_request(body: JsonObject) -> MessagesRequest:
@@ -160,8 +161,8 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
     assert max_tokens is not None  # noqa: S101  # required
     if max_tokens < 1:
         raise _invalid("max_tokens", "must be >= 1")
-    _thinking(body.child("thinking"), max_tokens)
-    conversation, tools, parallel = _conversation(body)
+    thinking = _thinking(body.child("thinking"), max_tokens)
+    conversation, tools, parallel, continue_final = _conversation(body)
     response, schema = _output_format(body)
     _, _, choice, strict = _tools(body, ConversationBuilder())
     stop = body.array("stop_sequences")
@@ -184,19 +185,22 @@ def parse_messages_request(body: JsonObject) -> MessagesRequest:
         tools=tools,
         parallel_tool_calls=parallel,
         output=OutputRequest(response=response, schema=schema, tool_choice=choice, strict=strict),
+        thinking=thinking,
+        continue_final_message=continue_final,
+        named_tool_choice=choice not in ("auto", "required"),
     )
 
 
 def parse_count_tokens_request(body: JsonObject) -> tuple[str | None, Conversation]:
     """Read a ``count_tokens`` request: the model and the conversation to count."""
     apply_policy(body, "/v1/messages/count_tokens")
-    conversation, _, _ = _conversation(body)
+    conversation, _, _, _ = _conversation(body)
     return body.string("model"), conversation
 
 
-def _thinking(thinking: JsonObject | None, max_tokens: int) -> None:
+def _thinking(thinking: JsonObject | None, max_tokens: int) -> ThinkingRequest:
     if thinking is None:
-        return
+        return ThinkingRequest()
     kind = thinking.string("type")
     if kind == "enabled":
         budget = thinking.integer("budget_tokens", required=True)
@@ -205,9 +209,12 @@ def _thinking(thinking: JsonObject | None, max_tokens: int) -> None:
             raise _invalid(
                 thinking.where("budget_tokens"), "must be at least 1024 and less than max_tokens"
             )
-        _LOG.debug("thinking budget %d is a hint; the model reasons as trained", budget)
-    elif kind not in ("disabled", "adaptive"):
-        raise _invalid(thinking.where("type"), "must be enabled, disabled or adaptive")
+        return ThinkingRequest(enabled=True, budget_tokens=budget)
+    if kind == "disabled":
+        return ThinkingRequest(enabled=False)
+    if kind == "adaptive":
+        return ThinkingRequest(enabled=True)
+    raise _invalid(thinking.where("type"), "must be enabled, disabled or adaptive")
 
 
 def _parse_anthropic_image(block: JsonObject) -> ImageInput:
@@ -266,6 +273,7 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
     if not isinstance(content, list):
         raise _invalid(message.where("content"), "must be a string or an array of blocks")
     texts: list[str] = []
+    thinkings: list[str] = []
     images: list[ImageInput] = []
     calls: list[ToolCall] = []
     for i, item in enumerate(cast("list[object]", content)):
@@ -289,14 +297,22 @@ def _message(message: JsonObject, builder: ConversationBuilder) -> None:
                 if result is not None and not isinstance(result, str):
                     text = _text_blocks(result, block.where("content"))
                 builder.tool_result(block.text("tool_use_id"), text)
-            case "thinking" | "redacted_thinking" if role == "assistant":
+            case "thinking" if role == "assistant":
+                thought = block.string("thinking")
+                if thought:
+                    thinkings.append(thought)
+            case "redacted_thinking" if role == "assistant":
                 continue
             case "image" | "document":
                 raise _unsupported(block.where("type"), f"{kind} input needs a vision model")
             case _:
                 raise _unsupported(block.where("type"), f"{kind!r} blocks in {role} messages")
     if role == "assistant":
-        builder.assistant(PART_SEPARATOR.join(texts), calls)
+        builder.assistant(
+            PART_SEPARATOR.join(texts),
+            calls,
+            reasoning=PART_SEPARATOR.join(thinkings) if thinkings else None,
+        )
     elif texts or images:
         builder.user(PART_SEPARATOR.join(texts), images=images)
 

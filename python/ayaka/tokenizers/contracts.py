@@ -185,24 +185,47 @@ class TemplateInput:
     Attributes:
         messages_json: JSON array of message objects (non-empty).
         tools_json: JSON array of tool definitions; ``"[]"`` for none.
+        add_generation_prompt: Append the assistant-turn prefix so the model
+            starts answering. Mutually exclusive with ``continue_final_message``.
+        continue_final_message: Continue the last assistant message instead of
+            starting a new turn. Requires that message to be from the assistant.
+        chat_template_kwargs_json: JSON object of extra template keyword arguments.
     """
 
     messages_json: str
     tools_json: str = "[]"
+    add_generation_prompt: bool = True
+    continue_final_message: bool = False
+    chat_template_kwargs_json: str = "{}"
 
     def __post_init__(self) -> None:
-        if type(self.messages_json) is not str or type(self.tools_json) is not str:
+        if (
+            type(self.messages_json) is not str
+            or type(self.tools_json) is not str
+            or type(self.chat_template_kwargs_json) is not str
+        ):
             raise TypeError("template inputs must be JSON strings")
+        require_bool(self.add_generation_prompt, "add_generation_prompt")
+        require_bool(self.continue_final_message, "continue_final_message")
+        if self.add_generation_prompt and self.continue_final_message:
+            raise ValueError("generation prompt and final-message continuation conflict")
         messages = cast("object", json.loads(self.messages_json))
         tools = cast("object", json.loads(self.tools_json))
+        template_kwargs = cast("object", json.loads(self.chat_template_kwargs_json))
         if not isinstance(messages, list) or not messages:
             raise ValueError("messages must be a non-empty JSON array")
         if any(not isinstance(m, dict) for m in cast("list[object]", messages)):
             raise ValueError("messages must contain objects")
+        if self.continue_final_message:
+            last = cast("dict[str, object]", cast("list[object]", messages)[-1])
+            if last.get("role") != "assistant":
+                raise ValueError("continuation requires a final assistant message")
         if not isinstance(tools, list) or any(
             not isinstance(t, dict) for t in cast("list[object]", tools)
         ):
             raise ValueError("tools must be a JSON array of objects")
+        if not isinstance(template_kwargs, dict):
+            raise ValueError("chat_template_kwargs must be a JSON object")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -217,20 +240,44 @@ class TemplateData:
     Attributes:
         messages: Message objects (non-empty).
         tools: Tool definitions; empty for none.
+        add_generation_prompt: Append the assistant-turn prefix so the model
+            starts answering. Mutually exclusive with ``continue_final_message``.
+        continue_final_message: Continue the last assistant message instead of
+            starting a new turn. Requires that message to be from the assistant.
+        chat_template_kwargs: Extra template keyword arguments as ``(key, value)`` pairs.
     """
 
     messages: tuple[Mapping[str, object], ...]
     tools: tuple[Mapping[str, object], ...] = ()
+    add_generation_prompt: bool = True
+    continue_final_message: bool = False
+    chat_template_kwargs: tuple[tuple[str, object], ...] = ()
 
     def __post_init__(self) -> None:
-        if type(self.messages) is not tuple or type(self.tools) is not tuple:
+        if (
+            type(self.messages) is not tuple
+            or type(self.tools) is not tuple
+            or type(self.chat_template_kwargs) is not tuple
+        ):
             raise TypeError("template data must be tuples of objects")
+        require_bool(self.add_generation_prompt, "add_generation_prompt")
+        require_bool(self.continue_final_message, "continue_final_message")
+        if self.add_generation_prompt and self.continue_final_message:
+            raise ValueError("generation prompt and final-message continuation conflict")
         if not self.messages:
             raise ValueError("messages must not be empty")
         if any(not isinstance(m, Mapping) for m in cast("tuple[object, ...]", self.messages)):
             raise ValueError("messages must contain objects")
+        if self.continue_final_message and self.messages[-1].get("role") != "assistant":
+            raise ValueError("continuation requires a final assistant message")
         if any(not isinstance(t, Mapping) for t in cast("tuple[object, ...]", self.tools)):
             raise ValueError("tools must be objects")
+        for raw_entry in cast("tuple[object, ...]", self.chat_template_kwargs):
+            if not isinstance(raw_entry, tuple):
+                raise TypeError("chat_template_kwargs must contain (str, object) pairs")
+            pair = cast("tuple[object, ...]", raw_entry)
+            if len(pair) != 2 or type(pair[0]) is not str:
+                raise TypeError("chat_template_kwargs must contain (str, object) pairs")
 
     def to_template_input(self) -> TemplateInput:
         """The same history as JSON, for a worker process.
@@ -240,9 +287,15 @@ class TemplateData:
         """
         from ayaka.tokenizers.security import plain_json
 
+        kwargs_dict = dict(self.chat_template_kwargs)
         return TemplateInput(
             messages_json=json.dumps(plain_json(self.messages), ensure_ascii=False),
             tools_json=json.dumps(plain_json(self.tools), ensure_ascii=False),
+            add_generation_prompt=self.add_generation_prompt,
+            continue_final_message=self.continue_final_message,
+            chat_template_kwargs_json=(
+                json.dumps(plain_json(kwargs_dict), ensure_ascii=False) if kwargs_dict else "{}"
+            ),
         )
 
 
@@ -378,9 +431,15 @@ def encode_input_weight(value: EncodeInput) -> int:
         body = sum(len(m.content.encode()) + len(m.role) for m in value.messages)
         return body + len((value.chat_template or "").encode())
     if isinstance(value, TemplateInput):
-        return len(value.messages_json.encode()) + len(value.tools_json.encode())
+        extra = (
+            len(value.chat_template_kwargs_json.encode())
+            if value.chat_template_kwargs_json != "{}"
+            else 0
+        )
+        return len(value.messages_json.encode()) + len(value.tools_json.encode()) + extra
     if isinstance(value, TemplateData):
-        return _plain_weight(value.messages) + _plain_weight(value.tools)
+        extra = _plain_weight(dict(value.chat_template_kwargs)) if value.chat_template_kwargs else 0
+        return _plain_weight(value.messages) + _plain_weight(value.tools) + extra
     if isinstance(value, TokenIdsInput):  # pyright: ignore[reportUnnecessaryIsInstance]
         return _ID_BYTES * len(value.token_ids)
     raise TypeError("unsupported encode input")

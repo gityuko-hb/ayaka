@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import random
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -26,6 +26,9 @@ from tokenizer_fakes import (
     OPEN_CALL,
     ToolTokenizer,
 )
+
+if TYPE_CHECKING:
+    from ayaka.sampling.structured.matcher import ConstraintMatcher
 
 pytest.importorskip("llguidance")
 
@@ -46,6 +49,10 @@ _WEATHER = ToolSchema(
 
 def _compiler(**options: Any) -> GrammarCompiler:
     return GrammarCompiler(ToolTokenizer(), vocab_size=MODEL_VOCAB, eos_token_ids=_EOS, **options)
+
+
+def _start(compiler: GrammarCompiler, params: StructuredParams) -> ConstraintMatcher:
+    return compiler.matcher(compiler.compile(params), params)
 
 
 def _allowed(mask: Any) -> list[int]:
@@ -90,9 +97,7 @@ class TestJson:
             "required": ["n", "ok"],
             "additionalProperties": False,
         }
-        matcher = compiler.matcher(
-            compiler.compile(StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema))
-        )
+        matcher = _start(compiler, StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema=schema))
 
         tokens = _walk(matcher, random.Random(seed))  # noqa: S311  # a seeded walk
 
@@ -105,9 +110,7 @@ class TestJson:
 
     def test_start_after_leaves_the_output_free_until_the_token(self) -> None:
         compiler = _compiler()
-        matcher = compiler.matcher(
-            compiler.compile(StructuredParams(kind=ConstraintKind.JSON_OBJECT, start_after=7))
-        )
+        matcher = _start(compiler, StructuredParams(kind=ConstraintKind.JSON_OBJECT, start_after=7))
 
         assert matcher.mask() is None
         assert not matcher.active
@@ -121,7 +124,7 @@ class TestJson:
         compiler = _compiler()
         params = StructuredParams(kind=ConstraintKind.JSON_OBJECT, start_after=7, reasoning_open=6)
 
-        matcher = compiler.matcher(compiler.compile(params))
+        matcher = _start(compiler, params)
 
         assert matcher.state == "MAYBE"
         assert _allowed(matcher.mask()) == [6, ord("{")]  # the block, or the answer itself
@@ -129,10 +132,37 @@ class TestJson:
         assert matcher.state == "ON"
         assert 6 not in _allowed(matcher.mask())  # a block cannot open after the answer began
 
+    @pytest.mark.parametrize("first", ["thinking off", "thinking on"])
+    def test_requests_sharing_a_grammar_each_start_from_their_own_thinking(
+        self, first: str
+    ) -> None:
+        # Request-scoped thinking: same schema, so one compiled template, but one request starts
+        # the grammar at once and the other only after the reasoning closes (token 7).
+        compiler = _compiler()
+        off = StructuredParams(kind=ConstraintKind.JSON_OBJECT)
+        on = StructuredParams(kind=ConstraintKind.JSON_OBJECT, start_after=7, reasoning_open=6)
+        order = (off, on) if first == "thinking off" else (on, off)
+        ids = {compiler.compile(params) for params in order}
+
+        assert len(ids) == 1
+        (constraint_id,) = ids
+        assert compiler.matcher(constraint_id, off).state == "ON"
+        assert compiler.matcher(constraint_id, on).state == "MAYBE"
+
+    def test_parameters_of_another_grammar_are_refused(self) -> None:
+        compiler = _compiler()
+        constraint_id = compiler.compile(StructuredParams(kind=ConstraintKind.JSON_OBJECT))
+
+        with pytest.raises(ValueError, match="do not match"):
+            compiler.matcher(
+                constraint_id,
+                StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema={"type": "integer"}),
+            )
+
     def test_the_block_it_opens_leaves_the_output_free_until_it_closes(self) -> None:
         compiler = _compiler()
         params = StructuredParams(kind=ConstraintKind.JSON_OBJECT, start_after=7, reasoning_open=6)
-        matcher = compiler.matcher(compiler.compile(params))
+        matcher = _start(compiler, params)
 
         matcher.accept([6, ord("x")])
 
@@ -145,10 +175,9 @@ class TestJson:
 class TestToolCalls:
     def test_a_lazy_call_is_free_until_the_opening_marker(self) -> None:
         compiler = _compiler()
-        matcher = compiler.matcher(
-            compiler.compile(
-                StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(_WEATHER,), syntax=_SYNTAX)
-            )
+        matcher = _start(
+            compiler,
+            StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(_WEATHER,), syntax=_SYNTAX),
         )
 
         assert matcher.state == "WAIT_OPEN"
@@ -160,17 +189,16 @@ class TestToolCalls:
     @pytest.mark.parametrize("seed", range(6))
     def test_a_forced_strict_call_always_parses_and_validates(self, seed: int) -> None:
         compiler = _compiler()
-        matcher = compiler.matcher(
-            compiler.compile(
-                StructuredParams(
-                    kind=ConstraintKind.TOOL_CALL,
-                    tools=(_WEATHER, ToolSchema("get_time", {})),
-                    syntax=_SYNTAX,
-                    tool_choice="get_weather",
-                    strict=True,
-                    parallel=False,
-                )
-            )
+        matcher = _start(
+            compiler,
+            StructuredParams(
+                kind=ConstraintKind.TOOL_CALL,
+                tools=(_WEATHER, ToolSchema("get_time", {})),
+                syntax=_SYNTAX,
+                tool_choice="get_weather",
+                strict=True,
+                parallel=False,
+            ),
         )
 
         assert _allowed(matcher.mask()) == [OPEN_CALL]
@@ -188,15 +216,14 @@ class TestToolCalls:
 
     def test_with_parallel_calls_the_text_after_a_call_is_free(self) -> None:
         compiler = _compiler()
-        matcher = compiler.matcher(
-            compiler.compile(
-                StructuredParams(
-                    kind=ConstraintKind.TOOL_CALL,
-                    tools=(_WEATHER,),
-                    syntax=_SYNTAX,
-                    tool_choice="required",
-                )
-            )
+        matcher = _start(
+            compiler,
+            StructuredParams(
+                kind=ConstraintKind.TOOL_CALL,
+                tools=(_WEATHER,),
+                syntax=_SYNTAX,
+                tool_choice="required",
+            ),
         )
         body = '{"name": "get_weather", "arguments": {"city": "Hue"}}'
 
@@ -207,16 +234,15 @@ class TestToolCalls:
 
     def test_a_marker_token_never_appears_inside_the_body(self) -> None:
         compiler = _compiler()
-        matcher = compiler.matcher(
-            compiler.compile(
-                StructuredParams(
-                    kind=ConstraintKind.TOOL_CALL,
-                    tools=(_WEATHER,),
-                    syntax=_SYNTAX,
-                    tool_choice="required",
-                    strict=True,
-                )
-            )
+        matcher = _start(
+            compiler,
+            StructuredParams(
+                kind=ConstraintKind.TOOL_CALL,
+                tools=(_WEATHER,),
+                syntax=_SYNTAX,
+                tool_choice="required",
+                strict=True,
+            ),
         )
         matcher.accept([OPEN_CALL, *b'{"name": "get_weather", "arguments": {"city": "'])
 
@@ -241,17 +267,16 @@ class TestToolCalls:
     def test_a_spelled_opening_is_forced_token_by_token(self, seed: int) -> None:
         syntax = ToolCallSyntax("<call>", "</call>", open_ids=tuple(b"<call>"))
         compiler = _compiler()
-        matcher = compiler.matcher(
-            compiler.compile(
-                StructuredParams(
-                    kind=ConstraintKind.TOOL_CALL,
-                    tools=(_WEATHER,),
-                    syntax=syntax,
-                    tool_choice="required",
-                    strict=True,
-                    parallel=False,
-                )
-            )
+        matcher = _start(
+            compiler,
+            StructuredParams(
+                kind=ConstraintKind.TOOL_CALL,
+                tools=(_WEATHER,),
+                syntax=syntax,
+                tool_choice="required",
+                strict=True,
+                parallel=False,
+            ),
         )
 
         tokens = _walk(matcher, random.Random(seed))  # noqa: S311  # a seeded walk
@@ -264,10 +289,9 @@ class TestToolCalls:
     def test_a_lazy_spelled_opening_starts_the_grammar_when_written(self) -> None:
         syntax = ToolCallSyntax("<call>", "</call>", open_ids=tuple(b"<call>"))
         compiler = _compiler()
-        matcher = compiler.matcher(
-            compiler.compile(
-                StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(_WEATHER,), syntax=syntax)
-            )
+        matcher = _start(
+            compiler,
+            StructuredParams(kind=ConstraintKind.TOOL_CALL, tools=(_WEATHER,), syntax=syntax),
         )
 
         matcher.accept(list(b"free <ca"))
@@ -298,7 +322,7 @@ class TestCompiler:
 
         assert len(compiler) == 2
         with pytest.raises(KeyError):
-            compiler.matcher(ids[0])
+            compiler.matcher(ids[0], StructuredParams(kind=ConstraintKind.JSON_OBJECT))
 
     def test_an_invalid_schema_is_an_invalid_request(self) -> None:
         params = StructuredParams(kind=ConstraintKind.JSON_SCHEMA, schema={"type": "nonsense"})
@@ -346,7 +370,7 @@ class TestOptionalCallWithoutMarkers:
         params = StructuredParams(
             kind=ConstraintKind.TOOL_CALL, tools=(self._COUNT,), syntax=self._BARE, parallel=False
         )
-        return compiler.matcher(compiler.compile(params))
+        return _start(compiler, params)
 
     def test_text_is_never_constrained(self) -> None:
         matcher = self._matcher(_compiler())

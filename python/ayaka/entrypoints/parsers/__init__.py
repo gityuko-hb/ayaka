@@ -25,18 +25,28 @@ if TYPE_CHECKING:
     from ayaka.entrypoints.parsers.output import OutputFormat, OutputParser
     from ayaka.entrypoints.parsers.reasoning import ReasoningParser
     from ayaka.entrypoints.parsers.tool_calls import ToolCallParser
+    from ayaka.entrypoints.parsers.unified import (
+        ChatResponseProcessor,
+        CombinedParser,
+        OutputInterpretation,
+        UnifiedParser,
+    )
 
 __all__ = [
     "REASONING_FORMATS",
     "TOOL_CALL_FORMATS",
+    "ChatResponseProcessor",
+    "CombinedParser",
     "Marker",
     "MarkerScanner",
     "OutputFormat",
+    "OutputInterpretation",
     "OutputParser",
     "ReasoningFormat",
     "ReasoningParser",
     "ToolCallFormat",
     "ToolCallParser",
+    "UnifiedParser",
     "reasoning_format",
     "resolve_marker",
     "suggest_tool_call_parser",
@@ -57,6 +67,12 @@ _EXPORTS = {
     ),
     "reasoning": ("ReasoningParser",),
     "tool_calls": ("ToolCallParser",),
+    "unified": (
+        "ChatResponseProcessor",
+        "CombinedParser",
+        "OutputInterpretation",
+        "UnifiedParser",
+    ),
 }
 
 __getattr__, __dir__ = build_lazy_exports(__name__, _EXPORTS, globals())

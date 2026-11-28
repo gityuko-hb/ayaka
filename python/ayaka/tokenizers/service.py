@@ -39,14 +39,13 @@ admits it.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
 from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Self
 
 from ayaka.configs.tokenizer import DetokenizeParams, EncodeResult, TokenizerConfig
 from ayaka.core.errors import CancelledError, ContextLengthError
@@ -66,7 +65,8 @@ from ayaka.tokenizers.decoding.incremental import IncrementalDetokenizer
 from ayaka.tokenizers.errors import TokenizerOverloaded
 from ayaka.tokenizers.factory import DefaultTokenizerFactory, validate_loading_config
 from ayaka.tokenizers.ports import RenderedEncoderLike, TokenizerLike
-from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy, plain_json
+from ayaka.tokenizers.rendering import render_encode_input
+from ayaka.tokenizers.security import SpecialTokenGuard, SpecialTokenPolicy
 from ayaka.tokenizers.vouched import VouchedIds
 from ayaka.utils.cancellation import CancellationToken
 from ayaka.utils.validation import plain_token_ids, require_int
@@ -79,6 +79,7 @@ __all__ = ["TokenizerService"]
 _DEFAULT_OPTIONS = EncodeOptions()
 _LOGGER = logging.getLogger(__name__)
 _ID_BYTES = 8  # cache charge per token id
+
 
 type _CacheKey = tuple[str, bool, bool, str]
 """(text, add_special_tokens, rendered, cache_namespace)"""
@@ -423,44 +424,7 @@ class TokenizerService:
         self, value: TextInput | RenderedInput | ChatInput | TemplateInput | TemplateData
     ) -> tuple[str, bool, bool]:
         """Return ``(text, add_special_tokens, rendered)`` for a text-bearing input."""
-        if isinstance(value, TextInput):
-            return value.text, value.add_special_tokens, False
-        if isinstance(value, RenderedInput):
-            return value.text, False, True
-        tokenizer = self._require_tokenizer()
-        if isinstance(value, TemplateData):
-            # One walk checks every string and gives the values json.loads would; no round trip.
-            plain = plain_json if self._guard is None else self._guard.sanitize_json
-            text = tokenizer.apply_chat_template(plain(value.messages), tools=plain(value.tools))
-        elif isinstance(value, TemplateInput):
-            # Every string in the history and tool definitions is client-supplied, role included.
-            text = tokenizer.apply_chat_template(
-                self._sanitize(json.loads(value.messages_json)),
-                tools=self._sanitize(json.loads(value.tools_json)),
-            )
-        else:
-            # The template text itself (``chat_template``) is code, not content: never sanitized.
-            rendered_messages: list[dict[str, object]] = []
-            for m in value.messages:
-                sanitized_text = self._sanitize(m.content)
-                if m.images:
-                    parts: list[dict[str, object]] = [{"type": "image"} for _ in m.images]
-                    if sanitized_text:
-                        parts.append({"type": "text", "text": sanitized_text})
-                    rendered_messages.append({"role": m.role, "content": parts})
-                else:
-                    rendered_messages.append({"role": m.role, "content": sanitized_text})
-            text = tokenizer.apply_chat_template(
-                rendered_messages,
-                add_generation_prompt=value.add_generation_prompt,
-                chat_template=value.chat_template,
-                continue_final_message=value.continue_final_message,
-            )
-        return text, False, True
-
-    def _sanitize(self, content: Any) -> Any:
-        """Apply the special-token policy to client-supplied chat content."""
-        return content if self._guard is None else self._guard.sanitize(content)
+        return render_encode_input(self.tokenizer, value, self._guard)
 
     def _encode_texts(self, texts: list[str], *, special: bool, rendered: bool) -> list[list[int]]:
         """Encode texts; rendered prompts keep their control tokens where the adapter needs it."""

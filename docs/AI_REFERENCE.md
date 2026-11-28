@@ -99,7 +99,9 @@ ignored with a debug log line. The tables below are generated from the table the
 | `parallel_tool_calls` | read | function tools; a call needs --tool-call-parser |
 | `response_format` | read | json_object or json_schema, always enforced |
 | `modalities` | read | only text output is available |
-| `reasoning_effort` | hint | the model reasons as trained |
+| `reasoning_effort` | read | request-scoped thinking: none disables it, minimal..max sets effort |
+| `chat_template_kwargs` | read | extra keyword arguments passed to the model's chat template |
+| `continue_final_message` | read | continue the trailing assistant message instead of opening a new turn |
 | `user` | ignore | accounting and storage fields; nothing is stored |
 | `metadata` | ignore | accounting and storage fields; nothing is stored |
 | `store` | ignore | accounting and storage fields; nothing is stored |
@@ -160,7 +162,7 @@ ignored with a debug log line. The tables below are generated from the table the
 | `n` | read | one answer per request; 1 only |
 | `store` | read | true is refused: this server stores no responses |
 | `metadata` | read | echoed in the response object |
-| `reasoning` | hint | reasoning.effort: the model reasons as trained |
+| `reasoning` | read | reasoning.effort or reasoning.enabled controls request-scoped thinking |
 | `stream_options` | ignore | accounting, caching and output-selection fields with no effect here |
 | `include` | ignore | accounting, caching and output-selection fields with no effect here |
 | `user` | ignore | accounting, caching and output-selection fields with no effect here |
@@ -191,7 +193,7 @@ ignored with a debug log line. The tables below are generated from the table the
 | `top_p` | read | sampling |
 | `top_k` | read | sampling |
 | `stream` | read | answer with server-sent events |
-| `thinking` | read | checked; the budget is a hint, the model reasons as trained |
+| `thinking` | read | type disabled or enabled controls request-scoped thinking; budget_tokens is checked |
 | `output_format` | read | json_schema output, enforced |
 | `output_config` | read | json_schema output, enforced |
 | `metadata` | ignore | accounting fields; the prefix cache works without cache_control |

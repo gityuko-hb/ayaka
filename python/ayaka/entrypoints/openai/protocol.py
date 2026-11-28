@@ -29,6 +29,7 @@ from ayaka.entrypoints.conversation import (
     ToolSpec,
     parse_arguments,
 )
+from ayaka.entrypoints.render.reasoning import ThinkingRequest, parse_reasoning_effort
 from ayaka.entrypoints.wire.policy import apply_policy
 from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
 from ayaka.multimodal.png import decode_data_url_image
@@ -167,6 +168,12 @@ class ChatRequest:
     tools: bool
     parallel_tool_calls: bool
     output: OutputRequest = dataclasses.field(default_factory=OutputRequest)
+    thinking: ThinkingRequest = dataclasses.field(default_factory=ThinkingRequest)
+    chat_template_kwargs: Mapping[str, object] = dataclasses.field(
+        default_factory=dict[str, object]
+    )
+    continue_final_message: bool = False
+    named_tool_choice: bool = False
 
 
 def parse_chat_request(body: JsonObject) -> ChatRequest:
@@ -182,6 +189,18 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         raise _unsupported("modalities", "only text output is available")
     response, schema = response_format(body.child("response_format"), "response_format")
 
+    effort_raw = body.string("reasoning_effort")
+    effort = None
+    if effort_raw is not None:
+        try:
+            effort = parse_reasoning_effort(effort_raw, where="reasoning_effort")
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc), context={"param": "reasoning_effort"}) from exc
+
+    template_kwargs_obj = body.child("chat_template_kwargs")
+    template_kwargs = dict(template_kwargs_obj.data) if template_kwargs_obj is not None else {}
+    continue_final = body.flag("continue_final_message")
+
     builder = ConversationBuilder()
     messages = body.objects("messages")
     if not messages:
@@ -190,7 +209,14 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         )
     for message in messages:
         _chat_message(message, builder)
+    conversation = builder.build()
+    if continue_final and conversation.turns[-1].role != "assistant":
+        raise InvalidRequestError(
+            "continue_final_message: requires a final assistant message",
+            context={"param": "continue_final_message"},
+        )
     tools, choice, strict = _chat_tools(body, builder)
+    conversation = builder.build()
 
     max_tokens = body.integer("max_completion_tokens")
     if max_tokens is None:
@@ -200,7 +226,7 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         logprobs = 0
     return ChatRequest(
         model=body.string("model"),
-        conversation=builder.build(),
+        conversation=conversation,
         sampling=_sampling(body, logprobs=logprobs),
         max_tokens=max_tokens,
         stream=body.flag("stream"),
@@ -208,6 +234,10 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         tools=tools,
         parallel_tool_calls=body.flag("parallel_tool_calls", default=True),
         output=OutputRequest(response=response, schema=schema, tool_choice=choice, strict=strict),
+        thinking=ThinkingRequest(effort=effort),
+        chat_template_kwargs=template_kwargs,
+        continue_final_message=continue_final,
+        named_tool_choice=choice not in ("auto", "required"),
     )
 
 
@@ -311,7 +341,10 @@ def _chat_message(message: JsonObject, builder: ConversationBuilder) -> None:
             builder.user(text, images=images)
         case "assistant":
             calls = [_chat_tool_call(call) for call in message.objects("tool_calls")]
-            builder.assistant(_text_parts(message, "content", allow_null=True), calls)
+            reasoning = message.string("reasoning_content")
+            builder.assistant(
+                _text_parts(message, "content", allow_null=True), calls, reasoning=reasoning
+            )
         case "tool":
             builder.tool_result(
                 message.text("tool_call_id"), _text_parts(message, "content", allow_null=False)

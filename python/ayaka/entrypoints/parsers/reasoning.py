@@ -42,17 +42,40 @@ class ReasoningParser:
         fmt: The model's reasoning format.
         markers: Its markers from :meth:`ReasoningFormat.markers`, resolved once per server;
             ``None`` matches them by text.
+        starts_inside_override: Optional request-scoped override for ``fmt.starts_inside``.
+        previous_content: Optional assistant prefill text already emitted in the prompt.
     """
 
-    def __init__(self, fmt: ReasoningFormat, markers: tuple[Marker, Marker] | None = None) -> None:
+    def __init__(
+        self,
+        fmt: ReasoningFormat,
+        markers: tuple[Marker, Marker] | None = None,
+        *,
+        starts_inside_override: bool | None = None,
+        previous_content: str = "",
+    ) -> None:
         self._open, self._close = markers if markers is not None else fmt.markers()
         self._scanner = MarkerScanner((self._open, self._close))
-        self._inside = fmt.starts_inside
+        inside = fmt.starts_inside if starts_inside_override is None else starts_inside_override
+        may_open = not inside
+        if previous_content:
+            last_open = previous_content.rfind(fmt.open)
+            last_close = previous_content.rfind(fmt.close)
+            if last_close >= 0 and last_close >= last_open:
+                inside = False
+                may_open = False
+            elif last_open >= 0:
+                inside = True
+                may_open = False
+            elif not inside:
+                may_open = False
+        self._inside = inside
         # The model may open the block only with the first thing it writes.
-        self._may_open = not fmt.starts_inside
-        self._strip_leading = fmt.starts_inside
+        self._may_open = may_open
+        self._strip_leading = inside
         self._trailing: list[str] = []  # whitespace at the end of the reasoning seen so far
         self._answer_tokens: tuple[int, ...] = ()
+        self._last_reasoning_tokens = 0
 
     @property
     def inside(self) -> bool:
@@ -67,28 +90,36 @@ class ReasoningParser:
         """
         return self._answer_tokens
 
+    @property
+    def last_reasoning_tokens(self) -> int:
+        """Reasoning tokens in the last noted fragment, excluding opening/closing marker tokens."""
+        return self._last_reasoning_tokens
+
     def note_tokens(self, token_ids: Iterable[int]) -> None:
         """Record the token ids of the next piece of text, before feeding the text."""
         ids = tuple(token_ids)
         self._scanner.note_tokens(ids)
-        self._answer_tokens = self._split_answer(ids)
+        self._answer_tokens, self._last_reasoning_tokens = self._split_answer(ids)
 
-    def _split_answer(self, ids: tuple[int, ...]) -> tuple[int, ...]:
+    def _split_answer(self, ids: tuple[int, ...]) -> tuple[tuple[int, ...], int]:
         opening, closing = self._open.token_id, self._close.token_id
         if opening is None or closing is None:
-            return ids
+            return ids, len(ids) if self._inside else 0
         inside, may_open = self._inside, self._may_open
         answer: list[int] = []
+        reasoning_count = 0
         for token in ids:
             if inside:
                 if token == closing:
                     inside, may_open = False, False
+                else:
+                    reasoning_count += 1
             elif may_open and token == opening:
                 inside, may_open = True, False
             else:
                 may_open = False
                 answer.append(token)
-        return tuple(answer)
+        return tuple(answer), reasoning_count
 
     def feed(self, text: str) -> list[tuple[bool, str]]:
         """Take the next piece of text; return ``(is_reasoning, text)`` pieces."""
