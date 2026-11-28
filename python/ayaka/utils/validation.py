@@ -39,7 +39,7 @@ __all__ = [
 ]
 
 #: Exact types :func:`require_frozen` accepts in a tuple without looking at each item again.
-_FROZEN_SCALARS: Final = frozenset({NoneType, str, int, float, bool})
+_FROZEN_SCALARS: Final = frozenset({NoneType, str, int, float, bool, bytes})
 
 
 def require_bool(value: object, name: str) -> bool:
@@ -110,7 +110,7 @@ def require_frozen(value: object, name: str) -> None:
     metadata belongs to a runtime binding, never to a host value.
     """
 
-    if value is None or isinstance(value, (str, int, float, bool, Enum)):
+    if value is None or isinstance(value, (str, int, float, bool, bytes, Enum)):
         return
     if isinstance(value, tuple):
         items = cast("tuple[object, ...]", value)

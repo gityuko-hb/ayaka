@@ -33,6 +33,10 @@ class PrefixMatch:
         digests: The digest of every full prompt block, matched or not, so registering the
             request's blocks later never hashes the prompt again.
         blocks: Per group, the ids of the matched blocks, in token order.
+        checkpoint_digest: When a hybrid model requires a recurrent-state
+            checkpoint to resume from a prefix hit, the digest of the matching
+            state checkpoint (at ``num_blocks - 1``); ``None`` for pure attention
+            models or prefix misses.
     """
 
     num_tokens: int
@@ -40,6 +44,7 @@ class PrefixMatch:
     root: bytes
     digests: tuple[bytes, ...]
     blocks: tuple[tuple[int, ...], ...]
+    checkpoint_digest: bytes | None = None
 
     def __post_init__(self) -> None:
         require_int(self.num_tokens, "num_tokens")

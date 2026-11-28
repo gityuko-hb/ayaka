@@ -185,7 +185,7 @@ class TestRejections:
         buffers = _cache(torch.float32, KVLayoutKind.NHD)._replace(codec="fp8")
         rows = _rows(1, torch.float32, seed=0)
 
-        with pytest.raises(BackendError, match="stores the 'raw' codec, not 'fp8'"):
+        with pytest.raises(BackendError, match=r"stores \['raw', 'fp8_e4m3'\] codecs, not 'fp8'"):
             ops.kvcache.store(rows, rows, buffers, self._plan(ops))
 
     def test_values_must_match_the_keys_buffer(self) -> None:

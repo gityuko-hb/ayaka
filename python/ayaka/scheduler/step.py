@@ -22,6 +22,7 @@ from ayaka.core.types import ForwardMode
 
 if TYPE_CHECKING:
     from ayaka.core.errors import ErrorInfo
+    from ayaka.core.multimodal import ImageInput, ImageSpan
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.params import SamplingParams
     from ayaka.core.types import RequestId, TokenId
@@ -83,6 +84,12 @@ class StepInput:
     table_updates: tuple[tuple[int, int, int, int], ...] = ()
     sequence_indices: tuple[int, ...] = ()
     output_lengths: tuple[int, ...] = ()
+    state_slots: tuple[int, ...] = ()
+    state_restore_digests: tuple[bytes | None, ...] = ()
+    state_checkpoint_targets: tuple[tuple[tuple[int, bytes], ...], ...] = ()
+    images: tuple[tuple[ImageInput, ...], ...] = ()
+    image_spans: tuple[tuple[ImageSpan, ...], ...] = ()
+    prompt_lengths: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         lengths = {
@@ -102,6 +109,16 @@ class StepInput:
                 lengths[name] = len(values)
                 if min(values) < 0:
                     raise EngineError(f"step {self.step_id}: {name} holds a negative value")
+        for name, values in (
+            ("state_slots", self.state_slots),
+            ("state_restore_digests", self.state_restore_digests),
+            ("state_checkpoint_targets", self.state_checkpoint_targets),
+            ("images", self.images),
+            ("image_spans", self.image_spans),
+            ("prompt_lengths", self.prompt_lengths),
+        ):
+            if values:
+                lengths[name] = len(values)
         _require_same_length(self.step_id, lengths)
         if self.mode not in _STEP_MODES:
             raise EngineError(f"step {self.step_id}: a step cannot run in mode {self.mode}")

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
     from ayaka.core.constraints import ConstraintKind
+    from ayaka.core.multimodal import ImageInput
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.types import FinishReason
 
@@ -110,6 +111,7 @@ class Turn:
     Attributes:
         role: Who speaks. ``tool`` carries the result of one tool call.
         text: The text; empty for an assistant turn that only calls tools.
+        images: Images attached to this turn, in order of appearance.
         tool_calls: The calls an assistant turn makes.
         tool_call_id: For a ``tool`` turn, the call it answers.
         name: For a ``tool`` turn, the function that was called, when it is known.
@@ -118,6 +120,7 @@ class Turn:
 
     role: Role
     text: str = ""
+    images: tuple[ImageInput, ...] = ()
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
     name: str | None = None
@@ -164,13 +167,25 @@ class Conversation:
     turns: tuple[Turn, ...]
     tools: tuple[ToolSpec, ...] = ()
 
+    @property
+    def images(self) -> tuple[ImageInput, ...]:
+        """All images attached across the conversation's turns, in order."""
+        return tuple(image for turn in self.turns for image in turn.images)
+
     def messages(self) -> list[dict[str, object]]:
         """The conversation as chat-template messages (the Hugging Face layout)."""
         messages: list[dict[str, object]] = []
         if self.system is not None:
             messages.append({"role": "system", "content": self.system})
         for turn in self.turns:
-            message: dict[str, object] = {"role": turn.role, "content": turn.text}
+            if turn.images:
+                content: object = [
+                    *({"type": "image"} for _ in turn.images),
+                    *([{"type": "text", "text": turn.text}] if turn.text else []),
+                ]
+            else:
+                content = turn.text
+            message: dict[str, object] = {"role": turn.role, "content": content}
             if turn.reasoning is not None:
                 message["reasoning_content"] = turn.reasoning
             if turn.tool_calls:
@@ -244,9 +259,9 @@ class ConversationBuilder:
         else:
             self._system.append(text)
 
-    def user(self, text: str) -> None:
-        """Add a user message."""
-        self._turns.append(Turn(role="user", text=text))
+    def user(self, text: str, images: Sequence[ImageInput] = ()) -> None:
+        """Add a user message, optionally carrying images."""
+        self._turns.append(Turn(role="user", text=text, images=tuple(images)))
 
     def assistant(
         self,

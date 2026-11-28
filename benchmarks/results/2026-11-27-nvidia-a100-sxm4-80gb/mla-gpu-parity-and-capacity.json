@@ -1,0 +1,97 @@
+{
+  "benchmark": "mla_gpu_parity_and_capacity",
+  "note": "Evaluated on NVIDIA A100-SXM4-80GB using a synthetic 4-layer bf16 DeepSeek-V2 MLA checkpoint matching canonical FlashInfer geometry (kv_lora_rank=512, qk_rope_head_dim=64); no multi-hundred-GB DeepSeek checkpoint is cached locally.",
+  "machine": {
+    "date": "2026-11-27T16:06:01+00:00",
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "capability": [
+      8,
+      0
+    ],
+    "driver": "580.82.07",
+    "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+    "wsl2": false,
+    "python": "3.13.16",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "flashinfer": "0.7.4",
+    "ayaka": "0.1.0",
+    "commit": "0f2ad2d3449eaa1f36c4521a62ba5bf7a812b7e3-dirty"
+  },
+  "result": {
+    "architecture": "DeepseekV2ForCausalLM",
+    "kv_lora_rank": 512,
+    "qk_rope_head_dim": 64,
+    "backends": {
+      "norm": "torch",
+      "activation": "torch",
+      "embedding": "torch",
+      "linear": "torch",
+      "rope": "torch",
+      "kvcache": "torch",
+      "attention": "flashinfer",
+      "sampling": "torch",
+      "moe": "torch",
+      "linear_attention": "flashinfer",
+      "mla": "flashinfer"
+    },
+    "cuda_graph_buckets": [
+      1,
+      2,
+      4
+    ],
+    "prompt_len": 32,
+    "chunk_tokens": 16,
+    "hf_tokens": [
+      209,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "ayaka_tokens": [
+      209,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20,
+      20
+    ],
+    "exact_greedy_match_vs_hf": true,
+    "warm_prefix_cached_tokens": 16,
+    "warm_generate_16_tokens_ms": 60.27107100089779,
+    "plan": {
+      "kv_groups": 1,
+      "latent_kv_bytes": 75571200,
+      "bytes_per_token": 4608,
+      "kv_blocks": 1025
+    },
+    "checkpoint_4layer_ratio_vs_standard_kv": 0.140625,
+    "full_60layer_bytes_per_token_latent": 69120,
+    "full_60layer_bytes_per_token_gqa16": 491520,
+    "full_60layer_compression_ratio": 0.140625,
+    "weights_bytes": 47987712,
+    "model_config_ok": true
+  }
+}

@@ -63,8 +63,10 @@ from ayaka.entrypoints.serving import REQUEST_ID, SERVING
 from ayaka.entrypoints.stream import KEEPALIVE_COMMENT, sse_json
 from ayaka.entrypoints.wire.policy import apply_policy
 from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
+from ayaka.multimodal.png import decode_data_url_image
 
 if TYPE_CHECKING:
+    from ayaka.core.multimodal import ImageInput
     from ayaka.entrypoints.conversation import Collected, Conversation, OutputEvent
 
 __all__ = [
@@ -215,10 +217,10 @@ def _item(item: JsonObject, builder: ConversationBuilder) -> None:
     match kind:
         case "message":
             role = item.text("role")
-            text = _content(item)
+            text, images = _content_with_images(item, allow_images=(role == "user"))
             match role:
                 case "user":
-                    builder.user(text)
+                    builder.user(text, images=images)
                 case "system" | "developer":
                     builder.system(text)
                 case "assistant":
@@ -246,17 +248,22 @@ def _item(item: JsonObject, builder: ConversationBuilder) -> None:
             raise _unsupported(item.where("type"), f"input items of type {kind!r}")
 
 
-def _content(item: JsonObject) -> str:
+def _content_with_images(
+    item: JsonObject, *, allow_images: bool
+) -> tuple[str, tuple[ImageInput, ...]]:
     content = item.raw("content")
     if isinstance(content, str):
-        return content
-    return _parts(content, item.where("content"))
+        return content, ()
+    return _parts_with_images(content, item.where("content"), allow_images=allow_images)
 
 
-def _parts(value: object, where: str) -> str:
+def _parts_with_images(
+    value: object, where: str, *, allow_images: bool
+) -> tuple[str, tuple[ImageInput, ...]]:
     if not isinstance(value, list):
         raise _invalid(where, "must be a string or an array of content parts")
     texts: list[str] = []
+    images: list[ImageInput] = []
     for i, entry in enumerate(cast("list[object]", value)):
         part = JsonObject.of(entry, f"{where}[{i}]")
         kind = part.string("type")
@@ -264,11 +271,31 @@ def _parts(value: object, where: str) -> str:
             texts.append(part.text("text"))
         elif kind == "refusal":
             texts.append(part.text("refusal"))
-        elif kind in ("input_image", "input_file", "input_audio"):
+        elif kind == "input_image":
+            if not allow_images:
+                raise _invalid(part.where("type"), "images are supported on user messages only")
+            raw_url = part.raw("image_url")
+            if isinstance(raw_url, dict):
+                child = part.child("image_url")
+                assert child is not None  # noqa: S101  # dict check above
+                url = child.text("url")
+                url_where = child.where("url")
+            elif isinstance(raw_url, str):
+                url = raw_url
+                url_where = part.where("image_url")
+            else:
+                raise _invalid(part.where("image_url"), "must be a data URL string")
+            images.append(decode_data_url_image(url, where=url_where))
+        elif kind in ("input_file", "input_audio"):
             raise _unsupported(part.where("type"), f"{kind} needs a model that reads it")
         else:
             raise _unsupported(part.where("type"), f"content parts of type {kind!r}")
-    return PART_SEPARATOR.join(texts)
+    return PART_SEPARATOR.join(texts), tuple(images)
+
+
+def _parts(value: object, where: str) -> str:
+    text, _ = _parts_with_images(value, where, allow_images=False)
+    return text
 
 
 def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object, str, bool]:
@@ -276,7 +303,9 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object
 
     The constrained choice is ``"auto"``, ``"required"`` or the one function's name. Only an
     explicit ``strict: true`` constrains the arguments to the schema: a tool's schema may use
-    something the grammar compiler refuses, and a default must not fail the request.
+    something the grammar compiler refuses, and a default must not fail the request. With
+    ``tool_choice: "none"`` the tools are still written into the prompt, so it keeps the
+    prefix-cache blocks of the same conversation with ``"auto"``; the model may not call them.
     """
     choice: object = body.raw("tool_choice") or "auto"
     echoed = choice
@@ -291,10 +320,8 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object
     elif choice not in ("auto", "none"):
         raise _invalid("tool_choice", "must be auto, none, required or a tool")
     tools = body.objects("tools")
-    if choice == "none" or not tools:
-        if constrained != "auto":
-            raise _invalid("tool_choice", "forces a call but the request has no function tools")
-        return False, echoed, "auto", False
+    if not tools and constrained != "auto":
+        raise _invalid("tool_choice", "forces a call but the request has no function tools")
     offered = False
     strict = False
     for tool in tools:
@@ -305,6 +332,8 @@ def _tools(body: JsonObject, builder: ConversationBuilder) -> tuple[bool, object
         parameters = tool.child("parameters") or JsonObject({})
         builder.tool(ToolSpec(tool.text("name"), tool.string("description"), parameters.data))
         offered = True
+    if choice == "none":
+        return False, echoed, "auto", False
     return offered, echoed, constrained, strict
 
 
@@ -631,6 +660,7 @@ async def create_response(request: web.Request) -> web.StreamResponse:
         sampling,
         public_id=public_id,
         tools=responses.tools,
+        tools_in_prompt=bool(conversation.tools),
         parallel_tool_calls=responses.parallel_tool_calls,
         structured=serving.constraint(
             responses.output,
@@ -639,6 +669,8 @@ async def create_response(request: web.Request) -> web.StreamResponse:
             parallel_tool_calls=responses.parallel_tool_calls,
             rendered=rendered,
         ),
+        images=conversation.images,
+        image_spans=rendered.image_spans,
         rendered=rendered,
     )
     snapshot = _Snapshot(f"resp_{public_id}", int(time.time()), serving.model_name, responses.echo)

@@ -51,21 +51,25 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
+import torch
 from torch import nn
 
-from ayaka.core.errors import ModelLoadError
-from ayaka.kvcache.storage.spec import KVGroup, KVSpec
+from ayaka.core.errors import ModelLoadError, UnsupportedFeatureError
+from ayaka.kvcache.storage.spec import KVGroup, KVSpec, LatentKVGroup, RecurrentStateGroup
+from ayaka.ops.kvcache import RAW_CODEC
+from ayaka.utils.dtypes import DType
 from ayaka.weights.spec import TensorSpec
 
 if TYPE_CHECKING:
-    import torch
+    from collections.abc import Sequence
+    from pathlib import Path
 
     from ayaka.configs.model import ModelConfig
+    from ayaka.core.multimodal import ImageInput, ImageSpan
     from ayaka.core.types import KVLayoutKind
     from ayaka.layers.context import ForwardContext
     from ayaka.layers.quantization.method import QuantMethod
     from ayaka.ops.backend import OpsBackend
-    from ayaka.utils.dtypes import DType
     from ayaka.weights.mapping import WeightMapping
     from ayaka.weights.quant import QuantFormat
 
@@ -108,6 +112,8 @@ class CausalLM(nn.Module, ABC):
     #: Whether the architecture builds its linear layers with :attr:`quant_method`; a model
     #: that does not refuses a quantized checkpoint instead of misreading it.
     quantizable: ClassVar[bool] = False
+    #: Supported quantization producers when ``quantizable`` is True.
+    supported_quants: ClassVar[tuple[str, ...]] = ("fp8", "compressed-tensors")
 
     def __init__(
         self,
@@ -121,7 +127,9 @@ class CausalLM(nn.Module, ABC):
         super().__init__()
         from ayaka.layers.quantization.method import quant_method
 
-        if quant is not None and not self.quantizable:
+        if quant is not None and (
+            not self.quantizable or quant.producer not in self.supported_quants
+        ):
             raise ModelLoadError(
                 f"{config.architecture} does not run quantized checkpoints "
                 f"({quant.producer}, {quant.name})",
@@ -202,17 +210,26 @@ class CausalLM(nn.Module, ABC):
         del name
         return ()
 
-    def kv_specs(self, *, block_size: int, layout: KVLayoutKind) -> tuple[KVGroup, ...]:
-        """Describe the KV cache this model needs, one group per distinct geometry.
+    def kv_specs(
+        self,
+        *,
+        block_size: int,
+        layout: KVLayoutKind,
+        codec: str = RAW_CODEC,
+        kv_scale: float = 1.0,
+    ) -> tuple[KVGroup | LatentKVGroup, ...]:
+        """Describe the KV or latent-KV cache this model needs, one group per geometry.
 
         The default is full attention in every layer: one group of all
         ``num_layers`` layers, ids ``0`` to ``num_layers - 1``, each with
-        ``num_kv_heads`` heads of ``head_dim``. A model with other layer kinds
-        overrides it.
+        ``num_kv_heads`` heads of ``head_dim``. Models with sliding windows,
+        mixed head widths, linear attention, or MLA override this.
 
         Args:
             block_size: Tokens per cache block, from the cache config.
             layout: The layout the ops backend reads fastest (``ops.kvcache.layout()``).
+            codec: KV storage codec (``"raw"`` or ``"fp8_e4m3"``).
+            kv_scale: Static dequantization scale for FP8 KV caches.
         """
         config = self.config
         spec = KVSpec(
@@ -222,8 +239,76 @@ class CausalLM(nn.Module, ABC):
             block_size=block_size,
             dtype=self.compute_dtype,
             layout=layout,
+            codec=codec,
+            kv_scale=kv_scale,
         )
         return (KVGroup(layer_ids=tuple(range(config.num_layers)), spec=spec),)
+
+    def state_spec(self) -> RecurrentStateGroup | None:
+        """Recurrent state group for hybrid linear-attention models, or ``None``."""
+        return None
+
+    def vision_weight_bytes(self) -> int:
+        """Bytes held by vision tower and projector parameters, or 0 for text models."""
+        return 0
+
+    def vision_activation_bytes(self) -> int:
+        """Estimated vision workspace activation bytes for one standard image, or 0."""
+        return 0
+
+    def has_vision_tower(self) -> bool:
+        """Whether this model instance owns a multimodal vision tower."""
+        return False
+
+    def vision_loaded(self) -> bool:
+        """Whether the vision tower parameters are materialized on the compute device."""
+        return False
+
+    def attach_vision_source(self, directory: Path, *, lazy: bool) -> None:
+        """Bind ``directory`` for eager or lazy vision tower weight loading."""
+        del directory, lazy
+
+    def ensure_vision_loaded(self) -> None:
+        """Materialize and load vision tower weights when lazily attached."""
+        return None
+
+    def release_vision(self) -> None:
+        """Drop materialized vision tower tensors to free device memory."""
+        return None
+
+    def uses_bidirectional_vision(self) -> bool:
+        """Whether sliding attention uses bidirectional intra-image masks during prefill."""
+        return False
+
+    def uses_multimodal_decode_offsets(self) -> bool:
+        """Whether decode steps after image prompts need position delta offsets outside graphs."""
+        return False
+
+    def encode_images(self, images: Sequence[ImageInput]) -> tuple[torch.Tensor, ...]:
+        """Encode validated images into language-model-space feature tensors."""
+        del images
+        raise UnsupportedFeatureError(f"{type(self).__name__} does not support image inputs")
+
+    def embed_input_ids(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Compute initial token embeddings for multimodal prefill scatter."""
+        del token_ids
+        raise UnsupportedFeatureError(
+            f"{type(self).__name__} does not expose input token embeddings"
+        )
+
+    def multimodal_position_ids(
+        self,
+        prompt_lengths: Sequence[int],
+        spans: Sequence[Sequence[ImageSpan]],
+        starts: Sequence[int],
+        rows: Sequence[int],
+        *,
+        is_prefill: bool,
+        device: torch.device,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Compute optional 3D multimodal RoPE positions and 1D decode position offsets."""
+        del prompt_lengths, spans, starts, rows, is_prefill, device
+        return None, None
 
     def checkpoint_specs(self) -> list[TensorSpec]:
         """List every parameter as the checkpoint stores it.
@@ -262,7 +347,8 @@ class CausalLM(nn.Module, ABC):
             shape = tuple(parameter.shape)
             if self._is_stored_transposed(name):
                 shape = tuple(reversed(shape))
-            specs.append(TensorSpec(name, shape, self.compute_dtype))
+            stored_dtype = DType.UINT8 if parameter.dtype == torch.uint8 else self.compute_dtype
+            specs.append(TensorSpec(name, shape, stored_dtype))
         return specs
 
     def load_weight(self, name: str, tensor: torch.Tensor) -> None:

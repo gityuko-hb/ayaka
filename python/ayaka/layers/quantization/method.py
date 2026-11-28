@@ -144,7 +144,7 @@ UNQUANTIZED = Unquantized()
 
 def quant_method(format: QuantFormat | None) -> QuantMethod:  # noqa: A002  # the record's name
     """The method that reads and runs checkpoints of ``format``; ``None`` is :data:`UNQUANTIZED`."""
-    if format is None:
+    if format is None or format.producer == "mxfp4":
         return UNQUANTIZED
     from ayaka.layers.quantization.fp8 import Fp8Method
 

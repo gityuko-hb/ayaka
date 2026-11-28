@@ -35,7 +35,7 @@ __all__ = ["QuantFormat", "ScaleLayout", "read_quant_format"]
 type ScaleLayout = Literal["tensor", "channel", "block"]
 """How many scales a weight has: one, one per output row, or one per ``[b0, b1]`` block."""
 
-type QuantProducer = Literal["fp8", "compressed-tensors"]
+type QuantProducer = Literal["fp8", "compressed-tensors", "mxfp4"]
 
 _LAYOUTS: Final[tuple[ScaleLayout, ...]] = ("tensor", "channel", "block")
 #: Modules a recipe may leave unquantized: the output head is not a decoder linear layer.
@@ -77,7 +77,12 @@ class QuantFormat:
             raise ValueError("block is given exactly when scale_layout is 'block'")
         if self.block is not None and min(self.block) < 1:
             raise ValueError(f"block sides must be positive, got {self.block}")
-        if self.weight_dtype not in _FP8:
+        if self.producer == "mxfp4":
+            if self.weight_dtype is not DType.FP4_E2M1:
+                raise ValueError(
+                    f"mxfp4 weight_dtype must be fp4_e2m1, got {self.weight_dtype.label}"
+                )
+        elif self.weight_dtype not in _FP8:
             raise ValueError(f"weight_dtype must be an 8-bit float, got {self.weight_dtype.label}")
 
     @property
@@ -113,10 +118,18 @@ def read_quant_format(config: Mapping[str, object]) -> QuantFormat | None:
             return _hf_fp8(block)
         case "compressed-tensors":
             return _compressed_tensors(block)
+        case "mxfp4":
+            return QuantFormat(
+                producer="mxfp4",
+                weight_dtype=DType.FP4_E2M1,
+                scale_layout="block",
+                block=(1, 32),
+                scale_name="scales",
+            )
         case _:
             raise _refused(
                 f"quant_method {method!r} is not supported (supported: 'fp8', "
-                "'compressed-tensors' with 8-bit float weights)"
+                "'compressed-tensors' with 8-bit float weights, 'mxfp4')"
             )
 
 

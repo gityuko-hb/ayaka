@@ -20,6 +20,7 @@ from ayaka.entrypoints.conversation import (
 if TYPE_CHECKING:
     from ayaka.core.outputs import RequestOutput
     from ayaka.entrypoints.conversation import OutputEvent
+    from ayaka.entrypoints.parsers.markers import Marker
     from ayaka.entrypoints.parsers.reasoning import ReasoningParser
     from ayaka.entrypoints.parsers.tool_calls import ToolCallParser
 
@@ -85,11 +86,13 @@ class CombinedParser:
         *,
         single_call: bool = False,
         stream_reasoning: bool = True,
+        withheld_marker: Marker | None = None,
     ) -> None:
         self._reasoning = reasoning
         self._calls = tool_calls
         self._single_call = single_call
         self._stream_reasoning = stream_reasoning
+        self._withheld = withheld_marker
         self._reasoning_tokens = 0
         self._tokens = 0
         self._done = False
@@ -132,6 +135,14 @@ class CombinedParser:
         completion = output.outputs[0] if output.outputs else None
         token_ids = completion.token_ids if completion is not None else ()
         text = completion.text if completion is not None else ""
+        withheld = self._withheld
+        if (
+            withheld is not None
+            and completion is not None
+            and completion.stop_reason == withheld.token_id
+            and text.endswith(withheld.text)
+        ):
+            text = text[: len(text) - len(withheld.text)]
         self._tokens += len(token_ids)
         events: list[OutputEvent] = []
         reasoning = self._reasoning
@@ -227,6 +238,7 @@ class ChatResponseProcessor:
         tool_calls: ToolCallParser | None,
         *,
         interpretation: OutputInterpretation,
+        withheld_marker: Marker | None = None,
     ) -> None:
         self._interpretation = interpretation
         effective_reasoning = None if interpretation.force_reasoning is False else reasoning
@@ -235,6 +247,7 @@ class ChatResponseProcessor:
             tool_calls if interpretation.tools else None,
             single_call=not interpretation.parallel_tool_calls,
             stream_reasoning=interpretation.stream_reasoning,
+            withheld_marker=withheld_marker,
         )
 
     @property

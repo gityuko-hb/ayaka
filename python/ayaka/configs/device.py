@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from ayaka.configs.base import ConfigMixin, validate_buckets
 from ayaka.core.errors import ConfigError
@@ -48,14 +48,16 @@ class DeviceConfig(ConfigMixin):
         graph_buckets: Decode batch sizes a graph is captured for, ascending and without
             duplicates; sizes above the engine's running requests are dropped. A decode step
             replays the smallest bucket that holds it. Validated even when ``cuda_graph`` is off.
+        vision_load: When to load a multimodal vision encoder (``"eager"`` at startup or
+            ``"lazy"`` on the first image request).
 
     Raises:
         TypeError: If a field has the wrong type (a raw string for ``dtype``, a
             non-``bool`` flag, a list for a tuple field).
         ValueError: If ``backends`` or ``graph_buckets`` is malformed.
         ConfigError: ``INVALID_DEVICE`` for an unknown device string,
-            ``INVALID_CHOICE`` for a dtype outside the compute dtypes,
-            ``GRAPH_NEEDS_CUDA`` when ``cuda_graph`` is set on the CPU.
+            ``INVALID_CHOICE`` for a dtype outside the compute dtypes or an unknown
+            ``vision_load`` mode, ``GRAPH_NEEDS_CUDA`` when ``cuda_graph`` is set on the CPU.
     """
 
     device: str = "cpu"
@@ -63,6 +65,7 @@ class DeviceConfig(ConfigMixin):
     backends: tuple[str, ...] = ("torch",)
     cuda_graph: bool = False
     graph_buckets: tuple[int, ...] = (1, 2, 4, 8)
+    vision_load: Literal["eager", "lazy"] = "eager"
 
     def __post_init__(self) -> None:
         require_text(self.device, "device.device")
@@ -90,6 +93,12 @@ class DeviceConfig(ConfigMixin):
             raise ValueError("device.backends must not repeat a name")
         require_bool(self.cuda_graph, "device.cuda_graph")
         validate_buckets(self.graph_buckets)
+        if self.vision_load not in ("eager", "lazy"):
+            raise ConfigError(
+                "device.vision_load",
+                "INVALID_CHOICE",
+                f"vision_load must be 'eager' or 'lazy', got {self.vision_load!r}",
+            )
         if self.cuda_graph and self.device_type != "cuda":
             raise ConfigError(
                 "device.cuda_graph",

@@ -1070,3 +1070,97 @@ Revisions: the parity runs and the bf16 `ayaka bench` runs at `ca93917`, the KL 
 FP8 buffer fix; its code under `python/` differs from `40fbf48` only in that fix, which 16-bit and
 MoE models do not use. A first Phi-4 FP8 run, at `ca93917` before the fix, gave the same 0.9 tok/s
 and is replaced by the one above.
+
+## Hybrid architectures, opt-in FP8 KV cache, and native multimodal vision on NVIDIA A100 80 GB (2026-11-27) (#147)
+
+### Machine and setup
+
+Machine: native Linux (kernel `6.6.159+`), **NVIDIA A100-SXM4-80GB** (`sm_80`, 80.0 GiB total,
+~71.3 GiB usable at 0.90 memory ratio), driver `580.82.07`, CUDA `13.0`, Python `3.13.16`,
+`torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, `llguidance 1.9.1`, `transformers 5.22.2`. Every
+run below uses bf16 compute with `--backends flashinfer,torch --cuda-graph` unless noted otherwise.
+Raw result files live under `benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/`.
+
+### Opt-in FP8 KV cache (`kv-fp8-qwen3-8b.json`)
+
+Measured on `Qwen/Qwen3-8B` (`bf16`, `--backends flashinfer,torch`, `--kv-fp8-scale 1.0`,
+comparing `--kv-dtype fp8` against `--kv-dtype auto`):
+
+| Metric | Auto (bf16 KV) | FP8 (`float8_e4m3fn` KV) | Comparison |
+| --- | ---: | ---: | --- |
+| KV cache bytes per token | 147,456 B | 73,728 B | 2.00x smaller |
+| KV blocks (16 tokens/block) | 25,327 | 50,693 | 2.0015x capacity |
+| Max concurrent 4K requests | 98 | 198 | +100 requests |
+| First-token KL vs bf16 (threshold <= 0.05 nats) | reference | 0.0077 nats mean (0.1295 max) | passes (100% top-1 agreement) |
+| 4K needle-in-a-haystack (`0.25`, `0.50`, `0.75`) | 3/3 pass | 3/3 pass | match |
+| Batch 1 decode latency (65 tokens, ABBA) | 16.92 ms/step | 17.70 ms/step | 0.9560x |
+| Batch 8 decode latency (65 tokens, ABBA) | 19.36 ms/step | 20.01 ms/step | 0.9674x |
+
+Opt-in `--kv-dtype fp8` doubles paged KV capacity while meeting the <= 0.05 nats KL gate with
+100% top-1 agreement and 3/3 4K needle recall. Because decode on A100 stays compute/launch-bound at
+these short lengths (0.96x-0.97x step speed vs bf16), FP8 KV remains opt-in rather than default.
+
+### Hybrid model parity and Qwen 3.5 recurrent state checkpoint stride (`hybrid-models-parity-and-stride.json`)
+
+Greedy 16-token parity against `transformers` (`float32` reference):
+
+| Model | Architecture | Quantization | KV groups | CUDA graph buckets | Weights | Warm gen latency (16 tok) | Greedy parity |
+| --- | --- | --- | ---: | --- | ---: | ---: | --- |
+| `Qwen/Qwen3.5-9B` | GatedDeltaNet + full attention | bf16 | 1 | `[1, 2, 4]` | 17,907,606,528 B | 339.2 ms | 16/16 exact |
+| `google/gemma-4-E2B-it` | Sliding KV + full KV + per-layer embeddings | bf16 | 2 | `[1, 2, 4]` | 9,257,138,758 B | 501.5 ms | 16/16 exact |
+| `openai/gpt-oss-20b` | Sliding with attention sinks + full KV + MoE | `fp4_e2m1/block-1x32` | 2 | `[1, 2, 4]` | 13,761,264,768 B | 1,241.2 ms | 16/16 exact |
+
+On `Qwen/Qwen3.5-9B` (256-token shared prefix + 48-token unique suffix, block size 16): multi-chunk
+prefill matched single-chunk prefill on all 16 greedy tokens, and prefix state checkpoint reuse across
+strides gave identical greedy output (`exact_match_vs_cold = true`) on every stride:
+
+| `--state-checkpoint-stride` (blocks) | Checkpoints kept | Host delta RAM | Cold prefill + 1 tok | Warm suffix + 1 tok | Decode speed |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 19 | 934,281,216 B (891.0 MiB) | 1,216.4 ms | 191.7 ms | 12.20 ms/tok |
+| 2 | 9 | 467,140,608 B (445.5 MiB) | 413.6 ms | 138.6 ms | 13.76 ms/tok |
+| 4 | 4 | 207,618,048 B (198.0 MiB) | 303.2 ms | 95.2 ms | 17.02 ms/tok |
+| 8 | 2 | 103,809,024 B (99.0 MiB) | 176.8 ms | 95.5 ms | 16.23 ms/tok |
+
+### Native multimodal vision parity and `--vision-load` eager vs lazy (`vision-eager-vs-lazy.json`)
+
+Evaluated with a synthetic `1024x768` IDE screenshot PNG (`make_ide_screenshot_png(1024, 768)`), 16
+greedy output tokens against Hugging Face `AutoModelForImageTextToText` in first-image, warm
+second-image, and cold no-prefix runs:
+
+| Model | Mode | Prompt tokens | Startup weights | Startup `torch.cuda.memory_allocated` | Startup VRAM saved | Loaded (startup / after text / after image) | First image | Warm second image | Greedy vs Hugging Face |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |
+| `Qwen/Qwen3.5-9B` | `eager` | 798 | 18,819,627,524 B | 53,722,707,456 B | - | `true / true / true` | 5,280.0 ms | 1,053.5 ms | 16/16 exact |
+| `Qwen/Qwen3.5-9B` | `lazy` | 798 | 17,907,606,528 B | 52,799,538,176 B | 923,169,280 B (880.4 MiB) | `false / false / true` | 4,302.8 ms | 1,055.4 ms | 16/16 exact |
+| `google/gemma-4-E2B-it` | `eager` | 295 | 9,594,228,198 B | 19,907,307,008 B | - | `true / true / true` | 1,498.6 ms | 507.7 ms | 16/16 exact |
+| `google/gemma-4-E2B-it` | `lazy` | 295 | 9,257,138,758 B | 19,546,907,648 B | 360,399,360 B (343.7 MiB) | `false / false / true` | 1,674.7 ms | 502.3 ms | 16/16 exact |
+
+### Live `1024x768` HTTP serving (`multimodal-serving-e2e.json`)
+
+Live `ayaka serve` instances with the same `1024x768` base64 PNG tested OpenAI `/v1/chat/completions`
+(enforced `json_schema`), Anthropic `/v1/messages` reusing the image prefix cache across protocols,
+and HTTP `400` refusal of remote HTTPS image URLs:
+
+| Model | OpenAI `/v1/chat/completions` (`json_schema`) | Anthropic `/v1/messages` | Remote URL refusal (OpenAI / Anthropic) |
+| --- | --- | --- | --- |
+| `Qwen/Qwen3.5-9B` | HTTP 200, 788 prompt tok, 27 out tok, valid JSON (`7,474.1 ms`) | HTTP 200, 787 total prompt tok (`768` cache read, `16` cache create, `3` uncached), 32 out tok (`2,085.6 ms`) | `400 / 400` |
+| `google/gemma-4-E2B-it` | HTTP 200, 285 prompt tok, 27 out tok, valid JSON (`4,329.4 ms`) | HTTP 200, 284 total prompt tok (`272` cache read, `0` cache create, `12` uncached), 32 out tok (`952.1 ms`) | `400 / 400` |
+
+### `ayaka plan` and `ayaka bench --quick` (`plans.json`, `bench-*/results.json`)
+
+| Model | Planned context (`max_running`) | KV groups (`bytes/tok`) | State / Vision (weights + workspace) | Prose 4K read | Gen after 4K | Long 32K read / gen | `1024x768` image (`cold / warm`) | Sanity checks | Result |
+| --- | --- | ---: | --- | ---: | ---: | ---: | --- | --- | --- |
+| `Qwen/Qwen3.5-9B` | 262,144 (`6`) | 1 (`32,768`) | 346 MiB state / 870 MiB + 81 MiB | 9,352 tok/s | 60.7 tok/s | 8,311 tok/s / 54.1 tok/s | 378 ms / 297 ms (`801` tok) | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-qwen35-9b/results.json) |
+| `google/gemma-4-E2B-it` | 131,072 (`27`) | 2 (`12,288`) | 0 B state / 321 MiB + 44 MiB | 15,225 tok/s | 36.6 tok/s | 6,912 tok/s / 33.9 tok/s | 183 ms / 180 ms (`297` tok) | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gemma4-e2b/results.json) |
+| `openai/gpt-oss-20b` | 131,072 (`9`) | 2 (`24,576`) | 0 B / 0 B (MXFP4 sliced dequant) | 2,582 tok/s | 13.0 tok/s | 2,483 tok/s / 12.6 tok/s | — | pass / pass | [results.json](../benchmarks/results/2026-11-27-nvidia-a100-sxm4-80gb/bench-gpt-oss-20b/results.json) |
+
+### DeepSeek-V2 Multi-head Latent Attention on NVIDIA A100 (`mla-gpu-parity-and-capacity.json`)
+
+Because no multi-hundred-gigabyte DeepSeek checkpoint is cached locally on this host, FlashInfer MLA
+and CUDA graph capture (`buckets = [1, 2, 4]`, `chunk_tokens = 16`) were verified end-to-end on A100
+against Hugging Face `DeepseekV2ForCausalLM` using a synthetic 4-layer `bf16` checkpoint matching
+canonical geometry (`kv_lora_rank = 512`, `qk_rope_head_dim = 64`, `qk_nope_head_dim = 128`,
+`v_head_dim = 128`, `num_attention_heads = 16`, `head_dim = 128`):
+
+- **Greedy parity vs Hugging Face**: `16/16` exact token match on a 32-token prompt (`exact_greedy_match_vs_hf = true`).
+- **Warm prefix cache + CUDA graphs**: `16` cached tokens reused, generating `16` warm decode tokens in `60.3 ms`.
+- **Latent KV cache sizing**: `4,608 B/tok` for the 4-layer model (`69,120 B/tok` scaled to 60 layers vs `491,520 B/tok` standard 16-head bf16 KV, `0.140625x`, an 85.94% reduction).

@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
     from ayaka.configs.scheduler import SchedulerConfig
     from ayaka.core.errors import ErrorInfo
+    from ayaka.core.multimodal import ImageSpan
     from ayaka.core.outputs import TokenLogprob
     from ayaka.core.request import TokenizedRequest
     from ayaka.core.types import RequestId, TokenId
@@ -276,7 +277,9 @@ class Scheduler:
             for request in partial:
                 if budget <= 0:
                     break
-                chunk = _next_chunk(request.prompt_length, request.computed, budget, block_size)
+                chunk = _next_chunk(
+                    request.prompt_length, request.computed, budget, block_size, request.image_spans
+                )
                 size = _grant_chunk(self._kv, request, chunk)
                 if size:
                     chunks.append((request, size))
@@ -296,12 +299,17 @@ class Scheduler:
                 size = _grant_chunk(
                     self._kv,
                     head,
-                    _next_chunk(head.prompt_length, start, budget, self._kv.block_size),
+                    _next_chunk(
+                        head.prompt_length, start, budget, self._kv.block_size, head.image_spans
+                    ),
                     match,
                 )
                 if not size:
                     break
                 head.computed = head.cached_tokens = start
+                head.pending_state_restore = (
+                    match.checkpoint_digest if match is not None and match.num_tokens > 0 else None
+                )
                 head.blocked_on = None
                 self._admit_delay = max(self._admit_delay, now - head.arrival)
                 self._queue.pop()
@@ -363,6 +371,29 @@ class Scheduler:
     ) -> StepInput:
         """Freeze the entries into a ``StepInput`` and remember it as the step in flight."""
         self._steps += 1
+        has_state = self._kv.state_slots is not None
+        state_slots: tuple[int, ...] = ()
+        restore_digests: tuple[bytes | None, ...] = ()
+        ckpt_targets: tuple[tuple[tuple[int, bytes], ...], ...] = ()
+        if has_state:
+            state_slots = tuple(self._kv.state_slot(r.request_id) for r, _, _, _ in entries)
+            if mode is ForwardMode.PREFILL:
+                restore_list: list[bytes | None] = []
+                target_list: list[tuple[tuple[int, bytes], ...]] = []
+                for req, rows, _, _ in entries:
+                    restore_list.append(req.pending_state_restore)
+                    req.pending_state_restore = None
+                    target_list.append(
+                        self._kv.preview_state_checkpoints(
+                            req.request_id,
+                            req.prompt[: req.computed + rows],
+                            req.computed,
+                            rows,
+                        )
+                    )
+                restore_digests = tuple(restore_list)
+                ckpt_targets = tuple(target_list)
+        has_vision = any(r.images for r, _, _, _ in entries)
         step = StepInput(
             step_id=self._steps,
             mode=mode,
@@ -376,6 +407,12 @@ class Scheduler:
             table_updates=tuple(self._kv.table.take_dirty()),
             sequence_indices=tuple(r.sequence_index for r, _, _, _ in entries),
             output_lengths=tuple(len(r.output) for r, _, _, _ in entries),
+            state_slots=state_slots,
+            state_restore_digests=restore_digests,
+            state_checkpoint_targets=ckpt_targets,
+            images=tuple(r.images for r, _, _, _ in entries) if has_vision else (),
+            image_spans=tuple(r.image_spans for r, _, _, _ in entries) if has_vision else (),
+            prompt_lengths=tuple(r.prompt_length for r, _, _, _ in entries) if has_vision else (),
         )
         self._flight = InFlight(
             step_id=step.step_id,
@@ -582,13 +619,25 @@ def _check_kv_capacity(request: TokenizedRequest, kv: KVCacheManager) -> None:
         )
 
 
-def _next_chunk(prompt_length: int, computed: int, budget: int, block_size: int) -> int:
+def _next_chunk(
+    prompt_length: int,
+    computed: int,
+    budget: int,
+    block_size: int,
+    image_spans: tuple[ImageSpan, ...] = (),
+) -> int:
     """The next chunk of a prompt from ``computed``: ends on a block boundary unless the last."""
     remaining = prompt_length - computed
     if remaining <= budget:
         return remaining
     size = budget - ((computed + budget) % block_size)
-    return size if size > 0 else budget
+    size = size if size > 0 else budget
+    end = computed + size
+    for span in image_spans:
+        span_end = span.token_offset + span.token_count
+        if span.token_offset < end < span_end and span.token_offset > computed:
+            return span.token_offset - computed
+    return size
 
 
 def _grant_chunk(

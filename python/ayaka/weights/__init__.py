@@ -19,12 +19,14 @@ if TYPE_CHECKING:
     from ayaka.weights.gguf import GGMLType, GGUFFile, GGUFTensor, gguf_hf_config, read_gguf
     from ayaka.weights.manifest import WeightManifest
     from ayaka.weights.mapping import WeightMapping
+    from ayaka.weights.mxfp4 import FP4_E2M1_LUT, dequantize_mxfp4, mxfp4_lut
     from ayaka.weights.quant import QuantFormat, ScaleLayout, read_quant_format
     from ayaka.weights.safetensors import SafetensorsFile
     from ayaka.weights.spec import TensorSpec
     from ayaka.weights.tensor import TensorRef
 
 __all__ = [
+    "FP4_E2M1_LUT",
     "GGMLType",
     "GGUFFile",
     "GGUFTensor",
@@ -35,7 +37,9 @@ __all__ = [
     "TensorSpec",
     "WeightManifest",
     "WeightMapping",
+    "dequantize_mxfp4",
     "gguf_hf_config",
+    "mxfp4_lut",
     "read_gguf",
     "read_quant_format",
 ]
@@ -44,6 +48,7 @@ _EXPORTS = {
     "gguf": ("GGMLType", "GGUFFile", "GGUFTensor", "gguf_hf_config", "read_gguf"),
     "manifest": ("WeightManifest",),
     "mapping": ("WeightMapping",),
+    "mxfp4": ("FP4_E2M1_LUT", "dequantize_mxfp4", "mxfp4_lut"),
     "quant": ("QuantFormat", "ScaleLayout", "read_quant_format"),
     "safetensors": ("SafetensorsFile",),
     "spec": ("TensorSpec",),
