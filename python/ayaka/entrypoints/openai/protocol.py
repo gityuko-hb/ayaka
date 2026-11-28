@@ -29,6 +29,7 @@ from ayaka.entrypoints.conversation import (
     ToolSpec,
     parse_arguments,
 )
+from ayaka.entrypoints.openai.prediction import parse_prediction
 from ayaka.entrypoints.render.reasoning import ThinkingRequest, parse_reasoning_effort
 from ayaka.entrypoints.wire.policy import apply_policy
 from ayaka.entrypoints.wire.reader import JsonObject, SamplingFields
@@ -174,6 +175,7 @@ class ChatRequest:
     )
     continue_final_message: bool = False
     named_tool_choice: bool = False
+    prediction: str | None = None
 
 
 def parse_chat_request(body: JsonObject) -> ChatRequest:
@@ -296,6 +298,7 @@ def parse_chat_request(body: JsonObject) -> ChatRequest:
         chat_template_kwargs=template_kwargs,
         continue_final_message=continue_final,
         named_tool_choice=choice not in ("auto", "required"),
+        prediction=parse_prediction(body.child("prediction")),
     )
 
 
@@ -650,12 +653,16 @@ def openai_usage(usage: UsageEvent | None) -> dict[str, object] | None:
     """The usage object of an answer."""
     if usage is None:
         return None
+    details: dict[str, object] = {"reasoning_tokens": usage.reasoning_tokens}
+    if usage.accepted_prediction_tokens or usage.rejected_prediction_tokens:
+        details["accepted_prediction_tokens"] = usage.accepted_prediction_tokens
+        details["rejected_prediction_tokens"] = usage.rejected_prediction_tokens
     return {
         "prompt_tokens": usage.prompt_tokens,
         "completion_tokens": usage.completion_tokens,
         "total_tokens": usage.prompt_tokens + usage.completion_tokens,
         "prompt_tokens_details": {"cached_tokens": usage.cached_tokens},
-        "completion_tokens_details": {"reasoning_tokens": usage.reasoning_tokens},
+        "completion_tokens_details": details,
     }
 
 

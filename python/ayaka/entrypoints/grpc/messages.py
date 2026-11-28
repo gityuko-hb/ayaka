@@ -223,6 +223,11 @@ def encode_generate_request(request: GenerateRequest) -> dict[str, object]:
         "prefix_cache": request.prefix_cache,
         "images": [encode_image_input(img) for img in request.images],
         "image_spans": [encode_image_span(span) for span in request.image_spans],
+        "prediction": (
+            list(request.prediction)
+            if isinstance(request.prediction, tuple)
+            else request.prediction
+        ),
     }
 
 
@@ -263,7 +268,14 @@ def decode_generate_request(data: dict[str, object]) -> GenerateRequest:
         prefix_cache=bool(data.get("prefix_cache", True)),
         images=images,
         image_spans=image_spans,
+        prediction=_decode_prediction(data.get("prediction")),
     )
+
+
+def _decode_prediction(raw: object) -> str | tuple[int, ...] | None:
+    if isinstance(raw, list):
+        return tuple(int(t) for t in cast("list[int]", raw))
+    return raw if isinstance(raw, str) and raw else None
 
 
 def encode_request_output(output: RequestOutput) -> dict[str, object]:
@@ -291,6 +303,8 @@ def encode_request_output(output: RequestOutput) -> dict[str, object]:
             "completion_tokens": output.usage.completion_tokens,
             "cached_tokens": output.usage.cached_tokens,
             "cache_written_tokens": output.usage.cache_written_tokens,
+            "accepted_prediction_tokens": output.usage.accepted_prediction_tokens,
+            "rejected_prediction_tokens": output.usage.rejected_prediction_tokens,
         },
         "metrics": (
             {
@@ -343,6 +357,12 @@ def decode_request_output(data: dict[str, object]) -> RequestOutput:
             cached_tokens=as_int(cast("dict[str, object]", usage_raw).get("cached_tokens"), 0),
             cache_written_tokens=as_int(
                 cast("dict[str, object]", usage_raw).get("cache_written_tokens"), 0
+            ),
+            accepted_prediction_tokens=as_int(
+                cast("dict[str, object]", usage_raw).get("accepted_prediction_tokens"), 0
+            ),
+            rejected_prediction_tokens=as_int(
+                cast("dict[str, object]", usage_raw).get("rejected_prediction_tokens"), 0
             ),
         )
         if isinstance(usage_raw, dict)
@@ -451,6 +471,8 @@ def encode_chat_event(event: OutputEvent) -> dict[str, object]:
             "completion_tokens": event.completion_tokens,
             "reasoning_tokens": event.reasoning_tokens,
             "cached_tokens": event.cached_tokens,
+            "accepted_prediction_tokens": event.accepted_prediction_tokens,
+            "rejected_prediction_tokens": event.rejected_prediction_tokens,
         }
     if isinstance(event, FinishEvent):
         return {
@@ -486,6 +508,8 @@ def decode_chat_event(data: dict[str, object]) -> OutputEvent | None:
             completion_tokens=as_int(data["completion_tokens"], 0),
             reasoning_tokens=as_int(data.get("reasoning_tokens"), 0),
             cached_tokens=as_int(data.get("cached_tokens"), 0),
+            accepted_prediction_tokens=as_int(data.get("accepted_prediction_tokens"), 0),
+            rejected_prediction_tokens=as_int(data.get("rejected_prediction_tokens"), 0),
         )
     if kind == "finish":
         return FinishEvent(

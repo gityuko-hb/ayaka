@@ -43,6 +43,18 @@
     validation and rollback, and guided speculative verification windows.
   - Optional remote procedure call transport (`grpc` extra): `ayaka engine-server`, `ayaka serve --engine-grpc`, and
     the engine-free `ayaka render-server` (without `torch`).
+- Speculative decoding that does not change the output (#127), **off by default**. `--speculative lookup`
+  drafts by copying from the prompt and the output so far, and `--speculative token_recycling` is an
+  experiment; a cost-aware or fixed controller (`--spec-controller`) picks how many draft tokens each
+  request carries, and the `prediction` field of the chat API is read as a hint for the lookup. On an
+  NVIDIA L4, Qwen3-8B at one request, one run per arm: 1.07× to 1.88× over plain decoding, no class
+  below plain. These are not the five alternating pairs the gates ask for, so nothing is on by
+  default; `docs/EXPERIMENTS.md` has every number, the greedy outputs that differed from plain
+  (one traced to an exact tie, three unexplained) and what was not measured.
+- Speculative decoding on requests with structured output (#127, #136): each row of a verify window is
+  masked by the request's grammar after the drafts before it, a draft is cut before the first token the
+  grammar refuses, and only accepted tokens advance the grammar. Requests with a repetition, frequency
+  or presence penalty still do not speculate.
 
 ### Fixed
 

@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from ayaka.metrics.manager import StatLoggerManager
     from ayaka.scheduler.scheduler import Scheduler
     from ayaka.scheduler.stats import SchedulerStats
+    from ayaka.scheduler.step import StepOutput
     from ayaka.tokenizers.contracts import ChatMessage
     from ayaka.tokenizers.service import TokenizerService
 
@@ -269,7 +270,15 @@ class EngineCore:
                 request.request_id, request.prompt_token_ids, request.sampling
             )
             self._admit_constraint(request)
+            self.runner.admit_speculative(
+                request.request_id,
+                request.prompt_token_ids,
+                sampling=request.sampling,
+                has_constraint=request.constraint_id is not None,
+                prediction=request.prediction_token_ids,
+            )
         except BaseException:
+            self.runner.release_speculative(request.request_id)
             self._scheduler.abort(request.request_id, FinishReason.CANCELLED)
             raise
         if self._recorder is not None:
@@ -310,8 +319,16 @@ class EngineCore:
                     child.request_id, child.prompt_token_ids, child.sampling
                 )
                 self._admit_constraint(child)
+                self.runner.admit_speculative(
+                    child.request_id,
+                    child.prompt_token_ids,
+                    sampling=child.sampling,
+                    has_constraint=child.constraint_id is not None,
+                    prediction=child.prediction_token_ids,
+                )
         except BaseException:
             for child_id in added:
+                self.runner.release_speculative(child_id)
                 self._scheduler.abort(child_id, FinishReason.CANCELLED)
             self._output.discard(children[0].request_id)
             raise
@@ -356,7 +373,7 @@ class EngineCore:
         scheduler.update(answer)
         counts = scheduler.take_stats()
         if self._stats is not None and counts is not None:
-            self._stats.record(_iteration(counts, seconds))
+            self._stats.record(_iteration(counts, seconds, answer))
             self._stats.maybe_log()
         outputs += self._deliver()
         if answer.error is not None:
@@ -370,17 +387,21 @@ class EngineCore:
         taken and ignored in the same cycle instead of surfacing a cycle later.
         """
         outputs: list[RequestOutput] = []
-        penalties = self.runner.penalties
-        constraints = self.runner.constraints
+        runner = self.runner
+        penalties = runner.penalties
+        constraints = runner.constraints
+        has_spec = runner.proposer is not None
         while events := self._scheduler.take_events():
-            if len(penalties) or len(constraints):
+            if len(penalties) or len(constraints) or has_spec:
                 for event in events:
                     if event.finished:
                         penalties.drop(event.request_id)
                         constraints.drop(event.request_id)
+                        runner.release_speculative(event.request_id)
                     elif event.token_ids:
                         penalties.commit(event.request_id, event.token_ids)
                         constraints.accept(event.request_id, event.token_ids)
+                        runner.commit_speculative(event.request_id, event.token_ids)
             outputs += self._output.process(events)
         if self._families:
             for output in outputs:
@@ -398,6 +419,8 @@ class EngineCore:
         if self._closed:
             return
         self._closed = True
+        if self._runner is not None:
+            self._runner.release_all_speculative()
         if self._recorder is not None:
             self._recorder.close()
         self._input.compiler.close()
@@ -423,8 +446,14 @@ class EngineCore:
         return error
 
 
-def _iteration(counts: SchedulerStats, seconds: float) -> IterationStats:
+def _iteration(
+    counts: SchedulerStats, seconds: float, answer: StepOutput | None = None
+) -> IterationStats:
     """The loggers' record of a step: the scheduler's counts and the runner's time."""
+    spec_drafted = sum(answer.spec_drafted) if answer is not None and answer.spec_drafted else 0
+    spec_accepted = sum(answer.accepted) if answer is not None and answer.accepted else 0
+    spec_rounds = 1 if spec_drafted > 0 else 0
+    spec_disabled = answer.spec_disabled if answer is not None else ()
     return IterationStats(
         step_id=counts.step_id,
         num_running=counts.num_running,
@@ -437,4 +466,8 @@ def _iteration(counts: SchedulerStats, seconds: float) -> IterationStats:
         num_failed=counts.num_failed,
         num_settled=counts.num_settled,
         step_seconds=seconds,
+        spec_draft_tokens=spec_drafted,
+        spec_accepted_tokens=spec_accepted,
+        spec_rounds=spec_rounds,
+        spec_disabled=spec_disabled,
     )

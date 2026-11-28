@@ -301,6 +301,7 @@ class ModelConfig(ConfigMixin):
     vision_soft_tokens_per_image: int | None = None
     pad_token_id: int = 0
     use_bidirectional_vision: bool = False
+    num_nextn_predict_layers: int = 0
 
     def __post_init__(self) -> None:
         require_text(self.architecture, "model.architecture")
@@ -330,6 +331,7 @@ class ModelConfig(ConfigMixin):
             raise ConfigError("model.partial_rotary_factor", "INVALID_RANGE", "must be in (0, 1]")
         object.__setattr__(self, "partial_rotary_factor", float(partial))
         self._check_experts()
+        require_int(self.num_nextn_predict_layers, "model.num_nextn_predict_layers", minimum=0)
         if self.rope_theta is not None:
             theta = require_number(self.rope_theta, "model.rope_theta")
             if not math.isfinite(theta) or theta <= 1:

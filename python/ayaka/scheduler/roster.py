@@ -88,6 +88,7 @@ class Roster:
         error: ErrorInfo | None = None,
         logprobs: tuple[TokenLogprob, ...] | None = None,
         release: bool,
+        prediction: tuple[int, int] = (0, 0),
     ) -> None:
         """End a request: set the reason, free the KV and the row, queue the last event.
 
@@ -99,6 +100,7 @@ class Roster:
             error: Detail for ``ERROR``, ``TIMEOUT`` or a memory ``LENGTH``.
             logprobs: Logprobs of ``tokens``.
             release: Whether the KV may be freed now; if not it waits for the runner's release.
+            prediction: The predicted-output tokens the ending step accepted and rejected.
         """
         request_id = request.request_id
         holds_kv = request.status is RequestStatus.RUNNING
@@ -130,6 +132,8 @@ class Roster:
                 logprobs=logprobs,
                 cached_tokens=request.cached_tokens,
                 cache_written_tokens=request.cache_written_tokens,
+                accepted_prediction_tokens=prediction[0],
+                rejected_prediction_tokens=prediction[1],
             )
         )
 

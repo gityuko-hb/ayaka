@@ -352,6 +352,7 @@ async def create_chat_completion(request: web.Request) -> web.StreamResponse:
         image_spans=rendered.image_spans,
         rendered=rendered,
         tool_schemas=ToolSchemas.from_tools(conversation.tools) if conversation.tools else None,
+        prediction=chat.prediction,
     )
     meta = _Meta(f"chatcmpl-{public_id}", int(time.time()), serving.model_name)
     try:

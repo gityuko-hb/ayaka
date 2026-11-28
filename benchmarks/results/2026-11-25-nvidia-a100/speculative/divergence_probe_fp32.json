@@ -1,0 +1,249 @@
+{
+ "machine": {
+  "date": "2026-11-25T20:29:39+00:00",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "capability": [
+   8,
+   0
+  ],
+  "driver": "580.82.07",
+  "os": "Linux-6.6.159+-x86_64-with-glibc2.39",
+  "wsl2": false,
+  "python": "3.13.16",
+  "torch": "2.14.1+cu130",
+  "torch_cuda": "13.0",
+  "flashinfer": "0.7.4",
+  "ayaka": "0.1.0",
+  "commit": "b7fb25c (feat/speculative-dflash before this session's changes; its lookup code is feat/speculative-foundation's dc5b979)"
+ },
+ "script": "benchmarks/e2e/spec_divergence_probe.py",
+ "engine": "fp32, backends torch",
+ "model": "Qwen/Qwen3-8B",
+ "max_tokens": 256,
+ "divergences": [
+  {
+   "arm": "plain_graph_b1",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_repeat",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_repeat",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_repeat",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_repeat",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_eager_b1",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_eager_b1",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_eager_b1",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_eager_b1",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_logprobs",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_logprobs",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_logprobs",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_b1_logprobs",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_batch4",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_batch4",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_batch4",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "plain_graph_batch4",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed4_b1",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed4_b1",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed4_b1",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed4_b1",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed8_b1",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed8_b1",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed8_b1",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_fixed8_b1",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_cost_batch4",
+   "prompt": "code_edit",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_cost_batch4",
+   "prompt": "prose",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_cost_batch4",
+   "prompt": "json_tools",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  },
+  {
+   "arm": "lookup_cost_batch4",
+   "prompt": "random",
+   "first_difference": null,
+   "reference_token": null,
+   "arm_token": null
+  }
+ ]
+}

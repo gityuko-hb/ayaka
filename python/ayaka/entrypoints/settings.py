@@ -144,9 +144,10 @@ def describe_server(config: ServerConfig, engine: EngineConfig, model: str) -> l
     else:
         device = engine.device
         graphs = ", decode in CUDA graphs" if device.cuda_graph else ""
+        spec = f", speculative={engine.speculative.method}" if engine.speculative.enabled else ""
         head = (
             f"serving {model} as {names} on {device.device} in {device.dtype.label} "
-            f"(ops backends: {', '.join(device.backends)}{graphs})"
+            f"(ops backends: {', '.join(device.backends)}{graphs}{spec})"
         )
     lines = [
         head,

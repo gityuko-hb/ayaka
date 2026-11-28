@@ -54,7 +54,9 @@ from ayaka.ops.linear_attention import LinearAttentionMetadata
 from ayaka.utils.math_utils import div_ceil
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
+
+    import torch
 
     from ayaka.device.context import Device, MemoryReading
     from ayaka.execution.graph import CapturedBucket
@@ -81,7 +83,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 #: Bumped when the meaning of a field changes, so an old file is measured again, not misread.
-PROFILE_VERSION: Final = 1
+PROFILE_VERSION: Final = 2
 _CACHE_VARIABLE: Final = "AYAKA_CACHE_DIR"
 
 
@@ -153,6 +155,10 @@ class StartupProfile:
         reused_bytes: Weights and KV that landed in memory the process's allocator held before
             the baseline was read; 0 in a fresh process. The device never lost those bytes.
         graph_bytes: Memory the captured graphs took; 0 without graphs.
+        sampling_peak_bytes: Allocator peak while sampling the logits of the widest sampling
+            step, above what it held before: every row of the widest verify window with a
+            drafter, one row per request without. The allocator gives it back after the step,
+            so the ledger keeps it as ``reserve``, memory left free for that step.
         prefill_seconds: Wall time of the measured prefill step, device work included.
         decode_seconds: Bucket size to the wall time of one eager decode step.
     """
@@ -166,6 +172,7 @@ class StartupProfile:
     workspace_bytes: int = 0
     reused_bytes: int = 0
     graph_bytes: int = 0
+    sampling_peak_bytes: int = 0
     prefill_seconds: float = 0.0
     decode_seconds: Mapping[int, float] = field(default_factory=lambda: {})
 
@@ -320,7 +327,8 @@ def reconcile(
     ``baseline_reserved_bytes`` is what the allocator already held at the baseline; only what it
     reserved since is this engine's. ``reused_bytes`` (:attr:`StartupProfile.reused_bytes`) adds
     tensors that landed in that pre-baseline reservation. The ledger's ``runtime`` owner is added
-    back because it is memory outside the allocator.
+    back because it is memory outside the allocator, and its ``reserve`` owner because it is
+    memory kept free for the widest sampling step, which the allocator holds only during it.
 
     ``baseline_bytes`` is read before anything was allocated and becomes
     :attr:`Reconciliation.device_bytes`, the driver's diagnostic view. It does not decide the match:
@@ -331,7 +339,7 @@ def reconcile(
     ``tolerance_floor``: the allocator rounds every block up and keeps a cache.
     """
     allocator = max(reading.reserved - baseline_reserved_bytes, 0) + reused_bytes
-    measured = allocator + budget.held("runtime")
+    measured = allocator + budget.held("runtime") + budget.held("reserve")
     tolerance = max(int(measured * tolerance_ratio), tolerance_floor)
     return Reconciliation(
         ledger_bytes=budget.reserved_bytes,
@@ -385,6 +393,7 @@ def measure_startup(
     baseline_bytes: int,
     baseline_reserved_bytes: int = 0,
     kv_bytes: int,
+    extra_weights_bytes: int = 0,
     chunk_tokens: int,
     buckets: Sequence[int],
     block_size: int,
@@ -393,6 +402,8 @@ def measure_startup(
     state_buffers: Mapping[int, RecurrentStateBuffers] | None = None,
     group_layers: Sequence[tuple[int, ...]] = (),
     state_bytes: int = 0,
+    sampled_rows: int = 0,
+    draw: Callable[[torch.Tensor], None] | None = None,
 ) -> StartupProfile:
     """Run the dummy prefill and decode steps and read the device.
 
@@ -410,6 +421,12 @@ def measure_startup(
         block_size: Tokens per block.
         usable_blocks: Blocks the pool can hand out (block 0 excluded); the dummy steps use
             the first of them.
+        sampled_rows: Most logit rows one step samples: every row of the widest verify window
+            when a drafter runs, else one per request.
+        draw: Samples ``[rows, vocab]`` logits as the engine's sampler does at its costliest
+            (``ModelRunner.draw_for_measurement``). With ``sampled_rows`` above one, the peak of
+            that draw becomes ``sampling_peak_bytes``: the prefill samples one row, a verify step
+            every row of its windows.
 
     Raises:
         EngineError: If the pool has too few blocks for the dummy prefill.
@@ -427,7 +444,7 @@ def measure_startup(
     state_map = dict(state_buffers or {})
     num_groups = max(len(group_layers), 1)
 
-    def step(rows: list[int], lengths: list[int], tables: list[list[int]]) -> None:
+    def step(rows: list[int], lengths: list[int], tables: list[list[int]]) -> torch.Tensor:
         width = max(len(table) for table in tables)
         block_rows = torch.tensor(
             [table + [0] * (width - len(table)) for table in tables],
@@ -473,6 +490,7 @@ def measure_startup(
             [sum(rows[: i + 1]) - 1 for i in range(len(rows))], dtype=torch.int64, device=target
         )
         model.compute_logits(hidden.index_select(0, last))
+        return hidden
 
     needed = div_ceil(chunk, block_size)
     if needed > usable_blocks:
@@ -487,6 +505,18 @@ def measure_startup(
         device.synchronize()
         prefill_seconds = time.monotonic() - started
         peak = device.memory().peak_allocated - before
+
+        draw_peak = 0
+        if draw is not None and sampled_rows > 1:
+            hidden = step([chunk], [chunk], [list(range(1, needed + 1))])
+            rows = torch.arange(sampled_rows, device=target) % chunk  # rows repeat if chunk < rows
+            device.synchronize()
+            before_draw = device.memory().allocated
+            device.reset_peak()
+            draw(model.compute_logits(hidden.index_select(0, rows)))
+            device.synchronize()
+            draw_peak = device.memory().peak_allocated - before_draw
+            del hidden
 
         decode: dict[int, float] = {}
         for bucket in buckets:
@@ -513,10 +543,10 @@ def measure_startup(
     # weights and the cache can land in memory the allocator already held: the device did not lose
     # it, so it is counted here and added back when the ledger is compared with the device.
     cache_total = kv_bytes + state_bytes
-    reused = max(weights + cache_total - reserved, 0)
+    reused = max(weights + extra_weights_bytes + cache_total - reserved, 0)
     # What the allocator holds beyond the weights and the cache: the step's activations, the
     # matrix libraries' workspaces and the allocator's own rounding.
-    workspace = max(reserved + reused - weights - cache_total, max(peak, 0))
+    workspace = max(reserved + reused - weights - extra_weights_bytes - cache_total, max(peak, 0))
     profile = StartupProfile(
         key=key,
         weights_bytes=weights,
@@ -526,16 +556,19 @@ def measure_startup(
         activation_peak_bytes=max(peak, 0),
         workspace_bytes=workspace,
         reused_bytes=reused,
+        sampling_peak_bytes=max(draw_peak, 0),
         prefill_seconds=prefill_seconds,
         decode_seconds=decode,
     )
     logger.info(
-        "startup run: %d-token prefill peaked %d bytes above its inputs in %.3fs; the allocator "
-        "holds %d bytes beyond weights and KV; runtime outside the allocator %d bytes; "
-        "eager decode %s",
+        "startup run: %d-token prefill peaked %d bytes above its inputs in %.3fs; sampling %d "
+        "rows peaked %d bytes; the allocator holds %d bytes beyond weights and KV; runtime "
+        "outside the allocator %d bytes; eager decode %s",
         chunk,
         profile.activation_peak_bytes,
         prefill_seconds,
+        sampled_rows,
+        draw_peak,
         workspace,
         runtime,
         {bucket: f"{seconds * 1e3:.2f}ms" for bucket, seconds in decode.items()},

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from ayaka.layers.attention.dense import Attention
     from ayaka.layers.attention.linear import GatedDeltaNetAttention, KimiDeltaAttention
     from ayaka.layers.attention.mla import MultiHeadLatentAttention
-    from ayaka.layers.context import ForwardContext, StateCheckpointCapture
+    from ayaka.layers.context import FeatureSink, ForwardContext, StateCheckpointCapture
     from ayaka.layers.embedding.token import LMHead, TokenEmbedding
     from ayaka.layers.ffn.dense import MLP, GatedMLP
     from ayaka.layers.ffn.moe import MoEBlock, StackedExperts
@@ -33,6 +33,7 @@ __all__ = [
     "GELU",
     "MLP",
     "Attention",
+    "FeatureSink",
     "ForwardContext",
     "GELUAndMul",
     "GatedDeltaNetAttention",
@@ -59,7 +60,7 @@ _EXPORTS = {
     "attention.dense": ("Attention",),
     "attention.linear": ("GatedDeltaNetAttention", "KimiDeltaAttention"),
     "attention.mla": ("MultiHeadLatentAttention",),
-    "context": ("ForwardContext", "StateCheckpointCapture"),
+    "context": ("FeatureSink", "ForwardContext", "StateCheckpointCapture"),
     "embedding.token": ("LMHead", "TokenEmbedding"),
     "ffn.dense": ("MLP", "GatedMLP"),
     "ffn.moe": ("MoEBlock", "StackedExperts"),

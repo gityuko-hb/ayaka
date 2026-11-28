@@ -265,8 +265,15 @@ class LlamaForCausalLM(CausalLM):
         """
         x = self.embed_tokens(token_ids)
         residual: torch.Tensor | None = None
-        for layer in self.layers:
-            x, residual = layer(x, residual, context)
+        sink = context.feature_sink
+        if sink is None:
+            for layer in self.layers:
+                x, residual = layer(x, residual, context)
+        else:
+            for layer_idx, layer in enumerate(self.layers):
+                x, residual = layer(x, residual, context)
+                if layer_idx in sink.layer_ids and residual is not None:
+                    sink.record(layer_idx, x, residual)
         if residual is None:  # a model with no layers
             return self.norm(x)
         self.norm.fused_add(x, residual)

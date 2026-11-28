@@ -26,6 +26,9 @@ from ayaka.configs.device import DeviceConfig
 from ayaka.configs.engine import EngineConfig
 from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.scheduler import SchedulerConfig
+from ayaka.configs.speculative import (
+    SpeculativeConfig,
+)
 from ayaka.core.errors import (
     AyakaError,
     CapabilityError,
@@ -135,9 +138,10 @@ def _run(args: argparse.Namespace) -> int:
     config = _engine_config(args)
     if not args.quiet:
         graphs = ", decode in CUDA graphs" if config.device.cuda_graph else ""
+        spec = f", speculative={config.speculative.method}" if config.speculative.enabled else ""
         say(
             f"running {args.model} on {config.device.device} in {config.device.dtype.label} "
-            f"(ops backends: {', '.join(config.device.backends)}{graphs})"
+            f"(ops backends: {', '.join(config.device.backends)}{graphs}{spec})"
         )
     with LLM.from_config(config) as llm:
         chunks = (
@@ -160,6 +164,13 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
     )
     if args.memory_ratio is not None:
         cache = dataclasses.replace(cache, memory_ratio=args.memory_ratio)
+    speculative = SpeculativeConfig(
+        enabled=args.speculative != "off",
+        method="lookup" if args.speculative == "off" else args.speculative,
+        max_draft_tokens=args.spec_max_draft_tokens,
+        controller=args.spec_controller,
+        fixed_k=args.spec_fixed_k,
+    )
     return EngineConfig(
         source=ModelSourceConfig(
             args.model, revision=args.revision, tokenizer=args.tokenizer, offline=args.offline
@@ -174,6 +185,7 @@ def _engine_config(args: argparse.Namespace, *, max_running: int | None = 1) -> 
         cache=cache,
         scheduler=SchedulerConfig(max_running=max_running),
         structured_backend=args.structured_backend,
+        speculative=speculative,
     )
 
 

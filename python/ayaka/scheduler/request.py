@@ -95,6 +95,8 @@ class RequestEvent:
     logprobs: tuple[TokenLogprob, ...] | None = None
     cached_tokens: int = 0
     cache_written_tokens: int = 0
+    accepted_prediction_tokens: int = 0
+    rejected_prediction_tokens: int = 0
 
     @property
     def finished(self) -> bool:
@@ -147,6 +149,8 @@ class Request:
     cached_tokens: int = 0
     cache_written_tokens: int = 0
     pending_state_restore: bytes | None = None
+    accepted_prediction_tokens: int = 0
+    rejected_prediction_tokens: int = 0
     sequence_index: int = 0
     blocked_on: RequestId | None = None
     images: tuple[ImageInput, ...] = ()

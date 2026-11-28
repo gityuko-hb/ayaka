@@ -153,6 +153,11 @@ class KVCacheManager:
         return self._state_checkpoints
 
     @property
+    def prefix_lookahead(self) -> int:
+        """Trailing tokens beyond a block required before hashing/caching."""
+        return 0 if self._prefix is None else self._prefix.lookahead
+
+    @property
     def max_tokens_per_request(self) -> int:
         """Longest context one request can hold: ``max_blocks_per_request * block_size``."""
         return self._table.max_blocks_per_request * self._block_size
@@ -374,16 +379,32 @@ class KVCacheManager:
         chain = self._chains.get(request_id)
         if chain is None:
             return 0, 0
-        return chain.registered, committed // self._block_size
+        usable = max(committed - self.prefix_lookahead, 0)
+        return chain.registered, usable // self._block_size
 
     def cache_blocks(self, request_id: RequestId, token_ids: Sequence[TokenId]) -> int:
-        """Register the request's newly full blocks so later requests can attach them."""
+        """Register the request's newly full blocks so later requests can attach them.
+
+        Args:
+            request_id: The request.
+            token_ids: The tokens of blocks ``registered .. full`` (see :meth:`cacheable_blocks`),
+                plus ``prefix_lookahead`` trailing tokens, from the first block not yet registered.
+
+        Returns:
+            Blocks registered by this call. A block whose digest another block already holds
+            stays private to the request: there is no deduplication.
+
+        Raises:
+            KeyError: If the request is unknown.
+            EngineError: If ``token_ids`` cover blocks that are not full yet.
+        """
         chain = self._chains.get(request_id)
         if chain is None or self._prefix is None:
             return 0
+        lookahead = self._prefix.lookahead
         start = chain.registered
-        full = self._committed[request_id] // self._block_size
-        count = len(token_ids) // self._block_size
+        full = max(self._committed[request_id] - lookahead, 0) // self._block_size
+        count = max(len(token_ids) - lookahead, 0) // self._block_size
         if start + count > full:
             raise EngineError(
                 f"request {request_id!r}: only {full} blocks are full, cannot cache "
@@ -396,7 +417,9 @@ class KVCacheManager:
             parent = chain.digests[known - 1] if known else chain.parent
             offset = (known - start) * self._block_size
             chain.digests.extend(
-                self._prefix.digests(parent, token_ids[offset : count * self._block_size])
+                self._prefix.digests(
+                    parent, token_ids[offset : count * self._block_size + lookahead]
+                )
             )
         rows = self.blocks(request_id)
         added = 0

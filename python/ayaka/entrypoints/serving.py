@@ -486,6 +486,7 @@ class Serving:
         image_spans: tuple[ImageSpan, ...] = (),
         rendered: RenderedChat | None = None,
         tool_schemas: ToolSchemas | None = None,
+        prediction: str | None = None,
     ) -> Generation:
         """Admit a tokenized request; ``sampling.n`` choices get one output parser each.
 
@@ -515,6 +516,7 @@ class Serving:
             structured=structured,
             images=images,
             image_spans=image_spans,
+            prediction=prediction,
         )
         try:
             try:

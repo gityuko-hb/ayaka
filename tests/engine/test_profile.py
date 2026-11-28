@@ -10,6 +10,7 @@ import pytest
 
 from ayaka.configs.device import DeviceConfig
 from ayaka.engine.profile import (
+    PROFILE_VERSION,
     ProfileKey,
     StartupProfile,
     load_profile,
@@ -25,9 +26,9 @@ from ayaka.utils.dtypes import DType
 torch: Any = pytest.importorskip("torch")
 
 from ayaka.device.context import Device, MemoryReading  # noqa: E402
-from ayaka.engine import build as engine_build  # noqa: E402
-from ayaka.engine.build import _startup_run  # noqa: E402  # pyright: ignore[reportPrivateUsage]
+from ayaka.engine import startup as engine_startup  # noqa: E402
 from ayaka.engine.profile import measure_startup  # noqa: E402
+from ayaka.engine.startup import startup_run  # noqa: E402
 from tiny_model import build_tiny_stack, tiny_engine_config  # noqa: E402  # needs the importorskip above
 
 if TYPE_CHECKING:
@@ -103,7 +104,10 @@ class TestFile:
         profile = _profile()
         path = save_profile(profile, tmp_path)
         assert path is not None
-        path.write_text(path.read_text(encoding="utf-8").replace('"version": 1', '"version": 0'))
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(f'"version": {PROFILE_VERSION}', f'"version": {PROFILE_VERSION - 1}')
+        )
 
         assert load_profile(profile.key, tmp_path) is None
 
@@ -349,7 +353,7 @@ class TestStartupRunSaveGate:
         import ayaka.device.context as device_context
 
         monkeypatch.setattr(device_context, "Device", _FakeDevice)
-        monkeypatch.setattr(engine_build, "measure_startup", lambda *args, **kwargs: profile)
+        monkeypatch.setattr(engine_startup, "measure_startup", lambda *args, **kwargs: profile)
 
         base_config = tiny_engine_config(tmp_path)
         config = type(base_config)(
@@ -367,13 +371,15 @@ class TestStartupRunSaveGate:
                 kv_reserve_tokens=64,
             )
         )
-        runner: Any = SimpleNamespace(model=object(), kv_buffers={})
+        runner: Any = SimpleNamespace(
+            model=object(), kv_buffers={}, draw_for_measurement=lambda logits: None
+        )
         pool: Any = SimpleNamespace(
             nbytes=profile.kv_bytes,
             usable_blocks=16,
             group=SimpleNamespace(spec=SimpleNamespace(block_size=16)),
         )
-        _startup_run(
+        startup_run(
             config,
             runner,
             pool,
@@ -530,3 +536,87 @@ def test_the_workspace_is_read_after_the_cache_of_freed_scratch_is_released() ->
     # The peak (50 MiB above what was allocated) is kept; the 300 MiB of cache is not workspace.
     assert profile.workspace_bytes == 50 * MIB
     assert profile.reused_bytes == 0
+
+
+def test_the_widest_sampling_step_counts_in_the_workspace() -> None:
+    """#131: a 128-row verify window ran out of memory in the sampler on an NVIDIA L4.
+
+    The dummy prefill samples one row, so the float32 copies of a verify step's logits (77 MB
+    each for 128 rows of Qwen3-8B) were in no measured peak, and the plan left no room for them.
+    The start-up run now samples as many rows as the widest step, more rows than its prefill
+    chunk here, and keeps that peak apart from the prefill's.
+    """
+    stack = build_tiny_stack(num_blocks=40)
+    weights = sum(p.numel() * p.element_size() for p in stack.model.parameters())
+    live = weights + stack.pool.nbytes + 10 * MIB
+
+    class _DrawDevice(Device):
+        def __init__(self) -> None:
+            super().__init__("cpu")
+            self.extra_peak = 50 * MIB  # the prefill's activations
+
+        def reset_peak(self) -> None:
+            self.extra_peak = 0
+
+        def memory(self) -> MemoryReading:
+            return MemoryReading(
+                free=4096 * MIB - live,
+                total=4096 * MIB,
+                allocated=live,
+                reserved=live,
+                peak_allocated=live + self.extra_peak,
+            )
+
+    device = _DrawDevice()
+    drawn: list[tuple[int, ...]] = []
+
+    def draw(logits: Any) -> None:
+        drawn.append(tuple(logits.shape))
+        device.extra_peak = 300 * MIB
+
+    profile = measure_startup(
+        stack.model,
+        stack.runner.kv_buffers,
+        key=_key(),
+        device=device,
+        baseline_bytes=4096 * MIB,
+        kv_bytes=stack.pool.nbytes,
+        chunk_tokens=16,
+        buckets=(1,),
+        block_size=4,
+        usable_blocks=stack.pool.usable_blocks,
+        sampled_rows=40,
+        draw=draw,
+    )
+
+    assert drawn == [(40, stack.model.config.vocab_size)]
+    assert profile.sampling_peak_bytes == 300 * MIB
+    assert profile.workspace_bytes == 10 * MIB  # held beyond weights and KV; sampling is apart
+
+
+def test_the_runner_samples_every_row_with_both_kinds_of_logprobs() -> None:
+    stack = build_tiny_stack(num_blocks=40)
+    vocab = stack.model.config.vocab_size
+    logits = torch.randn(6, vocab)
+
+    stack.runner.draw_for_measurement(logits)  # raises if the sampler refuses the rows
+
+    assert logits.shape == (6, vocab)  # the model's logits are not changed in place
+
+
+def test_memory_left_free_for_the_widest_sampling_step_is_not_a_mismatch() -> None:
+    budget = MemoryBudget(4096 * MIB)
+    budget.reserve("weights", 100 * MIB)
+    budget.reserve("reserve", 300 * MIB)  # the allocator holds it only while that step runs
+    reading = MemoryReading(
+        free=3996 * MIB,
+        total=4096 * MIB,
+        allocated=100 * MIB,
+        reserved=100 * MIB,
+        peak_allocated=100 * MIB,
+    )
+
+    reconciliation = reconcile(budget, baseline_bytes=4096 * MIB, reading=reading)
+
+    assert reconciliation.ledger_bytes == reconciliation.measured_bytes == 400 * MIB
+    assert reconciliation.matches

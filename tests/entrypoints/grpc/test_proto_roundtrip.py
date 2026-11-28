@@ -124,6 +124,7 @@ def test_protobuf_roundtrip_for_requests_outputs_and_all_seven_constraints() -> 
             prefix_cache=False,
             images=(sample_img,),
             image_spans=(sample_span,),
+            prediction="predicted text" if idx % 2 else (7, 8, 9),
         )
         wire = serialize_proto(encode_generate_request(req))
         decoded = decode_generate_request(deserialize_proto(wire))
@@ -150,7 +151,13 @@ def test_protobuf_roundtrip_for_requests_outputs_and_all_seven_constraints() -> 
             ),
         ),
         finished=True,
-        usage=Usage(prompt_tokens=3, completion_tokens=2, cached_tokens=2),
+        usage=Usage(
+            prompt_tokens=3,
+            completion_tokens=2,
+            cached_tokens=2,
+            accepted_prediction_tokens=4,
+            rejected_prediction_tokens=1,
+        ),
         metrics=RequestMetrics(arrival_time=1.0, prefill_time=0.2, decode_time=0.3),
         error=ErrorInfo(code="INTERNAL", message="ok", retryable=False),
     )
@@ -206,7 +213,14 @@ def test_error_wire_mapping_and_chat_events_roundtrip() -> None:
         ToolCallStart(0, "c0", "fn"),
         ToolCallDelta(0, '{"a": 1}'),
         ToolCallEnd(0, valid=True),
-        UsageEvent(prompt_tokens=4, completion_tokens=3, reasoning_tokens=1, cached_tokens=2),
+        UsageEvent(
+            prompt_tokens=4,
+            completion_tokens=3,
+            reasoning_tokens=1,
+            cached_tokens=2,
+            accepted_prediction_tokens=2,
+            rejected_prediction_tokens=1,
+        ),
         FinishEvent(FinishReason.STOP, tool_calls=True),
     ]
     for ev in events:

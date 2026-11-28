@@ -76,6 +76,7 @@ class GenerateRequest:
     structured: StructuredParams | None = None
     images: tuple[ImageInput, ...] = ()
     image_spans: tuple[ImageSpan, ...] = ()
+    prediction: str | tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         _validate_envelope(
@@ -99,6 +100,11 @@ class GenerateRequest:
             require_text(self.prompt, "prompt")
         else:
             _validate_token_ids(self.prompt, "prompt token id")
+        if self.prediction is not None:
+            if isinstance(self.prediction, str):
+                require_text(self.prediction, "prediction")
+            else:
+                _validate_token_ids(self.prediction, "prediction token id")
 
     @property
     def is_tokenized(self) -> bool:
@@ -146,6 +152,7 @@ class TokenizedRequest:
     constraint_id: str | None = None
     images: tuple[ImageInput, ...] = ()
     image_spans: tuple[ImageSpan, ...] = ()
+    prediction_token_ids: tuple[TokenId, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_envelope(
@@ -167,6 +174,8 @@ class TokenizedRequest:
             for span in self.image_spans
         ):
             raise TypeError("image_spans must be a tuple of ImageSpan values")
+        if self.prediction_token_ids:
+            _validate_token_ids(self.prediction_token_ids, "prediction_token_id")
 
     @property
     def prompt_length(self) -> int:

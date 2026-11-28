@@ -61,6 +61,7 @@ def plan_report(plan: EnginePlan, model: str) -> dict[str, object]:
             "usable_bytes": budget.usable_bytes,
             "headroom_bytes": budget.headroom_bytes,
             "weights_bytes": plan.weights_bytes,
+            "draft_bytes": budget.draft_bytes,
             "kv_bytes": plan.kv_bytes,
             "state_bytes": plan.state_bytes,
             "latent_kv_bytes": plan.latent_kv_bytes,
@@ -68,6 +69,12 @@ def plan_report(plan: EnginePlan, model: str) -> dict[str, object]:
             "vision_activation_bytes": plan.vision_activation_bytes,
             "vision_load": plan.vision_load,
             "graph_bytes": budget.graph_bytes,
+        },
+        "drafts": {
+            "loaded": list(budget.loaded_drafts),
+            "skipped": list(budget.skipped),
+            "displaced_kv_blocks": plan.displaced_kv_blocks,
+            "displaced_kv_tokens": plan.displaced_kv_blocks * plan.block_size,
         },
         "kv": {
             "groups": plan.kv_groups,
@@ -99,7 +106,7 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
     config = plan.model_config
     context = config.max_position_embeddings
     limit = "memory" if plan.max_context_tokens < context else "the model"
-    reserve = budget.usable_bytes - plan.weights_bytes - plan.kv_bytes
+    reserve = budget.usable_bytes - plan.weights_bytes - budget.draft_bytes - plan.kv_bytes
     ops = ", ".join(f"{family}: {name}" for family, name in sorted(plan.providers.items()))
     if plan.stored_types is not None:
         types = ", ".join(f"{count} {name}" for name, count in plan.stored_types.items())
@@ -136,6 +143,20 @@ def plan_lines(plan: EnginePlan, model: str) -> list[str]:
         f"memory     free {_mib(plan.baseline_bytes)}, usable {_mib(budget.usable_bytes)}"
         f", headroom {_mib(budget.headroom_bytes)}",
         weights,
+        *(
+            [
+                f"  draft    {_mib(budget.draft_bytes)} ({', '.join(budget.loaded_drafts)}"
+                + (
+                    f"; displaces {plan.displaced_kv_blocks:,} KV blocks = "
+                    f"{plan.displaced_kv_blocks * plan.block_size:,} tokens"
+                    if plan.displaced_kv_blocks
+                    else ""
+                )
+                + ")"
+            ]
+            if budget.draft_bytes > 0
+            else []
+        ),
         f"  KV       {_mib(plan.kv_bytes)} = {plan.kv_blocks - 1:,} blocks of {plan.block_size}"
         f" tokens ({spec.dtype.label}, {spec.bytes_per_token():,} bytes per token{kv_groups_note};"
         f" {budget.kv_blocks[0] - 1:,} would fit)",

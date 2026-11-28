@@ -146,6 +146,9 @@ message GenerateRequest {
   bool prefix_cache = 9;
   repeated ImageInput images = 10;
   repeated ImageSpan image_spans = 11;
+  // A predicted output (OpenAI's `prediction`), read only as a speculative draft source.
+  optional string prediction_text = 12;
+  repeated int32 prediction_token_ids = 13;
 }
 
 message TokenLogprob {
@@ -169,6 +172,8 @@ message Usage {
   int32 total_tokens = 3;
   int32 reasoning_tokens = 4;
   int32 cached_tokens = 5;
+  int32 accepted_prediction_tokens = 6;
+  int32 rejected_prediction_tokens = 7;
 }
 
 message RequestMetrics {

@@ -184,13 +184,14 @@ _CHAT: Final = EndpointPolicy(
             "continue the trailing assistant message instead of opening a new turn",
             "continue_final_message",
         ),
+        *_rules(Rule.READ, "predicted output hint for speculative decoding", "prediction"),
         *_rules(
             Rule.REFUSE,
             "the deprecated function fields are not served; use tools",
             "functions",
             "function_call",
         ),
-        *_rules(Rule.REFUSE, _UNAVAILABLE, "audio", "prediction", "web_search_options"),
+        *_rules(Rule.REFUSE, _UNAVAILABLE, "audio", "web_search_options"),
     ),
 )
 

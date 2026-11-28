@@ -49,6 +49,11 @@ class HashPrefixCache:
         """Tokens per block."""
         return self._identity.block_size
 
+    @property
+    def lookahead(self) -> int:
+        """Trailing tokens beyond each block that its digest depends on."""
+        return self._identity.lookahead
+
     def root(self, salt: str | None) -> bytes:
         """The root digest for ``salt``, memoised."""
         key = salt or ""
@@ -62,7 +67,12 @@ class HashPrefixCache:
 
     def digests(self, parent: bytes, token_ids: Sequence[int]) -> list[bytes]:
         """Digests of the full blocks of ``token_ids``, chained from ``parent``."""
-        return chain_digests(parent, token_ids, self._identity.block_size)
+        return chain_digests(
+            parent,
+            token_ids,
+            self._identity.block_size,
+            lookahead=self._identity.lookahead,
+        )
 
     def match(
         self, pools: Sequence[BlockPool], token_ids: Sequence[int], salt: str | None

@@ -73,6 +73,11 @@ class PrefixCache(Protocol):
         """Tokens per block."""
         ...
 
+    @property
+    def lookahead(self) -> int:
+        """Trailing tokens beyond each block that its digest depends on."""
+        ...
+
     def root(self, salt: str | None) -> bytes:
         """The digest every chain of this salt starts from."""
         ...

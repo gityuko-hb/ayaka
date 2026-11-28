@@ -53,6 +53,8 @@ __all__ = [
     "graph_metadata",
     "plan",
     "update_graph_metadata",
+    "update_verify_graph_metadata",
+    "verify_graph_metadata",
     "workspace",
 ]
 
@@ -130,7 +132,7 @@ class _GraphBuffers:
     pinned, because ``plan`` reads them there.
     """
 
-    staging: reference.TorchGraphPlan
+    staging: reference.TorchGraphPlan | reference.TorchVerifyGraphPlan
     indptr: torch.Tensor
     indices: torch.Tensor
     last_page_len: torch.Tensor
@@ -143,6 +145,8 @@ class _GraphBuffers:
     real_host: torch.Tensor
     wrappers: dict[tuple[KVLayoutKind, torch.dtype, int], Any]
     mla_wrappers: dict[tuple[int, int, int], Any]
+    qo_indptr: torch.Tensor | None = None
+    qo_indptr_host: torch.Tensor | None = None
 
 
 def _flashinfer() -> Any:
@@ -257,7 +261,7 @@ def plan(
 
 def _plan_wrapper(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> Any:
     # What plan() allocates is kept for later run() calls, in or out of inference mode, so it must
-    # not be an inference tensor (see _workspace).
+    # not be an inference tensor (see workspace).
     with torch.inference_mode(False):
         return _plan(holder, key, device)
 
@@ -268,15 +272,26 @@ def _plan(holder: FlashInferPlan, key: _PlanKey, device: torch.device) -> Any:
         wkey = (layout, kv_dtype, window_left)
         wrapper = holder.graph.wrappers.get(wkey)
         if wrapper is None:
-            wrapper = _flashinfer().BatchDecodeWithPagedKVCacheWrapper(
-                workspace(device),
-                kv_layout=_LAYOUT_NAMES[layout],
-                use_cuda_graph=True,
-                use_tensor_cores=True,
-                paged_kv_indptr_buffer=holder.graph.indptr,
-                paged_kv_indices_buffer=holder.graph.indices,
-                paged_kv_last_page_len_buffer=holder.graph.last_page_len,
-            )
+            if holder.decode:
+                wrapper = _flashinfer().BatchDecodeWithPagedKVCacheWrapper(
+                    workspace(device),
+                    kv_layout=_LAYOUT_NAMES[layout],
+                    use_cuda_graph=True,
+                    use_tensor_cores=True,
+                    paged_kv_indptr_buffer=holder.graph.indptr,
+                    paged_kv_indices_buffer=holder.graph.indices,
+                    paged_kv_last_page_len_buffer=holder.graph.last_page_len,
+                )
+            else:
+                wrapper = _flashinfer().BatchPrefillWithPagedKVCacheWrapper(
+                    workspace(device),
+                    kv_layout=_LAYOUT_NAMES[layout],
+                    use_cuda_graph=True,
+                    qo_indptr_buf=holder.graph.qo_indptr,
+                    paged_kv_indptr_buf=holder.graph.indptr,
+                    paged_kv_indices_buf=holder.graph.indices,
+                    paged_kv_last_page_len_buf=holder.graph.last_page_len,
+                )
             holder.graph.wrappers[wkey] = wrapper
     else:
         wrapper = _eager_wrapper(device, layout, holder.decode, kv_dtype, window_left)
@@ -485,13 +500,17 @@ def update_graph_metadata(
 ) -> None:
     op = "attention.update_graph_metadata"
     holder = meta.plan
-    if not isinstance(holder, FlashInferPlan) or holder.graph is None:
+    if (
+        not isinstance(holder, FlashInferPlan)
+        or holder.graph is None
+        or not isinstance(holder.graph.staging, reference.TorchGraphPlan)
+    ):
         raise BackendError(
             f"{op}: meta was not made by this backend's graph_metadata",
             context={"op": op, "argument": "meta"},
         )
     graph = holder.graph
-    reference.stage_graph_step(op, meta, graph.staging, kv_lengths, block_rows)
+    reference.stage_graph_step(op, meta, holder.graph.staging, kv_lengths, block_rows)
     lengths = _host_ints(kv_lengths)
     _, kv_indptr, indices, last = _csr([1] * len(lengths), lengths, block_rows, meta.block_size)
     used = len(indices)
@@ -511,6 +530,104 @@ def update_graph_metadata(
             _plan_wrapper(holder, key, device)
     for replan in holder.mla_replanners:
         replan()
+
+
+def verify_graph_metadata(
+    num_rows: int, max_requests: int, max_blocks: int, block_size: int, device: torch.device
+) -> AttentionMetadata:
+    base = reference.verify_graph_metadata(num_rows, max_requests, max_blocks, block_size, device)
+    staging = base.plan
+    if not isinstance(staging, reference.TorchVerifyGraphPlan):
+        raise BackendError("attention.verify_graph_metadata: the reference staging changed shape")
+    target = torch.device(device)
+    pinned = target.type == "cuda"
+    capacity = max_requests * max_blocks
+
+    def host(size: int, dtype: torch.dtype = torch.int32) -> torch.Tensor:
+        return torch.zeros(size, dtype=dtype, pin_memory=pinned)
+
+    buffers = _GraphBuffers(
+        staging=staging,
+        indptr=torch.zeros(max_requests + 1, dtype=torch.int32, device=target),
+        indices=torch.zeros(capacity, dtype=torch.int32, device=target),
+        last_page_len=torch.zeros(max_requests, dtype=torch.int32, device=target),
+        mla_qo_indptr=torch.arange(max_requests + 1, dtype=torch.int32, device=target),
+        mla_kv_len=torch.ones(max_requests, dtype=torch.int32, device=target),
+        indptr_host=host(max_requests + 1),
+        indices_host=host(capacity),
+        indices_device=torch.zeros(capacity, dtype=torch.int32, device=target),
+        last_host=host(max_requests),
+        real_host=host(num_rows, torch.bool),
+        wrappers={},
+        mla_wrappers={},
+        qo_indptr=torch.zeros(max_requests + 1, dtype=torch.int32, device=target),
+        qo_indptr_host=host(max_requests + 1),
+    )
+    rows = [0] * max_requests
+    rows[0] = num_rows
+    qo_indptr, kv_indptr, indices, last = _csr(
+        rows, [0] * max_requests, torch.zeros(max_requests, max_blocks), block_size
+    )
+    holder = FlashInferPlan(
+        decode=False,
+        block_size=block_size,
+        qo_indptr=_ints(qo_indptr),
+        kv_indptr=_ints(kv_indptr),
+        kv_indices=_ints(indices),
+        last_page_len=_ints(last),
+        mla_kv_len=_ints([1] * max_requests),
+        real_rows=torch.zeros(num_rows, dtype=torch.bool, device=target),
+        graph=buffers,
+    )
+    return replace(base, plan=holder)
+
+
+def update_verify_graph_metadata(
+    meta: AttentionMetadata,
+    rows_per_request: torch.Tensor,
+    kv_lengths: torch.Tensor,
+    block_rows: torch.Tensor,
+) -> None:
+    op = "attention.update_verify_graph_metadata"
+    holder = meta.plan
+    if (
+        not isinstance(holder, FlashInferPlan)
+        or holder.graph is None
+        or not isinstance(holder.graph.staging, reference.TorchVerifyGraphPlan)
+        or holder.graph.qo_indptr_host is None
+    ):
+        raise BackendError(
+            f"{op}: meta was not made by this backend's verify_graph_metadata",
+            context={"op": op, "argument": "meta"},
+        )
+    graph = holder.graph
+    staging = graph.staging
+    qo_indptr_host = graph.qo_indptr_host
+    if not isinstance(staging, reference.TorchVerifyGraphPlan) or qo_indptr_host is None:
+        raise BackendError(
+            f"{op}: meta was not made by this backend's verify_graph_metadata",
+            context={"op": op, "argument": "meta"},
+        )
+    reference.stage_verify_graph_step(op, meta, staging, rows_per_request, kv_lengths, block_rows)
+    rows = _host_ints(rows_per_request)
+    lengths = _host_ints(kv_lengths)
+    qo_indptr, kv_indptr, indices, last = _csr(rows, lengths, block_rows, meta.block_size)
+    used = len(indices)
+    qo_indptr_host.copy_(_ints(qo_indptr))
+    graph.indptr_host.copy_(_ints(kv_indptr))
+    graph.last_host.copy_(_ints(last))
+    graph.indices_host[:used].copy_(_ints(indices))
+    graph.indices_device[:used].copy_(graph.indices_host[:used], non_blocking=True)
+    holder.qo_indptr = qo_indptr_host
+    holder.kv_indptr = graph.indptr_host
+    holder.kv_indices = graph.indices_device[:used]
+    holder.last_page_len = graph.last_host
+    graph.real_host.copy_(staging.kv_lengths.long()[staging.request_of_row.long()] > 0)
+    holder.real_rows.copy_(graph.real_host, non_blocking=True)
+    if holder.planned:
+        device = holder.real_rows.device
+        for key in list(holder.planned):
+            _plan_wrapper(holder, key, device)
 
 
 def _host_ints(tensor: torch.Tensor) -> list[int]:

@@ -31,8 +31,7 @@ package stays cheap and a command line that only prints help never loads it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
 from ayaka.core.errors import CapacityError, ConfigError, ModelLoadError
@@ -52,20 +51,14 @@ from ayaka.engine.input import InputProcessor
 from ayaka.engine.output import OutputProcessor
 from ayaka.engine.profile import (
     ProfileKey,
-    StartupReport,
     load_profile,
-    measure_startup,
-    profile_save_issues,
-    reconcile,
-    save_profile,
-    should_save_profile,
 )
+from ayaka.engine.startup import startup_run
 from ayaka.kvcache.manager import KVCacheManager
 from ayaka.kvcache.prefix.hash_cache import HashPrefixCache
 from ayaka.kvcache.prefix.hashing import ChainRoot
 from ayaka.kvcache.state_slots import StateCheckpointStore, StateSlotPool
 from ayaka.kvcache.storage.spec import KVGroup, KVSpec, LatentKVGroup, RecurrentStateGroup
-from ayaka.memory.budget import MemoryBudget
 from ayaka.metrics.loggers import LoggingStatLogger
 from ayaka.metrics.manager import StatLoggerManager
 from ayaka.ops.kvcache import RAW_CODEC
@@ -73,7 +66,7 @@ from ayaka.scheduler.scheduler import Scheduler
 from ayaka.utils.math_utils import div_ceil
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from ayaka.configs.engine import EngineConfig
@@ -81,11 +74,12 @@ if TYPE_CHECKING:
     from ayaka.device.capabilities import DeviceCapabilities
     from ayaka.device.info import DeviceInfo
     from ayaka.engine.recorder import SessionRecorder
-    from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.storage.pool import KVPool, LatentKVPool, RecurrentStatePool
-    from ayaka.memory.budget import BudgetPlan
+    from ayaka.memory.budget import BudgetPlan, DraftCost
     from ayaka.metrics.loggers import StatLogger
     from ayaka.ops.backend import OpsBackend
+    from ayaka.speculative.policy import DraftController
+    from ayaka.speculative.proposer import Proposer
     from ayaka.tokenizers.contracts import LoadedTokenizer
 
 __all__ = ["STATS_LOG_INTERVAL", "EnginePlan", "build_engine", "plan_engine"]
@@ -159,6 +153,8 @@ class EnginePlan:
     def __post_init__(self) -> None:
         if not self.groups:
             object.__setattr__(self, "groups", (self.group,))
+
+    displaced_kv_blocks: int = 0
 
     @property
     def block_size(self) -> int:
@@ -245,6 +241,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         )
     group = groups[0]
     state_group = model.state_spec()
+    draft_costs: tuple[DraftCost, ...] = ()
     block_size = group.spec.block_size
     context = model_config.context_length
     if (
@@ -274,6 +271,8 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
     model_fp = base_fp if kv_codec == RAW_CODEC else f"{base_fp}+kv:{kv_codec}"
     if model_config.has_vision:
         model_fp = f"{model_fp}+vision:{device.vision_load}"
+    if draft_costs:
+        model_fp += "+" + "+".join(cost.name for cost in draft_costs)
     key = ProfileKey.build(
         device=f"{info.name} {capabilities.arch}",
         model=model_fp,
@@ -313,6 +312,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
             reserve_tokens,
             previous,
             initial_runtime_bytes=initial_runtime_bytes,
+            drafts=draft_costs,
         )
     except CapacityError as exc:
         # The facts a reader needs to choose a fix: what one token of KV and the weights cost.
@@ -327,6 +327,24 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
                 "model_context": context,
             },
         ) from exc
+
+    displaced_blocks = 0
+    if budget.loaded_drafts:
+        try:
+            plain_budget = compute_budget(
+                config,
+                groups,
+                state_group,
+                weights,
+                baseline,
+                reserve_tokens,
+                previous,
+                initial_runtime_bytes=initial_runtime_bytes,
+                drafts=(),
+            )
+            displaced_blocks = max(plain_budget.kv_blocks[0] - budget.kv_blocks[0], 0)
+        except CapacityError:
+            displaced_blocks = 0
 
     max_blocks = div_ceil(context, block_size)
     running = max_running(config, budget.max_running)
@@ -366,6 +384,7 @@ def _plan(config: EngineConfig) -> tuple[EnginePlan, OpsBackend, int]:
         vision_weights_bytes=vision_weights,
         vision_activation_bytes=model.vision_activation_bytes(),
         vision_load=device.vision_load,
+        displaced_kv_blocks=displaced_blocks,
     )
     return plan, ops, baseline_reserved
 
@@ -409,6 +428,9 @@ def build_engine(
     from ayaka.execution.runner import ModelRunner
     from ayaka.kvcache.storage.pool import KVPool, LatentKVPool, RecurrentStatePool
     from ayaka.model_loader.loader import load_model
+    from ayaka.speculative.ngram import LookupProposer
+    from ayaka.speculative.policy import CostAwareController, FixedController
+    from ayaka.speculative.token_recycling import TokenRecyclingProposer
 
     device = config.device
     engine_plan, ops, baseline_reserved = _plan(config)
@@ -435,6 +457,7 @@ def build_engine(
         engine_plan.max_context_tokens,
     )
 
+    spec_cfg = config.speculative
     prefix = None
     if config.cache.prefix_cache:
         prefix = HashPrefixCache(
@@ -475,6 +498,42 @@ def build_engine(
     ]
 
     service = tokenizer_service(config, model_config.vocab_size, context, tokenizer)
+    proposer: Proposer | None = None
+    controller: DraftController | None = None
+    lookahead = 0
+    draft_bytes = 0
+    if spec_cfg.enabled:
+        if spec_cfg.method == "lookup":
+            proposer = LookupProposer(
+                min_match=spec_cfg.lookup_min_match,
+                max_match=spec_cfg.lookup_max_match,
+                candidates=spec_cfg.lookup_candidates,
+                accept_prediction=spec_cfg.accept_prediction,
+            )
+        elif spec_cfg.method == "token_recycling":
+            proposer = TokenRecyclingProposer()
+        if proposer is not None:
+            reason = proposer.supports(model_config)
+            if reason is None and state_group is not None:
+                # A verify window advances a recurrent state through every draft row, and a
+                # rejected draft would leave it there: there is no rollback of the state.
+                reason = "the model has recurrent-state layers, which a draft window cannot undo"
+            if reason is not None:
+                logger.warning("speculative %s disabled: %s", spec_cfg.method, reason)
+                proposer = None
+                lookahead = 0
+            else:
+                if lookahead == 0:
+                    lookahead = spec_cfg.max_draft_tokens
+                controller = (
+                    FixedController(min(spec_cfg.fixed_k, lookahead))
+                    if spec_cfg.controller == "fixed"
+                    else CostAwareController(
+                        max_k=lookahead,
+                        min_gain=spec_cfg.min_gain,
+                        ema=spec_cfg.ema,
+                    )
+                )
     scheduler = Scheduler(
         config.scheduler,
         kv,
@@ -486,21 +545,22 @@ def build_engine(
         model,
         pools,
         kv.table,
-        # No draft proposer exists yet, so lookahead is 0. A proposer must pass its k here;
-        # required_rows then reserves one row per request plus k draft rows.
         max_rows=ModelRunner.required_rows(
             token_budget=scheduler.token_budget,
             max_running=scheduler.max_running,
-            lookahead=0,
+            lookahead=lookahead,
         ),
         device=device.device,
         eos_token_ids=service.eos_token_ids,
         state_pool=state_pool,
         state_checkpoints=state_checkpoints,
+        speculative=spec_cfg,
+        proposer=proposer,
+        controller=controller,
     )
     startup = None
     if device.device_type == "cuda":
-        startup = _startup_run(
+        startup = startup_run(
             config,
             runner,
             pools,
@@ -511,6 +571,7 @@ def build_engine(
             baseline_reserved=baseline_reserved,
             chunk_tokens=scheduler.token_budget,
             running=scheduler.max_running,
+            draft_bytes=draft_bytes,
         )
     return EngineCore(
         scheduler=scheduler,
@@ -536,88 +597,4 @@ def build_engine(
         dtype=device.dtype.label,
         backends=device.backends,
         cuda_graph=device.cuda_graph,
-    )
-
-
-def _startup_run(
-    config: EngineConfig,
-    runner: ModelRunner,
-    pools: KVPool | LatentKVPool | Sequence[KVPool | LatentKVPool],
-    *,
-    state_pool: RecurrentStatePool | None = None,
-    key: ProfileKey,
-    plan: BudgetPlan,
-    baseline: int,
-    baseline_reserved: int,
-    chunk_tokens: int,
-    running: int,
-) -> StartupReport:
-    """Measure, capture the graphs, fill the ledger and check it against the device (GPU only)."""
-    from ayaka.device.context import Device
-
-    target = Device(config.device.device)
-    buckets = tuple(bucket for bucket in config.device.graph_buckets if bucket <= running) or (1,)
-    pool_seq = pools if isinstance(pools, Sequence) else (pools,)
-    kv_total_bytes = sum(pool.nbytes for pool in pool_seq)
-    state_bytes = state_pool.nbytes if state_pool is not None else 0
-    profile = measure_startup(
-        runner.model,
-        runner.kv_buffers,
-        key=key,
-        device=target,
-        baseline_bytes=baseline,
-        baseline_reserved_bytes=baseline_reserved,
-        kv_bytes=kv_total_bytes,
-        chunk_tokens=chunk_tokens,
-        buckets=buckets,
-        block_size=pool_seq[0].group.spec.block_size,
-        usable_blocks=pool_seq[0].usable_blocks,
-        latent_kv_buffers=getattr(runner, "latent_kv_buffers", {}),
-        state_buffers=getattr(runner, "state_buffers", {}),
-        group_layers=getattr(runner, "group_layers", ()),
-        state_bytes=state_bytes,
-    )
-    budget = MemoryBudget(baseline)
-    budget.reserve("weights", profile.weights_bytes)
-    budget.reserve("kv", profile.kv_bytes)
-    if state_bytes:
-        budget.reserve("state", min(state_bytes, budget.free_bytes))
-    budget.reserve("runtime", min(profile.runtime_bytes, budget.free_bytes))
-    budget.reserve("workspace", min(profile.workspace_bytes, budget.free_bytes))
-    captured = ()
-    if config.device.cuda_graph:
-        captured = tuple(runner.capture_graphs(buckets))
-        graph_bytes = sum(item.bytes for item in captured)
-        budget.reserve("graph", min(graph_bytes, budget.free_bytes))
-        profile = replace(profile, graph_bytes=graph_bytes)
-    target.synchronize()
-    reading = target.memory()
-    reconciliation = reconcile(
-        budget,
-        baseline_bytes=baseline,
-        baseline_reserved_bytes=baseline_reserved,
-        reading=reading,
-        reused_bytes=profile.reused_bytes,
-    )
-    log = logger.info if reconciliation.matches else logger.warning
-    log(
-        "memory ledger %d bytes, allocator plus runtime %d bytes (difference %d, tolerance %d); "
-        "the driver reports %d bytes lost since the baseline (diagnostic difference %d); "
-        "plan: %d usable, %d headroom",
-        reconciliation.ledger_bytes,
-        reconciliation.measured_bytes,
-        reconciliation.difference_bytes,
-        reconciliation.tolerance_bytes,
-        reconciliation.device_bytes,
-        reconciliation.device_difference_bytes,
-        plan.usable_bytes,
-        plan.headroom_bytes,
-    )
-    if should_save_profile(reconciliation, reading):
-        save_profile(profile)
-    else:
-        issues = "; ".join(profile_save_issues(reconciliation, reading))
-        logger.warning("skipping saving startup profile %s: %s", key.digest(), issues)
-    return StartupReport(
-        profile=profile, budget=budget, reconciliation=reconciliation, graphs=captured
     )

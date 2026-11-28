@@ -184,6 +184,8 @@ class CombinedParser:
                 cached_tokens=usage.cached_tokens,
                 reasoning_tokens=self.reasoning_tokens,
                 cache_written_tokens=usage.cache_written_tokens,
+                accepted_prediction_tokens=usage.accepted_prediction_tokens,
+                rejected_prediction_tokens=usage.rejected_prediction_tokens,
             )
         )
         events.append(FinishEvent(FinishReason.STOP, tool_calls=True))
@@ -207,6 +209,8 @@ class CombinedParser:
             cached_tokens=usage.cached_tokens,
             reasoning_tokens=min(self._reasoning_tokens, usage.completion_tokens),
             cache_written_tokens=usage.cache_written_tokens,
+            accepted_prediction_tokens=usage.accepted_prediction_tokens,
+            rejected_prediction_tokens=usage.rejected_prediction_tokens,
         )
 
     def _terminal(self, output: RequestOutput) -> FinishEvent | ErrorEvent:

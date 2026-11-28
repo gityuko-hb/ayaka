@@ -539,6 +539,9 @@ class Scheduler:
         logprobs: tuple[TokenLogprob, ...] | None = None
         if output.logprobs and output.logprobs[index] is not None:
             logprobs = (output.logprobs[index] or ())[: len(emitted)]
+        accepted = output.spec_prediction_accepted
+        pred_acc = min(accepted[index], max(0, len(emitted) - 1)) if accepted else 0
+        pred_rej = output.spec_prediction_rejected[index] if output.spec_prediction_rejected else 0
         if reason is not None:
             self._roster.finish(
                 request,
@@ -548,6 +551,7 @@ class Scheduler:
                 error=error,
                 logprobs=logprobs,
                 release=release,
+                prediction=(pred_acc, pred_rej),
             )
         elif emitted:
             self._roster.events.append(
@@ -557,6 +561,8 @@ class Scheduler:
                     logprobs=logprobs,
                     cached_tokens=request.cached_tokens,
                     cache_written_tokens=request.cache_written_tokens,
+                    accepted_prediction_tokens=pred_acc,
+                    rejected_prediction_tokens=pred_rej,
                 )
             )
         return len(emitted)
@@ -572,16 +578,19 @@ class Scheduler:
         if full <= registered:
             return
         size = self._kv.block_size
-        prompt_end = min(max(len(request.prompt) // size, registered), full)
+        lookahead = self._kv.prefix_lookahead
+        prompt_end = min(max(len(request.prompt) - lookahead, 0) // size, full)
         if prompt_end > registered:
             added = self._kv.cache_blocks(
-                request.request_id, request.tokens_between(registered * size, prompt_end * size)
+                request.request_id,
+                request.tokens_between(registered * size, prompt_end * size + lookahead),
             )
             request.cache_written_tokens += added * size
             registered = prompt_end
         if full > registered:
             self._kv.cache_blocks(
-                request.request_id, request.tokens_between(registered * size, full * size)
+                request.request_id,
+                request.tokens_between(registered * size, full * size + lookahead),
             )
 
 

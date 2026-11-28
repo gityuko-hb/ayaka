@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from ayaka.ops.kvcache import KVBuffers, LatentKVBuffers
     from ayaka.ops.linear_attention import LinearAttentionMetadata, RecurrentStateBuffers
 
-__all__ = ["ForwardContext", "StateCheckpointCapture"]
+__all__ = ["FeatureSink", "ForwardContext", "StateCheckpointCapture"]
 
 _EMPTY_PROXY: Mapping[int, object] = MappingProxyType({})
 
@@ -59,6 +59,42 @@ class StateCheckpointCapture:
     snapshots: dict[tuple[int, bytes], tuple[Tensor, Tensor]]
 
 
+@dataclass(slots=True)
+class FeatureSink:
+    """Captures intermediate post-layer residual sums during a forward pass.
+
+    Attributes:
+        layer_ids: Zero-based decoder layer indices whose outputs are recorded.
+        buffers: Optional pre-allocated ``[max_rows, hidden_size]`` destination tensors,
+            keyed by layer id, written in place for CUDA graph compatibility.
+        captured: Views of captured hidden states keyed by layer id for the active step.
+    """
+
+    layer_ids: frozenset[int]
+    buffers: Mapping[int, Tensor] | None = None
+    captured: dict[int, Tensor] = field(default_factory=lambda: {})
+
+    def record(self, layer_idx: int, x: Tensor, residual: Tensor) -> None:
+        """Record the post-layer hidden sum ``x + residual`` when ``layer_idx`` is requested."""
+        if layer_idx not in self.layer_ids:
+            return
+        if self.buffers is not None and layer_idx in self.buffers:
+            dest = self.buffers[layer_idx][: x.shape[0]]
+            dest.copy_(x)
+            dest.add_(residual)
+            self.captured[layer_idx] = dest
+        else:
+            self.captured[layer_idx] = x + residual
+
+    def get(self, layer_idx: int) -> Tensor:
+        """Return the tensor captured for ``layer_idx``."""
+        return self.captured[layer_idx]
+
+    def clear(self) -> None:
+        """Drop captured references at the end of a step."""
+        self.captured.clear()
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class ForwardContext:
     """An immutable snapshot of one step's metadata and cache tensors.
@@ -85,6 +121,7 @@ class ForwardContext:
             positions during decode after multimodal prompts.
         bidirectional_spans: Half-open ``(start, end)`` token intervals in the step batch
             where vision sliding attention uses bidirectional masking.
+        feature_sink: Optional collector for intermediate post-layer hidden states.
     """
 
     attention: AttentionMetadata
@@ -98,6 +135,7 @@ class ForwardContext:
     mrope_positions: Tensor | None = None
     rope_position_offsets: Tensor | None = None
     bidirectional_spans: tuple[tuple[int, int], ...] = ()
+    feature_sink: FeatureSink | None = None
 
     def __post_init__(self) -> None:
         # Private read-only copies: the runner may keep reusing the dicts it built this from.

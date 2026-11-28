@@ -786,7 +786,7 @@ The raw files of the three sections above record the revisions they ran by the h
 branches were rewritten to correct the commit author (same trees): `c6259e7` is `002bf86`, `4906553` is `e3ac2fc`,
 `ac99081` is `264e068`, `25b195c` is `3e5cf60`, `745760b` is `dd44f6b`.
 
-## M1 decision gates and FP8 KV check on NVIDIA L4 24 GB (`sm_89`, native Linux) (#62)
+## GPU execution decision gates and FP8 KV check on NVIDIA L4 24 GB (`sm_89`, native Linux) (#62)
 
 ### Setup and thresholds, written before the run
 
@@ -845,9 +845,9 @@ Pre-registration commit: `07a85e3` (before any run below). Raw JSON files:
 | prefill | 64 | 256 / 2048 | 2.79e-4 | 0.03889 | 0.1336 | 0.1679 | 1.26× |
 | prefill | 128 | 256 / 2048 | 2.80e-4 | 0.03830 | 0.2125 | 0.2109 | 0.99× |
 
-  **Implication for 0.2 / M3:** FlashInfer `0.7.4` on `sm_89` can read `e4m3fn` KV for capacity
-  (halving KV memory, opt-in with quality gating in M6), but it is slower than `fp16` KV at batch 1
-  up to 8K context, so the 0.2 release statement keeps the host-tier conversation-switching claim
+  **Implication for 0.2 and the models and quantization milestone:** FlashInfer `0.7.4` on
+  `sm_89` can read `e4m3fn` KV for capacity (halving KV memory, opt-in with quality gating in the
+  fast quantized kernels milestone), but it is slower than `fp16` KV at batch 1 up to 8K context, so the 0.2 release statement keeps the host-tier conversation-switching claim
   rather than promising an 8-bit KV speedup before `kops`.
 
 **2. Attention per op (`attention-fp16.json`, `attention-bf16.json`, warmup 5, repeat 50, ms):**
@@ -1207,3 +1207,135 @@ canonical geometry (`kv_lora_rank = 512`, `qk_rope_head_dim = 64`, `qk_nope_head
 - **Greedy parity vs Hugging Face**: `16/16` exact token match on a 32-token prompt (`exact_greedy_match_vs_hf = true`).
 - **Warm prefix cache + CUDA graphs**: `16` cached tokens reused, generating `16` warm decode tokens in `60.3 ms`.
 - **Latent KV cache sizing**: `4,608 B/tok` for the 4-layer model (`69,120 B/tok` scaled to 60 layers vs `491,520 B/tok` standard 16-head bf16 KV, `0.140625x`, an 85.94% reduction).
+## Speculative decoding: the foundation and the lookup drafter, on NVIDIA L4 24 GB (2026-11-24) (#127)
+
+### Setup and thresholds
+
+The thresholds are the ones fixed in #127 before any run. Machine: native Linux
+(kernel `6.6.159+`), **NVIDIA L4** (`sm_89`), driver `580.82.07`, CUDA `13.0`, Python `3.13.16`,
+`torch 2.14.1+cu130`, `flashinfer-python 0.7.4`, `transformers 5.22.1`. Every run is bf16 with
+`--backends flashinfer,torch --cuda-graph`, greedy, 128 generated tokens with `ignore_eos`. Raw
+results: `benchmarks/results/2026-11-24-nvidia-l4/speculative/` (`cost_table.json`,
+`lookup_bench.json`, `kv_plan.json`, `plain_6543176.json`, `exactness_diagnostic.jsonl`,
+`cost_table_oom_default_kv.txt`). The code was the working tree on top of `6543176`
+(`cost_table.json` records `6543176…-dirty`).
+
+**What these runs are not.** The issues require at least five alternating pairs of arms, each on a
+fresh engine, with every run kept, and a `noise` band taken from the spread of the baseline runs.
+**The scripts here run each configuration once** (one value per prompt), so no `noise` band, no
+"worst pair" and no median exist, and the ratios below are single-run ratios. The speed gates cannot
+be passed or failed on this evidence; they are reported as measured and **every default stays off**.
+Concurrency 2 and 8 were not measured for lookup.
+
+### Gate 0: what a step with more rows costs (`cost_table.json`)
+
+Median of eight repeats, in ms per step, 32-token prompts, B requests each with `1 + k` rows. `*`
+means a captured graph was replayed. The same positions are re-run on every repeat.
+
+| Model | Mode | B | k=0 | k=1 | k=2 | k=3 | k=4 | k=8 | k=15 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B bf16 | graph | 1 | 65.0* | 73.2 | 73.5 | 73.6 | 73.9 | 74.9 | 76.6 |
+| Qwen3-8B bf16 | graph | 2 | 68.8* | 73.6 | 73.8 | 74.4 | 74.9 | 82.3 | 84.5 |
+| Qwen3-8B bf16 | graph | 4 | 69.5* | 75.0 | 75.5 | 76.5 | 82.8 | 85.5 | 90.2 |
+| Qwen3-8B bf16 | graph | 8 | 70.6* | 76.9 | 83.6 | 84.9 | 86.4 | 92.6 | 103.5 |
+| Qwen3-8B bf16 | eager | 1 | 69.6 | 73.2 | 73.3 | 73.4 | 73.4 | 74.3 | 76.1 |
+| Qwen3-8B bf16 | eager | 8 | 74.3 | 76.5 | 83.2 | 84.5 | 86.0 | 92.1 | 102.7 |
+| Qwen3-8B-FP8 | graph | 1 | 562.7* | 574.5 | 575.0 | 575.4 | 575.6 | 577.1 | 579.0 |
+| Qwen3-8B-FP8 | graph | 8 | 571.5* | 579.1 | 582.6 | 583.8 | 584.6 | 597.6 | 607.7 |
+| MiMo-7B-RL bf16 | graph | 1 | 59.7* | 65.8 | 65.9 | 66.0 | 66.2 | 67.2 | 68.4 |
+| MiMo-7B-RL bf16 | graph | 8 | 63.4* | 69.0 | 75.0 | 76.3 | 77.3 | 84.3 | 94.7 |
+
+(The full 112-row table, with 2 and 4 requests, is in the JSON.)
+
+- **Extra rows are nearly free at one request, and cost more as requests multiply.** Qwen3-8B, one
+  request: going from 2 rows (k=1) to 16 rows (k=15) adds 4.6% (73.2 to 76.6 ms). At eight requests
+  the same step adds 35% (76.9 to 103.5 ms), a 128-row step.
+- **A step with drafts does not use the decode graph here.** In every row with k ≥ 1 no captured
+  graph was replayed (`replayed_graph` is false), so the 2-row step costs 73.2 ms against 65.0 ms
+  for the graphed 1-row step, 12.6% more, and the same as the eager runs. A round must therefore
+  accept about 0.13 tokens on average just to break even on Qwen3-8B at one request. This harness
+  calls the runner directly with synthetic drafts, so it shows that the verify step was not replayed
+  *in this harness*; it does not show what the engine does for lookup requests. **Gate 3 is
+  only partly covered.** `tests/execution/test_graph.py::test_verify_graph_replay_matches_eager_and_one_sync`
+  (GPU, tiny model, torch fp32 and fp16, flashinfer fp16) passes: a replayed verify window draws the
+  tokens of eager decode, with one synchronization. It was not run for a real 8B model, for every
+  bucket it captures, or for the memory the verify graphs take.
+- **The FP8 hypothesis, on the cost side, holds.** On Qwen3-8B-FP8 a 2-row step costs 574.5 ms
+  against 562.7 ms for one row (+2.1%), and a 16-row step 579.0 ms (+2.9%): the dequantization
+  dominates and the rows are nearly free. **Whether lookup gains much more on FP8 end to end was not
+  measured**: no FP8 generation was run with a drafter.
+- **First run: invalid, then fixed.** The first cost-table run wrote 4 rows that were all errors
+  (`schedule() called while a step is in flight`): the script called the scheduler again without
+  completing a step, and passed a `StepInput` field that does not exist. It was rewritten to build
+  every timed step from one scheduled template. The Qwen3-8B graph row then ran out of memory in the
+  sampler on the 128-row step with the default cache sizing (`cost_table_oom_default_kv.txt`: the
+  start-up logged "planning with 200409088 bytes" for the largest step, and float32 copies of
+  128 × 151,936 logits are 77 MB each). The published table uses a fixed 130-block cache so the step
+  fits. **This is a finding about the memory plan: a wide verify window (eight requests at k=15)
+  needs more scratch than the plan reserved with that cached start-up profile.**
+
+### Lookup (#127), Qwen3-8B (`lookup_bench.json`)
+
+Three prompts (`code_edit` copies and edits code in the prompt, `rag_extract` copies a block, then
+summarizes, `creative_chat` is prose). Tokens per second, one run each; ratio over the plain run of
+the same prompt (plain: 15.23, 15.19, 15.25 tok/s).
+
+| Arm | code_edit | rag_extract | creative_chat | Acceptance (draft tokens accepted / drafted) |
+| --- | ---: | ---: | ---: | --- |
+| lookup, cost controller, k ≤ 8 | 22.37 (1.47×) | 17.00 (1.12×) | 16.75 (1.10×) | 0.58 / 0.42 / 0.21 |
+| lookup, fixed k=4 | 21.67 (1.42×) | 16.72 (1.10×) | 16.33 (1.07×) | 0.65 / 0.48 / 0.25 |
+| lookup with the request's `prediction` (cost, k ≤ 8) | 28.55 (1.88×) | 16.56 (1.09×) | 16.31 (1.07×) | 0.67 / 0.34 / 0.21 |
+| token recycling, cost, k ≤ 6 | 20.39 (1.34×) | 16.40 (1.08×) | 18.65 (1.22×) | 0.21 / 0.08 / 0.21 |
+| plain, 4 requests (total tok/s) | 57.53 | 56.58 | 57.51 | |
+| lookup, cost, 4 requests | 78.43 (1.36×) | 61.58 (1.09×) | 60.90 (1.06×) | 0.67 / 0.55 / 0.29 |
+
+With a prediction, 50 of the 61 accepted draft tokens on `code_edit` came from it.
+
+- **Direction.** No class is below plain in any lookup arm, one request or four. At least one class
+  is at least 1.10 (`code_edit`, 1.47× and 1.36×). That is the shape the default-on rule asks for,
+  but with one run per arm the rule's "worst pair above 1.0" and the noise band cannot be computed.
+- **Token recycling** wins on `creative_chat` (1.22× against lookup's 1.10×) and loses on the other
+  two classes. No verdict: it stays experimental and is neither dropped nor promoted until a paired
+  run.
+- **Controller (Gate 5).** The cost controller is at or above fixed k=4 on all three classes (22.37
+  against 21.67, 17.00 against 16.72, 16.75 against 16.33), but the sweep over k in 1, 2, 3, 4, 6, 8
+  the gate asks for was not run, so it is **not decided** whether the cost controller beats the best
+  fixed k.
+- **Exactness (Gate 1, GPU).** Greedy token ids differed from plain in four of the twelve
+  single-request rows (`exact_match_plain` false: `lookup_cost_b1` on `rag_extract` and
+  `creative_chat`, `lookup_fixed4_b1` on `code_edit` and `rag_extract`). The script only compares
+  whole sequences, so I re-ran the cost arm and, at the first differing token, read the plain run's
+  two best logprobs (`exactness_diagnostic.jsonl`): on `rag_extract` the sequences first differ at
+  token 117, where plain's two best tokens have the same logprob (-0.6932 and -0.6932, a margin of
+  0.0 nats, an exact tie in bf16) and the speculative run took the second one. `code_edit` and
+  `creative_chat` were identical in that re-run. That is the near-tie case Gate 1 sets apart, and
+  it is **not** "zero differing token ids"; the other three differing rows were not re-run, so
+  they are **unexplained**. The one-point χ² tests and the KV equality checks of Gate 1 are unit
+  tests (`tests/speculative`, CPU), not GPU runs in this section.
+
+### Memory (`kv_plan.json`)
+
+The plan's KV capacity for Qwen3-8B with `kv_reserve_tokens` 2,048: 30,368 tokens plain and 29,152
+with the lookup drafter, **4.0% fewer**, although the drafter has no weights. I attribute it to the
+scratch of the verify window and have not separated it.
+
+### Decisions
+
+- **The default stays off for lookup.** The speed gates cannot be passed (one run per arm, no
+  concurrency 2 or 8), and Gate 3 (graphs) was checked only on tiny models. This is the "otherwise it
+  stays off" branch of Gate 4; it is not a finding that lookup does not pay: at one request the
+  single-run ratios are 1.07× to 1.88× over plain on Qwen3-8B, and no class is below plain.
+- **Cap on k.** Unchanged at 8 for lookup (6 for token recycling). The cost table shows a 128-row
+  step (8 requests at k=15) costs 35% more than a 16-row one and needs more scratch than the plan
+  reserves; a cap on the total rows of a step is a follow-up, not decided here.
+- **Controller.** The cost controller stays the config default, unproven against the best fixed k.
+- **Token recycling** stays experimental: no verdict until a paired run.
+- **Cross-request corpus.** Nothing measured, no decision. The multi-token-prediction drafter is
+  #128 and the block drafter #129.
+
+### Open before a default can be considered
+
+Five alternating pairs per arm on fresh engines; concurrency 2, 4 and 8 with a matching plain arm;
+the controller sweep over k; the verify-window graph gate on a real model; the three unexplained
+differing rows above; a reserve in the memory plan for the widest verify window; an agent session
+class.

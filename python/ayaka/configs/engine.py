@@ -26,6 +26,7 @@ from ayaka.configs.cache import CacheConfig
 from ayaka.configs.device import DeviceConfig
 from ayaka.configs.model_source import ModelSourceConfig
 from ayaka.configs.scheduler import SchedulerConfig
+from ayaka.configs.speculative import SpeculativeConfig
 from ayaka.configs.tokenizer import TokenizerConfig, tokenizer_config_from_source
 from ayaka.core.errors import ConfigError
 
@@ -44,6 +45,7 @@ class EngineConfig(ConfigMixin):
         device: Device, dtype and ops backends.
         cache: KV cache sizing.
         scheduler: Scheduling limits.
+        speculative: Speculative decoding settings.
 
     Raises:
         TypeError: If a field is not an instance of its record type.
@@ -62,6 +64,7 @@ class EngineConfig(ConfigMixin):
     cache: CacheConfig = field(default_factory=CacheConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     structured_backend: Literal["llguidance", "xgrammar"] = "llguidance"
+    speculative: SpeculativeConfig = field(default_factory=SpeculativeConfig)
 
     def __post_init__(self) -> None:
         if self.structured_backend not in ("llguidance", "xgrammar"):  # pyright: ignore[reportUnnecessaryComparison]
@@ -75,6 +78,7 @@ class EngineConfig(ConfigMixin):
             ("device", DeviceConfig),
             ("cache", CacheConfig),
             ("scheduler", SchedulerConfig),
+            ("speculative", SpeculativeConfig),
         ):
             if not isinstance(cast("object", getattr(self, name)), kind):
                 raise TypeError(f"engine.{name} must be a {kind.__name__}")

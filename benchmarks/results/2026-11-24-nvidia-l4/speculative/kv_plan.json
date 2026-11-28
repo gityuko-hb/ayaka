@@ -1,0 +1,18 @@
+[
+ {
+  "target": "Qwen/Qwen3-8B",
+  "method": "plain",
+  "kv_blocks": 1898,
+  "kv_tokens": 30368,
+  "draft_bytes": 0,
+  "displaced_kv_tokens": 0
+ },
+ {
+  "target": "Qwen/Qwen3-8B",
+  "method": "lookup",
+  "kv_blocks": 1822,
+  "kv_tokens": 29152,
+  "draft_bytes": 0,
+  "displaced_kv_tokens": 0
+ }
+]

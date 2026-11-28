@@ -106,6 +106,7 @@ ignored with a debug log line. The tables below are generated from the table the
 | `reasoning_effort` | read | request-scoped thinking: none disables it, minimal..max sets effort |
 | `chat_template_kwargs` | read | extra keyword arguments passed to the model's chat template |
 | `continue_final_message` | read | continue the trailing assistant message instead of opening a new turn |
+| `prediction` | read | predicted output hint for speculative decoding |
 | `user` | ignore | accounting and storage fields; nothing is stored |
 | `metadata` | ignore | accounting and storage fields; nothing is stored |
 | `store` | ignore | accounting and storage fields; nothing is stored |
@@ -113,7 +114,6 @@ ignored with a debug log line. The tables below are generated from the table the
 | `functions` | refuse | the deprecated function fields are not served; use tools |
 | `function_call` | refuse | the deprecated function fields are not served; use tools |
 | `audio` | refuse | not available on this server |
-| `prediction` | refuse | not available on this server |
 | `web_search_options` | refuse | not available on this server |
 
 `POST /v1/completions`

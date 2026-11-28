@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Final, cast
 
@@ -47,11 +48,19 @@ import torch
 
 from ayaka.core.errors import BackendError, EngineError
 from ayaka.core.types import ForwardMode
+from ayaka.execution.answers import answer_step, answer_verify, logit_rows
+from ayaka.execution.drafts import (
+    observe_decode,
+    observe_step,
+    prepare_step_drafts,
+)
 from ayaka.execution.graph import GraphRunner
 from ayaka.execution.inputs import InputBuilder
+from ayaka.execution.measurement import draw_for_measurement
+from ayaka.execution.speculation import SpeculationState
 from ayaka.kvcache.storage.pool import KVPool, LatentKVPool
 from ayaka.layers.context import ForwardContext, StateCheckpointCapture
-from ayaka.sampling.logits import LogitRow, build_controls, needs_controls
+from ayaka.sampling.logits import build_controls, needs_controls
 from ayaka.sampling.penalties import PenaltyStates
 from ayaka.sampling.sampler import Sampler
 from ayaka.sampling.structured.runtime import ConstraintRuntime
@@ -64,11 +73,13 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
+    from ayaka.configs.speculative import SpeculativeConfig
     from ayaka.core.multimodal import ImageInput
     from ayaka.core.outputs import TokenLogprob
+    from ayaka.core.params import SamplingParams
     from ayaka.core.types import RequestId, TokenId
     from ayaka.execution.graph import CapturedBucket
-    from ayaka.execution.inputs import ModelInputs
+    from ayaka.execution.staged import ModelInputs
     from ayaka.kvcache.state_slots import StateCheckpointStore
     from ayaka.kvcache.storage.pool import RecurrentStatePool
     from ayaka.kvcache.table import BlockTable
@@ -76,6 +87,8 @@ if TYPE_CHECKING:
     from ayaka.ops.kvcache import KVBuffers, LatentKVBuffers
     from ayaka.ops.linear_attention import RecurrentStateBuffers
     from ayaka.scheduler.step import StepInput
+    from ayaka.speculative.policy import DraftController
+    from ayaka.speculative.proposer import Proposer
 
 __all__ = ["ModelRunner"]
 
@@ -132,6 +145,9 @@ class ModelRunner:
         eos_token_ids: Collection[TokenId] = (),
         state_pool: RecurrentStatePool | None = None,
         state_checkpoints: StateCheckpointStore | None = None,
+        speculative: SpeculativeConfig | None = None,
+        proposer: Proposer | None = None,
+        controller: DraftController | None = None,
     ) -> None:
         self._model = model
         self._sampler = Sampler(model.ops.sampling)
@@ -169,6 +185,15 @@ class ModelRunner:
         )
         self._graph: GraphRunner | None = None
         self._vision_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._spec = SpeculationState(
+            self._constraints, speculative=speculative, proposer=proposer, controller=controller
+        )
+        self._extra_graph_bytes = 0
+
+    @property
+    def extra_graph_bytes(self) -> int:
+        """CUDA graph bytes captured by auxiliary proposers (a proposer's own draft graphs)."""
+        return self._extra_graph_bytes
 
     @property
     def builder(self) -> InputBuilder:
@@ -210,13 +235,19 @@ class ModelRunner:
         """The running output constraints of the requests that have one."""
         return self._constraints
 
+    def draw_for_measurement(self, logits: torch.Tensor) -> None:
+        """Sample ``logits`` at the sampler's costliest, for the start-up run's measured peak."""
+        draw_for_measurement(self._sampler, logits, device=self._device, eos_token_ids=self._eos)
+
     @property
     def graph(self) -> GraphRunner | None:
         """The decode graphs, once :meth:`capture_graphs` has run."""
         return self._graph
 
-    def capture_graphs(self, buckets: Sequence[int]) -> list[CapturedBucket]:
-        """Capture decode steps of each bucket size; later decode steps that fit replay them.
+    def capture_graphs(
+        self, buckets: Sequence[int], *, verify_buckets: Sequence[int] = ()
+    ) -> list[CapturedBucket]:
+        """Capture decode steps (and verify row buckets when given) for graph replay.
 
         The model's ops must have been loaded with ``cuda_graph=True``.
 
@@ -233,9 +264,15 @@ class ModelRunner:
             state_buffers=self._state_buffers,
             group_layers=self._group_layers,
             device=self._device,
+            verify_buckets=verify_buckets,
+            save_hidden=self._spec.needs_hidden,
+            feature_layer_ids=frozenset(self._spec.feature_order),
         )
         captured = graph.capture()
         self._graph = graph
+        self._extra_graph_bytes = 0
+        if verify_buckets:
+            self._spec.verify_graphs_captured(graph.max_verify_rows)
         return captured
 
     def release(self) -> None:
@@ -259,9 +296,58 @@ class ModelRunner:
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
+    @property
+    def proposer(self) -> Proposer | None:
+        """The active speculative proposer, if any."""
+        return self._spec.proposer
+
+    @property
+    def controller(self) -> DraftController | None:
+        """The speculative draft-length controller, if any."""
+        return self._spec.controller
+
+    def set_speculative(
+        self,
+        proposer: Proposer | None,
+        controller: DraftController | None = None,
+        speculative: SpeculativeConfig | None = None,
+    ) -> None:
+        """Install or replace the speculative proposer and controller (primarily for tests)."""
+        self._spec.replace(proposer, controller, speculative)
+
+    def admit_speculative(
+        self,
+        request_id: RequestId,
+        prompt: Sequence[TokenId],
+        *,
+        sampling: SamplingParams,
+        has_constraint: bool = False,
+        prediction: Sequence[TokenId] = (),
+    ) -> None:
+        """Register ``request_id`` with the speculative proposer and record eligibility."""
+        self._spec.admit(
+            request_id,
+            prompt,
+            sampling=sampling,
+            has_constraint=has_constraint,
+            prediction=prediction,
+        )
+
+    def commit_speculative(self, request_id: RequestId, tokens: Sequence[TokenId]) -> None:
+        """Feed committed tokens to the proposer; unverified drafts never enter."""
+        self._spec.commit(request_id, tokens)
+
+    def release_speculative(self, request_id: RequestId) -> None:
+        """Drop per-request speculative state when a request finishes or is aborted."""
+        self._spec.release(request_id)
+
+    def release_all_speculative(self) -> None:
+        """Release every active request's speculative state (e.g., on shutdown)."""
+        self._spec.release_all()
+
     def plan_lookahead(self) -> Mapping[RequestId, int]:
-        """Ask for draft rows per request; none, because no draft proposer exists yet."""
-        return {}
+        """Ask the speculative proposer and controller for draft rows per active request."""
+        return self._spec.plan()
 
     def execute(
         self, step: StepInput, drafts: Sequence[Sequence[TokenId]] | None = None
@@ -280,29 +366,87 @@ class ModelRunner:
         Returns:
             The step's answer; every request is releasable at once, because the call is synchronous.
         """
+        started = time.perf_counter()
+        resolved_drafts, used_proposals, draft_valid, disabled = prepare_step_drafts(
+            step,
+            drafts,
+            plans=self._spec.planned,
+            pending_disabled=self._spec.pending_disabled,
+            vocab=self._vocab,
+        )
         try:
             with torch.inference_mode():
                 if (
                     drafts is None
                     and not (step.images and self._model.uses_multimodal_decode_offsets())
+                    and step.mode is ForwardMode.DECODE
                     and self._graph is not None
                     and self._graph.bucket_for(step)
                     and not self._needs_controls(step)
                 ):
                     drawn = self._graph.run(step, self._structural_masks(step))
-                    return StepOutput(
+                    elapsed = time.perf_counter() - started
+                    observe_decode(self._spec.controller, step, elapsed)
+                    output = StepOutput(
                         step_id=step.step_id,
                         request_ids=step.request_ids,
                         tokens=tuple((token,) for token in drawn),
                         accepted=(0,) * step.num_requests,
+                        spec_disabled=disabled,
                     )
-                inputs = self._builder.build(step, drafts)
-                sampled, logprobs = self._forward(step, inputs)
+                    if self._spec.needs_hidden or self._spec.feature_order:
+                        self._notify_proposer(
+                            step, output, self._graph.hidden_view(step.num_rows), from_graph=True
+                        )
+                    return output
+                if (
+                    drafts is None
+                    and step.mode is ForwardMode.VERIFY
+                    and resolved_drafts is not None
+                    and self._graph is not None
+                    and self._graph.bucket_for(step)
+                    and not self._needs_controls(step)
+                    and not self._spec.window_masked(step, resolved_drafts)
+                ):
+                    staged, sampled = self._graph.run_verify(step, resolved_drafts)
+                    elapsed = time.perf_counter() - started
+                    output = answer_verify(
+                        step,
+                        staged.logit_counts,
+                        staged.draft_tokens,
+                        sampled,
+                        draft_valid=draft_valid,
+                        vocab_size=self._vocab,
+                        used_proposals=used_proposals,
+                        disabled=disabled,
+                    )
+                    self._notify_proposer(
+                        step, output, self._graph.hidden_view(step.num_rows), from_graph=True
+                    )
+                    observe_step(self._spec.controller, step, output, used_proposals, elapsed)
+                    return output
+                inputs = self._builder.build(step, resolved_drafts)
+                sampled, logprobs, step_hidden = self._forward(step, inputs)
         except BackendError as exc:
+            if self._spec.feature_sink is not None:
+                self._spec.feature_sink.clear()
             return StepOutput(
                 step_id=step.step_id, request_ids=step.request_ids, error=exc.to_info()
             )
-        return _answer(step, inputs, sampled, logprobs)
+        elapsed = time.perf_counter() - started
+        output = answer_step(
+            step,
+            inputs,
+            sampled,
+            logprobs,
+            draft_valid=draft_valid,
+            vocab_size=self._vocab,
+            used_proposals=used_proposals,
+            disabled=disabled,
+        )
+        self._notify_proposer(step, output, step_hidden, from_graph=False)
+        observe_step(self._spec.controller, step, output, used_proposals, elapsed)
+        return output
 
     def _prepare_prefill_states(self, step: StepInput) -> None:
         """Zero fresh state slots or restore checkpoints from prefix hits before prefill."""
@@ -360,11 +504,11 @@ class ModelRunner:
 
     def _forward(
         self, step: StepInput, inputs: ModelInputs
-    ) -> tuple[list[TokenId], list[TokenLogprob | None]]:
+    ) -> tuple[list[TokenId], list[TokenLogprob | None], torch.Tensor]:
         """Run the model over the rows and sample the logit rows.
 
         Returns:
-            The drawn token ids, and per logit row its logprobs (empty if no row asked).
+            The drawn token ids, per logit row its logprobs, and final post-norm hidden states.
         """
         self._prepare_prefill_states(step)
         capture = (
@@ -393,7 +537,7 @@ class ModelRunner:
         self._save_prefill_checkpoints(step, capture)
         count = int(inputs.logit_rows.shape[0])
         if count == 0:
-            return [], []  # prefill chunks that all continue: the cache is written, none drawn
+            return [], [], hidden
         logits = self._model.compute_logits(hidden.index_select(0, inputs.logit_rows))
         draft_by_req = {
             step.request_ids[index]: inputs.draft_tokens[index]
@@ -401,7 +545,7 @@ class ModelRunner:
             if inputs.draft_tokens[index]
         }
         controls = build_controls(
-            _logit_rows(step, inputs.logit_counts),
+            logit_rows(step, inputs.logit_counts),
             vocab_size=int(logits.shape[-1]),
             eos_token_ids=self._eos,
             penalties=self._penalties,
@@ -410,7 +554,17 @@ class ModelRunner:
             draft_tokens=draft_by_req,
         )
         logprobs = self._sampler.sample(logits, inputs.sampling, inputs.sampled, controls)
-        return self._builder.read_sampled(count), logprobs
+        return self._builder.read_sampled(count), logprobs, hidden
+
+    def _notify_proposer(
+        self,
+        step: StepInput,
+        output: StepOutput,
+        hidden: torch.Tensor | None,
+        *,
+        from_graph: bool,
+    ) -> None:
+        self._spec.notify(step, output, hidden, self._graph if from_graph else None)
 
     def _needs_controls(self, step: StepInput) -> bool:
         """Whether a request of the step needs more than a structural mask: allowed ids, bias,
@@ -538,48 +692,5 @@ class ModelRunner:
             mrope_positions=mrope_positions,
             rope_position_offsets=rope_position_offsets,
             bidirectional_spans=bidirectional_spans,
+            feature_sink=self._spec.feature_sink,
         )
-
-
-def _logit_rows(step: StepInput, logit_counts: Sequence[int]) -> list[LogitRow]:
-    """One :class:`LogitRow` per logit row: row ``j`` of a request draws its token ``j``."""
-    rows: list[LogitRow] = []
-    for index, taken in enumerate(logit_counts):
-        request_id = step.request_ids[index]
-        params = step.sampling_params[index]
-        produced = step.output_length(index)
-        rows += [LogitRow(request_id, params, produced + j) for j in range(taken)]
-    return rows
-
-
-def _answer(
-    step: StepInput,
-    inputs: ModelInputs,
-    sampled: list[TokenId],
-    logprobs: Sequence[TokenLogprob | None] = (),
-) -> StepOutput:
-    """Turn the drawn tokens into per-request tokens, applying the draft acceptance rule."""
-    tokens: list[tuple[TokenId, ...]] = []
-    accepted: list[int] = []
-    per_request: list[tuple[TokenLogprob, ...] | None] = []
-    cursor = 0
-    for index, taken in enumerate(inputs.logit_counts):
-        drawn = sampled[cursor : cursor + taken]
-        window = logprobs[cursor : cursor + taken] if logprobs else ()
-        cursor += taken
-        drafts = inputs.draft_tokens[index]
-        count = 0
-        while count < len(drafts) and drawn and drafts[count] == drawn[count]:
-            count += 1
-        # ``count`` drafts matched, so the draws up to and including the one after them stand.
-        tokens.append(tuple(drawn[: count + 1]))
-        accepted.append(count)
-        kept = [entry for entry in window[: count + 1] if entry is not None]
-        per_request.append(tuple(kept) if kept and len(kept) == len(drawn[: count + 1]) else None)
-    return StepOutput(
-        step_id=step.step_id,
-        request_ids=step.request_ids,
-        tokens=tuple(tokens),
-        accepted=tuple(accepted),
-        logprobs=tuple(per_request) if any(entry is not None for entry in per_request) else (),
-    )
